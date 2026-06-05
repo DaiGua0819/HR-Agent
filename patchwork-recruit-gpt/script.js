@@ -300,6 +300,12 @@ function saveBossAutomationAccountId(value) {
   }
 }
 
+function getCurrentBossAutomationAccountId() {
+  bossAutomationAccountId = normalizeBossAutomationAccountId(bossAutomationAccountId);
+  syncBossAutomationAccountSwitcher();
+  return bossAutomationAccountId;
+}
+
 function bossAutomationAccountLabel(accountId = bossAutomationAccountId) {
   return accountId === "boss_a" ? "宋峰峰" : accountId === "boss_b" ? "和新红" : "全部账号";
 }
@@ -348,7 +354,7 @@ function isCurrentPlatformAutomationTask(platform, mode, accountId) {
   return (
     normalizeAutomationPlatform(platform) === activeAutomationPlatform &&
     (mode === "proactive" ? "proactive" : "process") === bossAutomationSummaryMode &&
-    normalizeBossAutomationAccountId(accountId) === bossAutomationAccountId
+    normalizeBossAutomationAccountId(accountId) === normalizeBossAutomationAccountId(bossAutomationAccountId)
   );
 }
 
@@ -1205,7 +1211,7 @@ async function refreshBossAutomationSummary(date = bossAutomationSummaryDate, op
   const selectedDateForRequest = date || getChinaDateKey();
   const platformForRequest = activeAutomationPlatform;
   const platformParamForRequest = automationPlatformParam(platformForRequest);
-  const accountIdForRequest = bossAutomationAccountId;
+  const accountIdForRequest = getCurrentBossAutomationAccountId();
   const cacheKey = automationSummaryCacheKey(platformParamForRequest, accountIdForRequest, selectedDateForRequest);
   const cached = automationSummaryCache.get(cacheKey);
   if (!options.force && cached && Date.now() - cached.cachedAt < AUTOMATION_SUMMARY_CACHE_TTL_MS) {
@@ -1663,11 +1669,26 @@ function getResumeMajorDisplay(resume = {}) {
 }
 
 function getResumeSourceDisplay(resume = {}) {
+  const explicitSourceValues = [
+    resume.sourceLabel,
+    resume.sourceName,
+    resume.sourcePlatform,
+    resume.platform,
+    resume.importSource,
+    resume.source,
+  ].map((value) => String(value || "").trim());
+  const emailSourceKind = String(resume.emailSourceKind || resume.sourceKind || "").trim().toLowerCase();
+  const hasDirectEmailSource =
+    emailSourceKind === "direct" ||
+    emailSourceKind === "direct-email" ||
+    explicitSourceValues.some((value) => /^(邮箱|email)$/i.test(value));
+  if (hasDirectEmailSource) return "邮箱";
+
   const platformLabel = (() => {
     const text = String(resume.sourcePlatform || resume.platform || resume.importSource || resume.source || resume.fileName || "").toLowerCase();
     if (/51job|job51|前程|51招聘|^51$/.test(text)) return "51";
     if (/zhilian|zhaopin|智联/.test(text)) return "智联";
-    if (/boss|boss直聘|zhipin|kanzhun|邮箱|email|mail/.test(text)) return "BOSS";
+    if (/boss|boss直聘|zhipin|kanzhun/.test(text)) return "BOSS";
     return String(resume.sourcePlatform || "").trim();
   })();
   const accountName = String(resume.accountName || resume.accountLabel || "").trim();
@@ -1690,7 +1711,7 @@ function getResumeSourceDisplay(resume = {}) {
     const emailUidMatch = accountText.match(/(?:邮箱|email|mail)[_\s-]*(\d{1,6})[_\s-]/i);
     if (emailUidMatch) return Number(emailUidMatch[1]) >= 1000 ? "和新红" : "宋峰峰";
     if (platformLabel === "51" || platformLabel === "智联") return "宋峰峰";
-    if (platformLabel === "BOSS" && /boss|boss直聘|zhipin|kanzhun|邮箱|email|mail/i.test(accountText)) return "宋峰峰";
+    if (platformLabel === "BOSS" && /boss|boss直聘|zhipin|kanzhun/i.test(accountText)) return "宋峰峰";
     return "";
   })();
   if (platformLabel && (accountName || inferredAccountName)) return `${platformLabel} ${accountName || inferredAccountName}`;
@@ -1713,7 +1734,7 @@ function getResumeSourceDisplay(resume = {}) {
   if (/boss_b|hexinhong|和新红/.test(text)) return "BOSS 和新红";
   if (/boss_a|songfengfeng|宋峰峰|宋锋峰/.test(text)) return "BOSS 宋峰峰";
   if (/boss|boss直聘/.test(text)) return "BOSS";
-  if (/email|mail|邮箱/.test(text)) return "BOSS";
+  if (/email|mail|邮箱/.test(text)) return "邮箱";
   return explicit || "未识别";
 }
 
@@ -4265,13 +4286,13 @@ function formatBrowserLaunchSummary(payload) {
 }
 
 async function oneClickLaunchAutomationBrowser() {
-  const platformLabel = "默认五窗口";
+  const platformLabel = "默认六窗口";
   const button = elements.oneClickLaunchBrowserBtn;
   if (button) button.disabled = true;
   if (elements.bossBrowserSummary) {
-    elements.bossBrowserSummary.textContent = "正在启动 BOSS 宋峰峰、BOSS 和新红、51 宋峰峰、51 和新红、智联 宋峰峰 CloakBrowser...";
+    elements.bossBrowserSummary.textContent = "正在启动 BOSS 宋峰峰、BOSS 和新红、51 宋峰峰、51 和新红、智联 宋峰峰、智联 和新红 CloakBrowser...";
   }
-  setStatus("正在启动默认五个 CloakBrowser", "is-working");
+  setStatus("正在启动默认六个 CloakBrowser", "is-working");
 
   try {
     const payload = await requestJson("/api/automation-browser/start", {
@@ -4288,7 +4309,7 @@ async function oneClickLaunchAutomationBrowser() {
     if (elements.batchSummary) elements.batchSummary.textContent = summary;
     showAutomationActions(`${platformLabel} 已打开，确认账号后可以处理消息或主动联系`);
     await refreshBossAutomationSummary();
-    setStatus(payload.message || "默认五个 CloakBrowser 已启动", "is-done");
+    setStatus(payload.message || "默认六个 CloakBrowser 已启动", "is-done");
   } catch (error) {
     console.error(error);
     const message = error.message || "一键启动浏览器失败";
@@ -4362,7 +4383,7 @@ async function processBossMessages() {
 }
 
 async function startOrPauseProcessMessages() {
-  const accountId = bossAutomationAccountId;
+  const accountId = getCurrentBossAutomationAccountId();
   const state = getProcessMessagesState(accountId);
   const toggleNow = Date.now();
   if (toggleNow - state.lastToggleAt < 1200) return;
@@ -4467,7 +4488,7 @@ async function startOrPauseProcessMessages() {
 }
 
 async function startOrPauseProactiveBossContact() {
-  const accountId = bossAutomationAccountId;
+  const accountId = getCurrentBossAutomationAccountId();
   const state = getProactiveContactState(accountId);
   const toggleNow = Date.now();
   if (toggleNow - state.lastToggleAt < 1200) return;
@@ -4618,13 +4639,14 @@ async function setPlatformAutomationPause(platform, paused, reason, accountId = 
   const normalized = normalizeAutomationPlatform(platform);
   const config = PLATFORM_AUTOMATION_CONFIG[normalized];
   if (!config) throw new Error("未知自动化平台");
-  return requestJson(`${config.basePath}/pause`, {
+  const normalizedAccountId = normalizeBossAutomationAccountId(accountId);
+  return requestJson(`${config.basePath}/pause?accountId=${encodeURIComponent(normalizedAccountId)}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      accountId,
+      accountId: normalizedAccountId,
       paused: Boolean(paused),
       pause: Boolean(paused),
       reason: reason || (paused ? "用户在招聘智能体页面点击暂停" : "用户在招聘智能体页面继续处理"),
@@ -4760,7 +4782,7 @@ function startPlatformAutomationLiveTimers(platform, mode, accountId = bossAutom
 async function pausePlatformAutomation(platform, mode) {
   const normalized = normalizeAutomationPlatform(platform);
   const actionMode = mode === "proactive" ? "proactive" : "process";
-  const accountId = bossAutomationAccountId;
+  const accountId = getCurrentBossAutomationAccountId();
   const state = getPlatformAutomationTaskState(normalized, actionMode, accountId);
   const now = Date.now();
   if (now - state.lastToggleAt < 1000) return;
@@ -4800,7 +4822,7 @@ async function runPlatformAutomation(platform, mode) {
   if (!config) return;
 
   const isProactive = mode === "proactive";
-  const accountId = bossAutomationAccountId;
+  const accountId = getCurrentBossAutomationAccountId();
   const actionMode = isProactive ? "proactive" : "process";
   const state = getPlatformAutomationTaskState(normalizedPlatform, actionMode, accountId);
   if (state.running && !state.paused) return;
@@ -4812,7 +4834,7 @@ async function runPlatformAutomation(platform, mode) {
     : String(config.positionSelect?.()?.value || "").trim();
   const targetLabel = isProactive ? getSelectedProactiveContactPositionLabel() : targetPosition;
   const actionText = isProactive ? "主动联系" : "处理消息";
-  const endpoint = `${config.basePath}/${isProactive ? "proactive-contact" : "process-messages"}`;
+  const endpoint = `${config.basePath}/${isProactive ? "proactive-contact" : "process-messages"}?accountId=${encodeURIComponent(accountId)}`;
   const body = {
     accountId,
     maxTotal: limit,
@@ -4917,7 +4939,8 @@ async function runPlatformAutomation(platform, mode) {
 async function startOrPausePlatformAutomation(platform, mode) {
   const normalized = normalizeAutomationPlatform(platform);
   const actionMode = mode === "proactive" ? "proactive" : "process";
-  const state = getPlatformAutomationTaskState(normalized, actionMode);
+  const accountId = getCurrentBossAutomationAccountId();
+  const state = getPlatformAutomationTaskState(normalized, actionMode, accountId);
   if (state.running && !state.paused) {
     await pausePlatformAutomation(normalized, actionMode);
     return;

@@ -103,6 +103,16 @@ PORT_DEFAULTS = {
         "zhilianCdp": "http://127.0.0.1:9231",
         "zhilianProfile": "cdp-browser-profile-zhilian-boss-b",
     },
+    8792: {
+        "accountId": "zhilian_b",
+        "accountName": "智联 和新红",
+        "bossCdp": "http://127.0.0.1:9231",
+        "bossProfile": "cdp-browser-profile-zhilian-boss-b",
+        "job51Cdp": "http://127.0.0.1:9225",
+        "job51Profile": "cdp-browser-profile-51job-boss-b",
+        "zhilianCdp": "http://127.0.0.1:9231",
+        "zhilianProfile": "cdp-browser-profile-zhilian-boss-b",
+    },
 }
 PORT_DEFAULT = PORT_DEFAULTS.get(PORT, PORT_DEFAULTS[8787])
 
@@ -11303,10 +11313,11 @@ class WebAgentService:
         candidate_state_key: str,
         previous_state: dict | None,
         screening: dict,
+        knowledge_result: dict | None = None,
     ) -> dict:
-        knowledge_result: dict = {}
+        knowledge_result = knowledge_result if isinstance(knowledge_result, dict) else {}
         local_question_messages = recent_unanswered_question_messages(context, previous_state)
-        if screening_has_followup_question(screening) or local_question_messages or match_company_knowledge_silent_question(context):
+        if not knowledge_result and (screening_has_followup_question(screening) or local_question_messages or match_company_knowledge_silent_question(context)):
             knowledge_result = self.answer_recruiter_knowledge_question(
                 terminal,
                 context,
@@ -11940,6 +11951,29 @@ class WebAgentService:
                 candidate_state_key,
                 previous_state=previous_state,
             )
+            if knowledge_result.get("answered") and conversation_review_requests_resume_after_answer(context, screening):
+                terminal.current_page().wait_for_timeout(random.randint(650, 1150))
+                accepted_screening = dict(screening)
+                accepted_screening["status"] = "accept"
+                accepted_screening["reason"] = accepted_screening.get("reason") or "conversation_review_answer_then_request_resume"
+                accepted_screening["acceptedByConversationReview"] = True
+                accepted_result = self.handle_basic_acceptance_and_request_resume(
+                    terminal,
+                    context,
+                    candidate_label,
+                    conversation_key,
+                    candidate_state_key,
+                    previous_state,
+                    accepted_screening,
+                    knowledge_result=knowledge_result,
+                )
+                return {
+                    **accepted_result,
+                    "candidate": candidate,
+                    "opened": opened,
+                    "screening": accepted_screening,
+                    "knowledgeAnswer": knowledge_result,
+                }
             if knowledge_result_stops_flow(knowledge_result):
                 return {
                     "message": knowledge_result.get("message") or "已按知识库回复候选人问题。",
@@ -12178,6 +12212,31 @@ class WebAgentService:
                     candidate_state_key,
                     previous_state=previous_state,
                 )
+                if knowledge_result.get("answered") and conversation_review_requests_resume_after_answer(context, screening):
+                    terminal.current_page().wait_for_timeout(random.randint(650, 1150))
+                    accepted_screening = dict(screening)
+                    accepted_screening["status"] = "accept"
+                    accepted_screening["reason"] = accepted_screening.get("reason") or "conversation_review_answer_then_request_resume"
+                    accepted_screening["acceptedByConversationReview"] = True
+                    accepted_result = self.handle_basic_acceptance_and_request_resume(
+                        terminal,
+                        context=context,
+                        candidate_label=candidate_label,
+                        conversation_key=conversation_key,
+                        candidate_state_key=candidate_state_key,
+                        previous_state=previous_state,
+                        screening=accepted_screening,
+                        knowledge_result=knowledge_result,
+                    )
+                    return {
+                        **accepted_result,
+                        "candidate": candidate,
+                        "opened": opened,
+                        "screening": accepted_screening,
+                        "knowledgeAnswer": knowledge_result,
+                        "skippedWaiting": skipped_waiting,
+                        "sentWaiting": sent_waiting,
+                    }
                 if knowledge_result_stops_flow(knowledge_result):
                     return {
                         "message": knowledge_result.get("message") or "已按知识库回复候选人问题。",
@@ -15025,13 +15084,24 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 options = payload.get("options")
                 if isinstance(options, dict):
                     SERVICE.set_options(options)
-                result = SERVICE.with_zhilian_terminal(
-                    lambda zhilian_terminal: SERVICE.zhilian_process_unread_all_positions(
-                        zhilian_terminal,
-                        max_total=int(payload.get("maxTotal") or payload.get("count") or 40),
-                        target_position=str(payload.get("targetPosition") or ""),
+                timing = SERVICE.start_operation_timing("chat", "智联处理全部未读消息")
+                raw_max_total = payload.get("maxTotal", payload.get("count", 40))
+                max_total = int(raw_max_total if raw_max_total is not None else 40)
+                try:
+                    result = SERVICE.with_zhilian_terminal(
+                        lambda zhilian_terminal: SERVICE.zhilian_process_unread_all_positions(
+                            zhilian_terminal,
+                            max_total=max_total,
+                            target_position=str(payload.get("targetPosition") or ""),
+                        )
                     )
-                )
+                    finished_timing = SERVICE.finish_operation_timing(timing, "success")
+                    if isinstance(result, dict) and finished_timing:
+                        result["timings"] = finished_timing
+                except Exception as error:
+                    finished_timing = SERVICE.finish_operation_timing(timing, "failed", str(error))
+                    self.send_json({"error": str(error), "timings": finished_timing}, status=500)
+                    return
                 self.send_json(result)
             elif path == "/api/zhilian/proactive-contact":
                 payload = self.read_json()
@@ -15110,16 +15180,40 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         return json.loads(raw or "{}")
 
     def proxy_platform_post_if_needed(self, path: str) -> bool:
-        target_port = 0
-        if path.startswith("/api/51job/") and PORT not in {8789, 8791}:
-            target_port = 8789
-        elif path.startswith("/api/zhilian/") and PORT != 8790:
-            target_port = 8790
-        if not target_port:
+        if path.startswith("/api/51job/"):
+            if PORT in {8789, 8791}:
+                return False
+        elif path.startswith("/api/zhilian/"):
+            if PORT in {8790, 8792}:
+                return False
+        else:
             return False
 
         length = int(self.headers.get("Content-Length") or "0")
         body = self.rfile.read(length) if length else b"{}"
+        payload = {}
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            if not isinstance(payload, dict):
+                payload = {}
+        except Exception:
+            payload = {}
+
+        parsed_url = urlparse(self.path)
+        query_text = parsed_url.query or ""
+        account_hint = str(
+            payload.get("accountId")
+            or payload.get("account")
+            or payload.get("sourceKey")
+            or query_text
+            or ""
+        ).lower()
+        target_port = 0
+        if path.startswith("/api/51job/"):
+            target_port = 8791 if any(token in account_hint for token in ("boss_b", "job51_b", "hexinhong", "和新红")) else 8789
+        elif path.startswith("/api/zhilian/"):
+            target_port = 8792 if any(token in account_hint for token in ("boss_b", "zhilian_b", "zhaopin_b", "hexinhong", "和新红")) else 8790
+
         content_type = self.headers.get("Content-Type") or "application/json; charset=utf-8"
         target_url = f"http://127.0.0.1:{target_port}{self.path}"
         request = Request(
@@ -15968,6 +16062,21 @@ def screening_has_followup_question(screening: dict) -> bool:
         decision = screening.get("decisionMessage") if isinstance(screening.get("decisionMessage"), dict) else {}
         last_other = decision
     return candidate_message_has_followup_question(str(last_other.get("text") or ""))
+
+
+def conversation_review_requests_resume_after_answer(context: dict, screening: dict | None = None) -> bool:
+    review = context.get("conversationReview") if isinstance(context, dict) and isinstance(context.get("conversationReview"), dict) else {}
+    if not review and isinstance(screening, dict) and isinstance(screening.get("conversationReview"), dict):
+        review = screening.get("conversationReview")
+    if not isinstance(review, dict) or not review:
+        return False
+    acceptance_status = str(review.get("acceptanceStatus") or "").strip().lower()
+    if acceptance_status and acceptance_status != "accept":
+        return False
+    recommended_action = str(review.get("recommendedNextAction") or "").strip().lower()
+    if bool(review.get("shouldRequestResume")):
+        return True
+    return recommended_action in {"answer_then_request_resume", "request_resume"}
 
 
 def is_effective_chat_text(text: str) -> bool:

@@ -70,7 +70,7 @@ const JOB51_AUTO_IMPORT_PARSE_MODE = process.env.JOB51_AUTO_IMPORT_PARSE_MODE ==
 const JOB51_A_AGENT_URL = process.env.JOB51_A_AGENT_URL || process.env.JOB51_AGENT_URL || "http://127.0.0.1:8789";
 const JOB51_B_AGENT_URL = process.env.JOB51_B_AGENT_URL || process.env.JOB51_SECONDARY_AGENT_URL || "http://127.0.0.1:8791";
 const ZHILIAN_A_AGENT_URL = process.env.ZHILIAN_A_AGENT_URL || process.env.ZHILIAN_AGENT_URL || "http://127.0.0.1:8790";
-const ZHILIAN_B_AGENT_URL = process.env.ZHILIAN_B_AGENT_URL || process.env.ZHILIAN_SECONDARY_AGENT_URL || "";
+const ZHILIAN_B_AGENT_URL = process.env.ZHILIAN_B_AGENT_URL || process.env.ZHILIAN_SECONDARY_AGENT_URL || "http://127.0.0.1:8792";
 const AUTOMATION_SUMMARY_SOURCES = {
   boss_a: {
     label: "BOSS 宋峰峰",
@@ -157,6 +157,7 @@ const DEFAULT_BROWSER_LAUNCH_TARGETS = [
   { platform: "51job", accountId: "boss_a" },
   { platform: "51job", accountId: "boss_b" },
   { platform: "zhilian", accountId: "boss_a" },
+  { platform: "zhilian", accountId: "boss_b" },
 ];
 const BOSS_BROWSER_DEBUG_URL = process.env.BOSS_BROWSER_DEBUG_URL || "http://127.0.0.1:9222";
 const EMAIL_CONFIG_PATH = path.join(ROOT, "email_config.json");
@@ -2664,9 +2665,9 @@ async function handleStartAutomationBrowser(request, response) {
     sendJson(response, 200, {
       ok: failures.length === 0,
       platform: isDefaultFour ? "multi" : targets[0]?.platform || "boss",
-      platformLabel: isDefaultFour ? "五窗口" : targets[0]?.platformLabel || "BOSS",
+      platformLabel: isDefaultFour ? "六窗口" : targets[0]?.platformLabel || "BOSS",
       accountId: isDefaultFour ? "default-four" : targets[0]?.accountId || "all",
-      accountLabel: isDefaultFour ? "默认五窗口" : targets[0]?.accountName || "全部账号",
+      accountLabel: isDefaultFour ? "默认六窗口" : targets[0]?.accountName || "全部账号",
       targets,
       failures,
       message: `${successLabel}${failureLabel}${needsLoginCount ? "，有账号需要登录" : ""}`,
@@ -4021,8 +4022,10 @@ async function proxyPlatformAutomationResponse(request, response, platform, targ
   try {
     const rawBody = request.method === "GET" || request.method === "HEAD" ? null : await readRequestBuffer(request);
     const body = parseJsonRequestBuffer(rawBody);
-    const accountId = normalizeBossAutomationAccountId(body.accountId || "all");
+    const requestUrl = new URL(request.url, `http://${HOST}:${PORT}`);
+    const accountId = normalizeBossAutomationAccountId(body.accountId || requestUrl.searchParams.get("accountId") || "all");
     const sourceKeys = platformAutomationSources(normalizedPlatform, accountId);
+    console.log(`[automation-proxy] platform=${normalizedPlatform} account=${accountId} sourceKeys=${sourceKeys.join(",")} path=${targetPath}`);
     const results = await Promise.all(
       sourceKeys.map((sourceKey) =>
         fetchAgentJson(sourceKey, targetPath, {
@@ -7597,6 +7600,7 @@ async function serveStatic(request, response) {
     const content = await fs.readFile(targetPath);
     response.writeHead(200, {
       "Content-Type": MIME_TYPES[path.extname(targetPath)] || "application/octet-stream",
+      "Cache-Control": "no-store",
     });
     response.end(content);
   } catch {
