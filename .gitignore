@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node / frontend
+node_modules/
+dist/
+build/
+.vite/
+
+# Runtime logs
+*.log
+*.err.log
+*.out.log
+*.err.txt
+*.out.txt
+*.stdout.log
+*.stderr.log
+*.pid
+
+# Browser profiles and login state
+cdp-browser-profile*/
+chrome-profile*/
+edge-profile*/
+
+# Candidate files, resumes, uploads, and generated runtime data
+agent_uploads/
+logs/
+reports/
+tmp_*/
+tmp*/
+patchwork-recruit-gpt/boss-resumes/
+patchwork-recruit-gpt/data/
+patchwork-recruit-gpt/pre_restore*/
+patchwork-recruit-gpt/pre_rollback*/
+*_backup_*/
+51_stats_isolation_backup_*/
+
+# Sensitive local configuration
+browser_agent.env
+patchwork-recruit-gpt/email_config.json
+
+# Runtime state / statistics
+agent_chat_memory*.json
+agent_chat_state*.json
+agent_web_events*.json
+agent_files*.json
+browser_agent_memory.json
+recruiter_batch_reports*.json
+recruiter_decision_log*.json
+recruiter_resume_downloads*.json
+job51_resume_downloads*.json
+recruiter_user_questions*.json
+recruiter_unclear_questions*.json
+recruiter_common_phrase_cache*.json
+recruiter_proactive_action_log*.jsonl
+
+# Local backups and screenshots
+*.bak
+*.bak_*
+*.backup*
+*.before_*
+spawn_test*.txt
+*.tmp
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+*.doc
+*.docx
+*.xls
+*.xlsx

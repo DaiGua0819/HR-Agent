@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "updatedAt": "2026-05-25",
+  "name": "BOSS 招聘智能体工作流架构",
+  "layers": [
+    {
+      "id": "planner",
+      "name": "Planner 任务规划层",
+      "responsibility": "把用户目标路由到稳定的业务 functioncall，避免让大模型直接猜页面按钮",
+      "primaryTools": [
+        "recruiter_process_unread_all_positions",
+        "recruiter_process_current_position",
+        "recruiter_answer_candidate_questions",
+        "recruiter_request_resume",
+        "recruiter_proactive_contact_recommended_candidates"
+      ]
+    },
+    {
+      "id": "state",
+      "name": "Dialogue State 候选人状态层",
+      "responsibility": "按候选人保存当前阶段、下一步动作、是否主动联系来源、是否求过简历、最近会话复盘",
+      "stateFields": [
+        "status",
+        "stage",
+        "agentWorkflow",
+        "agentNextAction",
+        "agentState",
+        "conversationReview",
+        "candidateIdentity"
+      ],
+      "storage": "agent_chat_state.json"
+    },
+    {
+      "id": "llm_judgement",
+      "name": "LLM 判断层",
+      "responsibility": "对近几轮聊天做结构化判断，识别未回复问题、接受/拒绝/模糊、岗位筛选条件是否满足",
+      "fallback": "模型失败时回退到规则判定"
+    },
+    {
+      "id": "job_skill",
+      "name": "岗位 Skill 层",
+      "responsibility": "每个岗位独立配置匹配名称、必问问题、通过规则、不合适规则、知识库回答",
+      "storage": "boss_chat_rules.json",
+      "principle": "横向拓展岗位时只新增或修改岗位 section，不复制 AI 实习生流程"
+    },
+    {
+      "id": "tooling",
+      "name": "工具系统 Function Call 层",
+      "responsibility": "把页面动作封装成稳定工具：打开未读、读历史、答疑、发话术、问筛选题、求简历、跳过、主动打招呼"
+    },
+    {
+      "id": "evaluation",
+      "name": "评估与复盘层",
+      "responsibility": "记录每个候选人的判断依据、筛选进度、下一步动作和聊天证据，方便人工复查",
+      "storage": [
+        "recruiter_decision_log.json",
+        "recruiter_batch_reports.json",
+        "recruiter_user_questions.json"
+      ]
+    },
+    {
+      "id": "monitoring",
+      "name": "观测与监控层",
+      "responsibility": "Web 端今日概览、处理明细、原始聊天窗口、智能体决策查看"
+    }
+  ],
+  "decisionPriority": [
+    "未配置岗位直接记录并跳过",
+    "候选人有未回复问题时先答疑",
+    "岗位筛选问题未问完时继续问下一个必要问题",
+    "硬性条件明确不满足时跳过",
+    "全部硬性条件满足后求简历",
+    "模糊/考虑中/等待时不推进动作"
+  ]
+}

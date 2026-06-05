@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "default": {
+    "category": "default",
+    "template": "你好，我这边想跟你确认下目前求职意向与可沟通时间。"
+  },
+  "rules": [
+    {
+      "category": "java_backend",
+      "match": {
+        "includes_any": ["Java", "后端", "Spring", "微服务"],
+        "regex_any": ["\\bjava\\b", "spring(boot)?"]
+      },
+      "template": "你好，我看你是做 Java/后端方向的，我这边有个{job}岗位想和你简单沟通下：你现在主要技术栈和期望城市/薪资是怎样的？"
+    },
+    {
+      "category": "frontend",
+      "match": {
+        "includes_any": ["前端", "React", "Vue", "TypeScript"],
+        "regex_any": ["\\breact\\b", "\\bvue\\b", "typescript"]
+      },
+      "template": "你好，我这边在招{job}，看到你前端技术栈匹配度挺高。方便说下你目前在用的框架/工程化、以及可入职时间吗？"
+    },
+    {
+      "category": "intern",
+      "match": {
+        "includes_any": ["实习", "应届", "2026", "在校"],
+        "regex_any": []
+      },
+      "template": "你好，我这边有{job}实习/校招机会，想了解下你毕业时间、可到岗时间和期望方向（后端/前端/算法）可以吗？"
+    }
+  ],
+  "positionReplies": {
+    "AI应用开发实习生": {
+      "category": "ai_app_intern",
+      "template": "你好，我看到你投递的是{job}，想先了解下你做过的大模型/Agent项目，以及每周可实习几天？",
+      "initialCommonPhrase": "我先介绍下基本情况，日薪150，偶尔加班，加班1.5倍薪资，单休，需要线下工作，并且最少实习六个月，工作地点都能接受吗",
+      "rolePrompt": "你是一名招聘者，正在和投递 AI应用开发实习生 的候选人沟通。你的目标是礼貌确认候选人的大模型/Agent项目经验、可实习时间、到岗时间和技术匹配度。回复要像真人HR，简短自然，不要一次问太多问题。",
+      "talkingPoints": ["Agent/RAG/Workflow/MCP/Coze 项目经历", "工程落地能力", "每周可实习天数和到岗时间"],
+      "screeningQuestions": ["你最近做过的大模型或Agent项目里，主要负责哪一块？", "你每周大概可以实习几天，能持续多久？"]
+    },
+    "AI应用开发工程师": {
+      "category": "ai_app_engineer",
+      "template": "你好，我看到你投递的是{job}，想了解下你在Agent、RAG或大模型应用落地方面的项目经验。"
+    }
+  },
+  "placeholders": {
+    "job": "岗位名称（可选）"
+  }
+}

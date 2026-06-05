@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>招聘智能体 - 简历信息解析</title>
+    <link rel="stylesheet" href="./styles.css?v=20260603-cloak-four-launch" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Resume Parser</p>
+            <h1>招聘智能体</h1>
+          </div>
+          <div class="status-pill" id="statusPill">等待上传</div>
+        </header>
+
+        <section class="panel-grid">
+          <div class="upload-panel">
+            <div class="upload-zone" id="dropZone">
+              <input id="resumeInput" type="file" accept="application/pdf,.pdf" multiple />
+              <div class="upload-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" role="img">
+                  <path d="M12 3v12m0-12 4.5 4.5M12 3 7.5 7.5M4 14v4a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-4" />
+                </svg>
+              </div>
+              <h2>上传 PDF 简历</h2>
+              <p>默认把 PDF 文件交给 GPT 直读并返回结构化信息</p>
+              <button class="primary-btn" type="button" id="pickFileBtn">选择简历（可多选）</button>
+            </div>
+
+            <div class="folder-import-card">
+              <div>
+                <span class="file-label">本地文件夹</span>
+                <strong>BOSS 简历文件夹</strong>
+                <small id="bossFolderSummary">先扫描，确认后才会开始解析</small>
+              </div>
+              <div class="folder-import-actions">
+                <button class="ghost-btn" type="button" id="scanBossFolderBtn">扫描文件夹</button>
+                <button class="ghost-btn" type="button" id="importBossFolderBtn" disabled>确认导入</button>
+              </div>
+            </div>
+
+            <div class="folder-import-card">
+              <div>
+                <span class="file-label">本地文件夹</span>
+                <strong>智联简历文件夹</strong>
+                <small id="zhilianFolderSummary">同步智联下载目录，确认后入库解析</small>
+              </div>
+              <div class="folder-import-actions">
+                <button class="ghost-btn" type="button" id="scanZhilianFolderBtn">扫描智联</button>
+                <button class="ghost-btn" type="button" id="importZhilianFolderBtn" disabled>确认导入</button>
+              </div>
+            </div>
+
+            <div class="folder-import-card">
+              <div>
+                <span class="file-label">邮箱附件</span>
+                <strong>保存邮箱简历到本地</strong>
+                <small id="emailImportSummary">从配置邮箱下载 PDF / Word 简历附件到 boss-resumes</small>
+              </div>
+              <div class="folder-import-actions">
+                <button class="ghost-btn" type="button" id="importEmailBtn">下载邮箱简历</button>
+                <button class="ghost-btn" type="button" id="toggleEmailAutoBtn">自动检测</button>
+              </div>
+            </div>
+
+            <div class="folder-import-card">
+              <div>
+                <span class="file-label">平台控制台</span>
+                <strong>招聘平台自动化</strong>
+                <small id="bossBrowserSummary">选择平台执行招聘自动化</small>
+              </div>
+              <div class="folder-import-actions automation-launch-actions">
+                <button class="primary-btn" type="button" id="bossAutomationBtn" onclick="window.prepareBossAutomationPanel?.(); window.startBossAutomationFallback?.()">BOSS</button>
+                <button class="primary-btn" type="button" id="job51QuickAutomationBtn">51</button>
+                <button class="primary-btn" type="button" id="zhilianQuickAutomationBtn">智联</button>
+                <button class="ghost-btn" type="button" id="oneClickLaunchBrowserBtn">一键启动</button>
+              </div>
+            </div>
+
+            <div class="file-card" id="fileCard" hidden>
+              <div>
+                <span class="file-label">当前文件</span>
+                <strong id="fileName">-</strong>
+              </div>
+              <button class="ghost-btn" type="button" id="clearBtn">重新上传</button>
+            </div>
+          </div>
+
+          <div class="side-panel-stack">
+            <section class="automation-panel" id="automationPanel" hidden>
+              <div class="automation-panel-header">
+                <div>
+                  <p class="eyebrow">Automation Stats</p>
+                  <h2 id="automationTitle">招聘平台自动化统计</h2>
+                </div>
+                <div class="automation-toolbar">
+                  <div class="automation-platforms" aria-label="招聘平台统计">
+                    <button class="automation-source-btn" type="button" data-automation-source="boss_a">BOSS 宋峰峰</button>
+                    <button class="automation-source-btn" type="button" data-automation-source="boss_b">BOSS 和新红</button>
+                    <button class="automation-source-btn" type="button" data-automation-source="51job">51job</button>
+                    <button class="automation-source-btn is-active" type="button" data-automation-source="zhilian">智联</button>
+                  </div>
+                  <button class="ghost-btn small" type="button" id="refreshAutomationStatsBtn">刷新统计</button>
+                </div>
+              </div>
+              <div class="automation-stats-grid" id="automationStatsGrid">
+                <article class="automation-stat"><span>今日运行</span><strong>-</strong></article>
+                <article class="automation-stat"><span>询问问题</span><strong>-</strong></article>
+                <article class="automation-stat"><span>求简历</span><strong>-</strong></article>
+                <article class="automation-stat"><span>获取简历</span><strong>-</strong></article>
+              </div>
+              <div class="automation-meta" id="automationStatsMeta">等待读取自动化统计</div>
+            </section>
+
+            <div class="result-panel">
+            <div id="resumeInfoPanel">
+              <div class="section-heading">
+                <p class="eyebrow">AI Extracted Info</p>
+                <h2>基础信息</h2>
+              </div>
+
+              <div class="info-grid">
+                <article class="info-item">
+                  <span>姓名</span>
+                  <strong id="nameValue">-</strong>
+                </article>
+                <article class="info-item">
+                  <span>电话</span>
+                  <strong id="phoneValue">-</strong>
+                </article>
+                <article class="info-item">
+                  <span>性别</span>
+                  <strong id="genderValue">-</strong>
+                </article>
+                <article class="info-item">
+                  <span>专业</span>
+                  <strong id="jobTypeValue">-</strong>
+                </article>
+                <article class="info-item">
+                  <span>学校</span>
+                  <strong id="schoolValue">-</strong>
+                </article>
+                <article class="info-item">
+                  <span>学校层次</span>
+                  <strong id="schoolLevelValue">-</strong>
+                </article>
+                <article class="info-item wide">
+                  <span>毕业时间</span>
+                  <strong id="graduationValue">-</strong>
+                </article>
+                <article class="info-item wide">
+                  <span>匹配度</span>
+                  <strong id="matchScoreValue">-</strong>
+                </article>
+              </div>
+
+            </div>
+
+            <div class="boss-action-panel" id="bossActionPanel" hidden>
+              <div class="section-heading">
+                <p class="eyebrow">Platform Automation</p>
+                <h2>自动化操作</h2>
+              </div>
+              <div class="automation-platform-switcher" id="automationPlatformSwitcher" aria-label="选择招聘平台">
+                <button class="account-switch-btn is-active" type="button" data-automation-platform="boss">BOSS</button>
+                <button class="account-switch-btn" type="button" data-automation-platform="job51">51</button>
+                <button class="account-switch-btn" type="button" data-automation-platform="zhilian">智联</button>
+              </div>
+              <div class="automation-action-grid">
+                <button class="primary-btn action-button" type="button" id="processBossMessagesBtn">处理消息</button>
+                <button class="ghost-btn action-button" type="button" id="proactiveBossContactBtn">主动联系</button>
+              </div>
+              <div class="automation-account-switcher" id="bossAccountSwitcher" aria-label="选择账号">
+                <button class="account-switch-btn is-active" type="button" data-account-id="all">全部账号</button>
+                <button class="account-switch-btn" type="button" data-account-id="boss_a">宋峰峰</button>
+                <button class="account-switch-btn" type="button" data-account-id="boss_b">和新红</button>
+              </div>
+              <label class="automation-speed-control" id="bossAutomationSpeedControl" for="bossAutomationSpeedSelect">
+                <span>操作倍速</span>
+                <select id="bossAutomationSpeedSelect">
+                  <option value="1">原速度</option>
+                  <option value="1.5">1.5 倍速</option>
+                  <option value="1.75" selected>1.75 倍速</option>
+                  <option value="2">2 倍速</option>
+                </select>
+              </label>
+              <div class="automation-run-panel" id="processMessagesControlPanel" hidden>
+                <button class="primary-btn action-button" type="button" id="startProcessMessagesBtn">开始处理</button>
+                <span class="automation-run-status" id="processMessagesStatus">等待开始</span>
+              </div>
+              <div class="automation-config-panel" id="proactiveContactControlPanel" hidden>
+                <button class="primary-btn action-button" type="button" id="startProactiveContactBtn">开始主动联系</button>
+                <label class="automation-field" for="proactiveContactPositionSelect">
+                  <span>主动联系岗位</span>
+                  <select id="proactiveContactPositionSelect"></select>
+                </label>
+                <label class="automation-field compact" for="proactiveContactCountInput">
+                  <span>人数上限</span>
+                  <input id="proactiveContactCountInput" type="number" min="1" max="30" step="1" value="10" />
+                </label>
+                <div class="proactive-rule-panel" id="proactiveRulePanel">
+                  <div class="proactive-rule-head">
+                    <strong>打招呼筛选规则</strong>
+                    <label class="automation-field compact" for="proactiveRuleMode">
+                      <span>规则模式</span>
+                      <select id="proactiveRuleMode">
+                        <option value="default">岗位默认规则</option>
+                        <option value="custom">自定义规则</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="proactive-rule-grid" id="proactiveCustomRules" hidden>
+                    <label class="automation-field compact" for="proactiveMinEducationSelect">
+                      <span class="proactive-condition-title">
+                        <input id="proactiveRequireEducationCheck" type="checkbox" checked />
+                        最低学历
+                      </span>
+                      <select id="proactiveMinEducationSelect">
+                        <option value="">不限</option>
+                        <option value="college">大专及以上</option>
+                        <option value="bachelor">本科及以上</option>
+                        <option value="master">硕士及以上</option>
+                      </select>
+                    </label>
+                    <label class="automation-field compact" for="proactiveMaxAgeInput">
+                      <span class="proactive-condition-title">
+                        <input id="proactiveRequireAgeCheck" type="checkbox" checked />
+                        年龄小于
+                      </span>
+                      <input id="proactiveMaxAgeInput" type="number" min="16" max="70" step="1" placeholder="不限" />
+                    </label>
+                    <label class="automation-field compact" for="proactiveKeywordModeSelect">
+                      <span class="proactive-condition-title">
+                        <input id="proactiveRequireKeywordCheck" type="checkbox" checked />
+                        关键词规则
+                      </span>
+                      <select id="proactiveKeywordModeSelect">
+                        <option value="any">满足任意一个</option>
+                        <option value="all">必须全部满足</option>
+                      </select>
+                    </label>
+                    <label class="automation-field compact" for="proactiveUnknownPolicySelect">
+                      <span>信息缺失</span>
+                      <select id="proactiveUnknownPolicySelect">
+                        <option value="skip">跳过</option>
+                        <option value="allow">放行</option>
+                      </select>
+                    </label>
+                    <label class="automation-field wide" for="proactiveKeywordInput">
+                      <span>关键词</span>
+                      <textarea id="proactiveKeywordInput" rows="2" placeholder="例如：工业涂料、配方、流变助剂"></textarea>
+                    </label>
+                  </div>
+                </div>
+                <span class="automation-run-status" id="proactiveContactStatus">请选择岗位后开始</span>
+              </div>
+              <section class="automation-summary" id="bossAutomationSummaryPanel" hidden>
+                <div class="automation-summary-head">
+                  <div class="automation-summary-title">
+                    <strong id="bossAutomationSummaryTitle">今日概览</strong>
+                    <input id="bossAutomationDateInput" type="date" aria-label="选择概览日期" />
+                    <button class="ghost-btn small summary-date-btn" type="button" id="bossAutomationTodayBtn">今天</button>
+                    <button class="ghost-btn small summary-date-btn" type="button" id="bossAutomationAllDatesBtn">全部</button>
+                    <div class="date-chip-row" id="bossAutomationSelectedDates"></div>
+                  </div>
+                  <span id="bossAutomationUpdatedAt">-</span>
+                </div>
+                <div class="automation-stats-grid" id="bossAutomationStatsGrid"></div>
+                <div class="automation-position-breakdown" id="bossAutomationPositionBreakdown" hidden></div>
+              </section>
+              <p class="panel-note" id="bossActionHint">已启动后可以在这里执行招聘沟通流程</p>
+            </div>
+
+            <section class="platform-automation-panel" id="platformAutomationPanel" hidden>
+              <div class="section-heading">
+                <p class="eyebrow">Platform Automation</p>
+                <h2>多平台自动化</h2>
+              </div>
+              <div class="platform-automation-grid">
+                <article class="platform-automation-card" data-platform="51job">
+                  <div class="platform-card-head">
+                    <div>
+                      <strong>51job</strong>
+                      <small>处理未读消息或按目标岗位主动联系</small>
+                    </div>
+                    <span class="platform-state" id="job51AutomationStatus">等待操作</span>
+                  </div>
+                  <div class="platform-control-grid">
+                    <label class="automation-field compact" for="job51MaxTotalInput">
+                      <span>处理上限</span>
+                      <input id="job51MaxTotalInput" type="number" min="1" max="120" step="1" value="40" />
+                    </label>
+                    <label class="automation-field" for="job51ProactivePositionSelect">
+                      <span>主动联系岗位</span>
+                      <select id="job51ProactivePositionSelect">
+                        <option value="HRBP">HRBP</option>
+                        <option value="膨润土销售人员">膨润土销售人员</option>
+                        <option value="销售管培生">销售管培生</option>
+                        <option value="电气工程师">电气工程师</option>
+                        <option value="应用技术经理（工业涂料领域）">应用技术经理</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="platform-action-row">
+                    <button class="primary-btn" type="button" id="job51ProcessMessagesBtn">处理消息</button>
+                    <button class="ghost-btn" type="button" id="job51ProactiveContactBtn">主动联系</button>
+                  </div>
+                </article>
+
+                <article class="platform-automation-card" data-platform="zhilian">
+                  <div class="platform-card-head">
+                    <div>
+                      <strong>智联</strong>
+                      <small>复用 BOSS 消息处理规则和岗位筛选逻辑</small>
+                    </div>
+                    <span class="platform-state" id="zhilianAutomationStatus">等待操作</span>
+                  </div>
+                  <div class="platform-control-grid">
+                    <label class="automation-field compact" for="zhilianMaxTotalInput">
+                      <span>处理上限</span>
+                      <input id="zhilianMaxTotalInput" type="number" min="1" max="120" step="1" value="40" />
+                    </label>
+                    <label class="automation-field" for="zhilianProactivePositionSelect">
+                      <span>主动联系岗位</span>
+                      <select id="zhilianProactivePositionSelect">
+                        <option value="HRBP">HRBP</option>
+                        <option value="电气工程师">电气工程师</option>
+                        <option value="膨润土销售人员">膨润土销售人员</option>
+                        <option value="销售管培生">销售管培生</option>
+                        <option value="应用技术经理（工业涂料领域）">应用技术经理</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="platform-action-row">
+                    <button class="primary-btn" type="button" id="zhilianProcessMessagesBtn">处理消息</button>
+                    <button class="ghost-btn" type="button" id="zhilianProactiveContactBtn">主动联系</button>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            </div>
+          </div>
+        </section>
+
+        <section class="batch-section is-collapsed" id="batchPanel">
+          <button class="batch-toggle" type="button" id="batchToggleBtn" aria-expanded="false">批量任务</button>
+          <div class="batch-content" id="batchContent" aria-hidden="true">
+            <div class="batch-toolbar">
+              <span id="batchSummary">等待上传</span>
+              <div class="batch-actions">
+                <button class="ghost-btn small" type="button" id="batchPrevBtn" disabled>上一页</button>
+                <span id="batchPageInfo">1 / 1</span>
+                <button class="ghost-btn small" type="button" id="batchNextBtn" disabled>下一页</button>
+                <button class="ghost-btn small" type="button" id="pauseBatchBtn" disabled>暂停</button>
+                <button class="ghost-btn small" type="button" id="resumeBatchBtn" disabled>继续</button>
+                <button class="ghost-btn small danger" type="button" id="cancelBatchBtn" disabled>取消</button>
+                <button class="ghost-btn small" type="button" id="retryFailedBtn" disabled>重试失败项</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="batch-table">
+                <thead>
+                  <tr>
+                    <th>文件名</th>
+                    <th>状态</th>
+                    <th>姓名</th>
+                    <th>电话</th>
+                    <th>岗位</th>
+                    <th>匹配度</th>
+                    <th>当前排名</th>
+                    <th>结果</th>
+                  </tr>
+                </thead>
+                <tbody id="batchTableBody">
+                  <tr>
+                    <td colspan="8">暂无批量任务</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="job-nav-section">
+          <div class="section-heading">
+            <p class="eyebrow">Job Tables</p>
+            <h2>岗位入口</h2>
+          </div>
+          <div class="job-nav" id="jobNav"></div>
+        </section>
+
+        <section class="rule-section is-collapsed" id="rulePanel">
+          <button class="batch-toggle" type="button" id="ruleToggleBtn" aria-expanded="false">评分规则 / 学习回灌</button>
+          <div class="batch-content" id="ruleContent" aria-hidden="true">
+            <div class="batch-toolbar">
+              <span id="ruleSummary">按当前岗位查看评分规则与学习回灌建议</span>
+              <button class="ghost-btn small" type="button" id="scoringRulesBtn" aria-expanded="true">收起评分细则</button>
+            </div>
+            <div class="scoring-rules-box" id="scoringRulesBox">
+              <div class="section-heading compact">
+                <p class="eyebrow">Scoring Rules</p>
+                <h2 id="scoringRulesTitle">当前岗位评分细则</h2>
+              </div>
+              <p id="scoringRulesVersion">-</p>
+              <div class="scoring-rules-grid" id="scoringRulesGrid">正在加载当前评分细则...</div>
+              <div class="adopted-rules">
+                <strong>已采纳补充规则</strong>
+                <ul id="adoptedRulesList">
+                  <li>暂无已采纳补充规则</li>
+                </ul>
+              </div>
+            </div>
+            <div class="rule-table-wrap">
+              <table class="rule-table">
+                <thead>
+                  <tr>
+                    <th>状态</th>
+                    <th>来源</th>
+                    <th>建议</th>
+                    <th>反馈摘要</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="ruleTableBody">
+                  <tr>
+                    <td colspan="5">暂无规则建议</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="records-section">
+          <div class="section-heading">
+            <p class="eyebrow">Resume Database</p>
+            <h2 id="recordsTitle">简历库</h2>
+          </div>
+          <div class="integration-row" hidden>
+            <span id="feishuStatus">飞书：未检测</span>
+            <button class="ghost-btn small" type="button" id="testFeishuBtn">测试飞书连接</button>
+          </div>
+          <div class="records-filter">
+            <label>
+              <span>关键词</span>
+              <input id="recordSearchInput" type="search" placeholder="姓名 / 电话 / 专业 / 学校" />
+            </label>
+            <div class="filter-field">
+              <span>学校层次（可多选）</span>
+              <select id="schoolLevelFilter" multiple data-checkbox-filter data-placeholder="全部">
+                <option value="">全部</option>
+                <option value="985 / 211 / 双一流">985 / 211 / 双一流</option>
+                <option value="211 / 双一流">211 / 双一流</option>
+                <option value="双一流">双一流</option>
+                <option value="一本">一本</option>
+                <option value="二本">二本</option>
+                <option value="大专">大专</option>
+                <option value="海外院校">海外院校</option>
+                <option value="待确认">待确认</option>
+              </select>
+            </div>
+            <div class="filter-field">
+              <span>筛选结论（可多选）</span>
+              <select id="decisionFilter" multiple data-checkbox-filter data-placeholder="全部">
+                <option value="">全部</option>
+                <option value="pending">待定</option>
+                <option value="suitable">合适</option>
+                <option value="interview">进入面试</option>
+                <option value="unsuitable">不合适</option>
+              </select>
+            </div>
+            <div class="filter-field">
+              <span>毕业届别（可多选）</span>
+              <select id="graduationYearFilter" multiple data-checkbox-filter data-placeholder="全部">
+                <option value="">全部</option>
+                <option value="26">26届</option>
+                <option value="27">27届</option>
+                <option value="28">28届</option>
+              </select>
+            </div>
+            <label>
+              <span>排序</span>
+              <select id="recordSortSelect">
+                <option value="score" selected>匹配度优先</option>
+                <option value="created-desc">最新入库</option>
+                <option value="created-asc">最早入库</option>
+              </select>
+            </label>
+            <div class="filter-field">
+              <span>显示字段（可多选）</span>
+              <select id="recordFieldDisplaySelect" multiple data-checkbox-filter data-placeholder="选择字段">
+                <option value="name" selected>姓名</option>
+                <option value="gender" selected>性别</option>
+                <option value="phone" selected>电话</option>
+                <option value="major" selected>专业</option>
+                <option value="school" selected>学校</option>
+                <option value="schoolLevel" selected>学校层次</option>
+                <option value="graduation" selected>毕业时间</option>
+                <option value="matchScore" selected>匹配度</option>
+                <option value="source" selected>来源</option>
+                <option value="createdAt" selected>入库时间</option>
+                <option value="decision" selected>筛选结论</option>
+              </select>
+            </div>
+            <label>
+              <span>最低匹配度</span>
+              <input id="minScoreFilter" type="number" min="0" max="100" placeholder="0" />
+            </label>
+            <label>
+              <span>最高匹配度</span>
+              <input id="maxScoreFilter" type="number" min="0" max="100" placeholder="100" />
+            </label>
+            <label class="inline-filter">
+              <input id="manualReviewFilter" type="checkbox" />
+              <span>只看需复核</span>
+            </label>
+          </div>
+          <div class="resume-calendar-panel">
+            <div class="resume-calendar-control">
+              <label>
+                <span>入库日期</span>
+                <input id="resumeCalendarInput" type="date" />
+              </label>
+              <button class="ghost-btn small" type="button" id="resumeCalendarTodayBtn">今天</button>
+              <button class="ghost-btn small" type="button" id="resumeCalendarAllBtn">全部</button>
+              <div class="date-chip-row" id="resumeCalendarSelectedDates"></div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="candidate-table" id="resumeTable">
+              <thead>
+                <tr id="resumeTableHeadRow">
+                  <th>排名</th>
+                  <th>姓名</th>
+                  <th>性别</th>
+                  <th>电话</th>
+                  <th>专业</th>
+                  <th>学校</th>
+                  <th>学校层次</th>
+                  <th>毕业时间</th>
+                  <th>匹配度</th>
+                  <th>来源</th>
+                  <th>入库时间</th>
+                  <th>筛选结论</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="resumeTableBody">
+                <tr>
+                  <td colspan="13">暂无简历记录</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="records-pagination">
+            <span id="recordsPageSummary">第 1 / 1 页</span>
+            <div class="records-page-actions">
+              <button class="ghost-btn small" type="button" id="recordsPrevBtn" disabled>上一页</button>
+              <button class="ghost-btn small" type="button" id="recordsNextBtn" disabled>下一页</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="edit-section" id="editPanel" hidden>
+          <div class="section-heading">
+            <p class="eyebrow">Edit Resume</p>
+            <h2>查看 / 编辑基础信息</h2>
+          </div>
+          <div class="edit-layout">
+            <form class="edit-form" id="editForm">
+              <input type="hidden" id="editId" />
+              <label>
+                <span>姓名</span>
+                <input id="editName" type="text" />
+              </label>
+              <label>
+                <span>电话</span>
+                <input id="editPhone" type="text" />
+              </label>
+              <label>
+                <span>性别</span>
+                <select id="editGender">
+                  <option value="">未识别</option>
+                  <option value="男">男</option>
+                  <option value="女">女</option>
+                </select>
+              </label>
+              <label>
+                <span>岗位</span>
+                <select id="editJobType">
+                  <option value="应用技术经理（工业涂料领域）">应用技术经理（工业涂料领域）</option>
+                  <option value="膨润土销售人员">膨润土销售人员</option>
+                  <option value="销售管培生">销售管培生</option>
+                  <option value="HRBP">HRBP</option>
+                  <option value="国际业务管培生">国际业务管培生</option>
+                  <option value="销售工程师（石油钻井泥浆膨润土）_湖州">销售工程师（石油钻井泥浆膨润土）_湖州</option>
+                  <option value="电气工程师">电气工程师</option>
+                </select>
+              </label>
+              <label>
+                <span>学校</span>
+                <input id="editSchool" type="text" />
+              </label>
+              <label>
+                <span>专业</span>
+                <input id="editMajor" type="text" />
+              </label>
+              <label>
+                <span>学校层次</span>
+                <input id="editSchoolLevel" type="text" />
+              </label>
+              <label>
+                <span>毕业时间</span>
+                <input id="editGraduation" type="text" />
+              </label>
+              <label>
+                <span>匹配度</span>
+                <input id="editMatchScore" type="number" min="0" max="100" />
+              </label>
+              <div class="form-actions">
+                <button class="primary-btn" type="submit">保存修改</button>
+                <button class="ghost-btn" type="button" id="reEvaluateBtn">按当前规则重评</button>
+                <button class="ghost-btn" type="button" id="closeEditBtn">关闭</button>
+              </div>
+            </form>
+            <div class="detail-insights">
+              <article class="insight-card">
+                <span>评分版本</span>
+                <strong id="detailScoringVersionName">-</strong>
+                <p id="detailScoringVersion">-</p>
+                <button class="ghost-btn small" type="button" id="detailVersionRulesBtn">查看该版本规则</button>
+              </article>
+              <article class="insight-card">
+                <span>解析置信度</span>
+                <strong id="detailConfidence">-</strong>
+              </article>
+              <article class="insight-card is-wide">
+                <span>评分摘要</span>
+                <p id="detailScoreSummary">暂无评分拆解</p>
+              </article>
+              <article class="insight-card is-wide">
+                <span>风险 / 扣分点</span>
+                <ul id="detailScoreRisks">
+                  <li>暂无风险提示</li>
+                </ul>
+              </article>
+              <article class="insight-card is-wide">
+                <span>解析提醒</span>
+                <ul id="detailParseWarnings">
+                  <li>暂无解析提醒</li>
+                </ul>
+              </article>
+            </div>
+            <form class="feedback-form" id="feedbackForm">
+              <div class="section-heading compact">
+                <p class="eyebrow">Human Feedback</p>
+                <h2>筛选反馈</h2>
+              </div>
+              <label>
+                <span>筛选结论</span>
+                <select id="feedbackDecision">
+                  <option value="pending">待定</option>
+                  <option value="suitable">合适</option>
+                  <option value="interview">进入面试</option>
+                  <option value="unsuitable">不合适</option>
+                </select>
+              </label>
+              <div class="tag-group" id="positiveTagsGroup">
+                <span>正向标签</span>
+                <label><input type="checkbox" name="positiveTags" value="Agent项目完整" />Agent项目完整</label>
+                <label><input type="checkbox" name="positiveTags" value="RAG经验" />RAG经验</label>
+                <label><input type="checkbox" name="positiveTags" value="工程落地" />工程落地</label>
+                <label><input type="checkbox" name="positiveTags" value="职责明确" />职责明确</label>
+                <label><input type="checkbox" name="positiveTags" value="技术栈匹配" />技术栈匹配</label>
+              </div>
+              <div class="tag-group" id="negativeTagsGroup">
+                <span>负向标签</span>
+                <label><input type="checkbox" name="negativeTags" value="无Agent项目" />无Agent项目</label>
+                <label><input type="checkbox" name="negativeTags" value="项目太浅" />项目太浅</label>
+                <label><input type="checkbox" name="negativeTags" value="只有Demo" />只有Demo</label>
+                <label><input type="checkbox" name="negativeTags" value="职责不清" />职责不清</label>
+                <label><input type="checkbox" name="negativeTags" value="技术栈不匹配" />技术栈不匹配</label>
+                <label><input type="checkbox" name="negativeTags" value="表达不清" />表达不清</label>
+              </div>
+              <div class="tag-group" id="dimensionsGroup">
+                <span>影响维度</span>
+                <label><input type="checkbox" name="dimensions" value="项目深度" />项目深度</label>
+                <label><input type="checkbox" name="dimensions" value="技术栈" />技术栈</label>
+                <label><input type="checkbox" name="dimensions" value="学校背景" />学校背景</label>
+                <label><input type="checkbox" name="dimensions" value="岗位意愿" />岗位意愿</label>
+                <label><input type="checkbox" name="dimensions" value="表达质量" />表达质量</label>
+              </div>
+              <label>
+                <span>详细原因</span>
+                <textarea id="feedbackReason" rows="5" placeholder="例如：项目只是调用模型接口，没有工具调用、RAG链路和工程落地，因此不适合。"></textarea>
+              </label>
+              <label class="inline-check">
+                <input type="checkbox" id="feedbackAffectsScoring" />
+                <span>这条反馈可能影响评分规则</span>
+              </label>
+              <div class="form-actions">
+                <button class="primary-btn" type="submit">保存反馈并审查</button>
+              </div>
+              <div class="review-box" id="feedbackReview">暂无审查结果</div>
+            </form>
+            <div class="pdf-preview">
+              <div class="preview-header">
+                <span class="preview-title" id="pdfPreviewTitle">PDF 预览</span>
+                <div class="resume-detail-nav" aria-label="切换候选人">
+                  <button class="resume-nav-btn" type="button" id="detailPrevResumeBtn" title="上一个候选人（←）">← 上一个</button>
+                  <span class="resume-detail-position" id="detailResumePosition">- / -</span>
+                  <button class="resume-nav-btn" type="button" id="detailNextResumeBtn" title="下一个候选人（→）">下一个 →</button>
+                </div>
+              </div>
+              <div class="pdf-pages" id="pdfPages" aria-label="PDF 页面预览"></div>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+    <script>
+      window.prepareBossAutomationPanel = function (message) {
+        const actionPanel = document.querySelector("#bossActionPanel");
+        const resumeInfoPanel = document.querySelector("#resumeInfoPanel");
+        const hint = document.querySelector("#bossActionHint");
+        if (resumeInfoPanel) resumeInfoPanel.hidden = true;
+        if (actionPanel) actionPanel.hidden = false;
+        if (hint) hint.textContent = message || "正在启动自动化，启动完成后可以处理消息";
+      };
+      window.startBossAutomationFallback = async function () {
+        const button = document.querySelector("#bossAutomationBtn");
+        const summary = document.querySelector("#bossBrowserSummary");
+        const hint = document.querySelector("#bossActionHint");
+        const batchSummary = document.querySelector("#batchSummary");
+        window.prepareBossAutomationPanel?.();
+        if (button?.dataset.mainHandlerReady === "1") return;
+        if (button) button.disabled = true;
+        if (hint) hint.textContent = "正在启动自动化，启动完成后可以处理消息";
+        if (summary) summary.textContent = "正在启动 CloakBrowser、Playwright，并跳转 BOSS 招聘页面...";
+        if (batchSummary) batchSummary.textContent = "正在启动浏览器和自动化服务，请稍等...";
+        try {
+          const accountId = localStorage.getItem("resumeAgent.bossAutomationAccountId") || "all";
+          const response = await fetch(`./api/boss-automation/start?accountId=${encodeURIComponent(accountId)}`, { method: "POST" });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(payload.error || "启动 BOSS 自动化失败");
+          if (summary) {
+            const totalMs = Number(payload.timings?.totalMs);
+            const elapsed = Number.isFinite(totalMs) ? `，用时 ${(totalMs / 1000).toFixed(1)} 秒` : "";
+            summary.textContent = `BOSS 自动化已启动${elapsed}`;
+          }
+          if (hint) hint.textContent = "自动化已就绪，可以点击处理消息";
+        } catch (error) {
+          if (summary) summary.textContent = error.message || "启动 BOSS 自动化失败";
+          if (hint) hint.textContent = "启动失败，可以稍后再试";
+        } finally {
+          if (button) button.disabled = false;
+        }
+      };
+    </script>
+    <script src="./src/config/frontend-config.js?v=20260604-proactive-opened"></script>
+    <script src="./script.js?v=20260604-resume-detail-nav"></script>
+  </body>
+</html>
+
+

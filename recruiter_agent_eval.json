@@ -1,0 +1,150 @@
+[
+  {
+    "name": "accept_only",
+    "candidateMessage": "可以的",
+    "basicSent": true,
+    "expected": {
+      "screeningStatus": "accept",
+      "action": "request_resume"
+    }
+  },
+  {
+    "name": "accept_work_location_statement",
+    "candidateMessage": "工作地点都能够接受",
+    "basicSent": true,
+    "expected": {
+      "screeningStatus": "accept",
+      "hasFollowupQuestion": false,
+      "action": "request_resume"
+    }
+  },
+  {
+    "name": "accept_with_insurance_question",
+    "candidateMessage": "可以接受，不过五险什么时候交",
+    "basicSent": true,
+    "expected": {
+      "screeningStatus": "accept",
+      "hasFollowupQuestion": true,
+      "action": "answer_knowledge_then_request_resume",
+      "answerContains": ["保险转正后缴纳"]
+    }
+  },
+  {
+    "name": "accept_with_accommodation_question",
+    "candidateMessage": "这些都可以，包住宿吗",
+    "basicSent": true,
+    "expected": {
+      "screeningStatus": "accept",
+      "hasFollowupQuestion": true,
+      "action": "answer_knowledge_then_request_resume",
+      "answerContains": ["公司包住，两人间"]
+    }
+  },
+  {
+    "name": "multi_message_location_and_accommodation_then_accept",
+    "candidateMessages": ["地点就是湖州吗", "提供住宿吗", "能接受"],
+    "basicSent": true,
+    "expected": {
+      "screeningStatus": "accept",
+      "hasFollowupQuestion": true,
+      "action": "answer_knowledge_then_request_resume",
+      "answerContains": ["在湖州长兴泗安镇", "公司包住，两人间"]
+    }
+  },
+  {
+    "name": "ask_desktop_ops_and_insurance",
+    "candidateMessage": "我想问一下这个工作内容就是AI应用开发，不包括桌面运维是吗，然后工作有五险吗",
+    "basicSent": true,
+    "expected": {
+      "screeningStatus": "unclear",
+      "action": "answer_knowledge",
+      "answerContains": ["是AI应用开发，不做桌面运维", "保险转正后缴纳"]
+    }
+  },
+  {
+    "name": "ask_remote_work",
+    "candidateMessage": "可以线上实习吗",
+    "basicSent": true,
+    "expected": {
+      "screeningStatus": "unclear",
+      "action": "answer_knowledge",
+      "answerContains": ["不可以线上实习"]
+    }
+  },
+  {
+    "name": "reject_offline",
+    "candidateMessage": "我不能线下",
+    "basicSent": true,
+    "expected": {
+      "screeningStatus": "reject",
+      "action": "skip_reject"
+    }
+  },
+  {
+    "name": "considering",
+    "candidateMessage": "我考虑一下",
+    "basicSent": true,
+    "expected": {
+      "screeningStatus": "unclear",
+      "action": "skip_wait"
+    }
+  },
+  {
+    "name": "not_asked_yet",
+    "candidateMessage": "您好，我对这个岗位感兴趣",
+    "basicSent": false,
+    "expected": {
+      "screeningStatus": "not_asked",
+      "action": "send_basic_conditions"
+    }
+  },
+  {
+    "name": "sent_resume",
+    "candidateMessage": "这是我的简历 张三简历.pdf",
+    "basicSent": true,
+    "expected": {
+      "screeningStatus": "accept",
+      "action": "request_resume"
+    }
+  },
+  {
+    "name": "unknown_interview_prep",
+    "candidateMessage": "面试需要准备什么",
+    "basicSent": true,
+    "expected": {
+      "screeningStatus": "unclear",
+      "action": "answer_knowledge",
+      "answerContains": ["暂时还不清楚"]
+    }
+  },
+  {
+    "name": "application_technology_question_priority",
+    "position": "应用技术经理（工业涂料领域）",
+    "candidateMessage": "这个岗位工作地点在哪里",
+    "positionScreeningSent": false,
+    "expected": {
+      "workflow": "position_skill_screening",
+      "action": "answer_knowledge_before_screening_question"
+    }
+  },
+  {
+    "name": "application_technology_formula_accept_then_ask_rheology",
+    "position": "应用技术经理（工业涂料领域）",
+    "myMessages": ["熟悉工业涂料配方吗"],
+    "candidateMessage": "熟悉，我主做工业漆配方",
+    "expected": {
+      "screeningStatus": "not_asked",
+      "nextQuestion": "有熟悉过工业涂料的流变助剂吗"
+    }
+  },
+  {
+    "name": "application_technology_all_accept_request_resume",
+    "position": "应用技术经理（工业涂料领域）",
+    "myMessages": ["熟悉工业涂料配方吗", "有熟悉过工业涂料的流变助剂吗"],
+    "candidateMessages": ["熟悉，我主做工业漆配方", "流变助剂也接触过"],
+    "expected": {
+      "screeningStatus": "accept",
+      "action": "request_resume"
+    }
+  }
+]

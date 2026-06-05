@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BOSS 自动化处理明细</title>
+    <link rel="stylesheet" href="./styles.css?v=20260603-multi-date" />
+  </head>
+  <body>
+    <main class="details-shell">
+      <header class="details-hero">
+        <a class="details-back" href="./index.html">返回招聘智能体</a>
+        <h1 id="detailsTitle">BOSS自动化处理明细</h1>
+        <div class="details-date-control">
+          <label>
+            <span>日期</span>
+            <input id="detailsDateInput" type="date" />
+          </label>
+          <button class="ghost-btn small" type="button" id="detailsTodayBtn">今天</button>
+          <button class="ghost-btn small" type="button" id="detailsAllDatesBtn">全部</button>
+          <div class="date-chip-row" id="detailsSelectedDates"></div>
+        </div>
+        <p id="detailsSubtitle">正在读取今日处理记录...</p>
+      </header>
+
+      <section class="details-metric-grid" id="detailsMetricGrid" aria-label="处理概览筛选"></section>
+
+      <section class="details-filter-panel" aria-label="明细筛选">
+        <label>
+          <span>搜索</span>
+          <input id="detailsSearchInput" type="search" placeholder="联系人 / 岗位 / 问题 / 回复" />
+        </label>
+        <label>
+          <span>岗位</span>
+          <select id="detailsJobFilter">
+            <option value="">全部岗位</option>
+          </select>
+        </label>
+        <label>
+          <span>状态</span>
+          <select id="detailsStatusFilter">
+            <option value="">全部状态</option>
+          </select>
+        </label>
+        <label>
+          <span>记录类型</span>
+          <select id="detailsTypeFilter">
+            <option value="">全部类型</option>
+          </select>
+        </label>
+        <button class="ghost-btn" type="button" id="detailsResetBtn">重置筛选</button>
+      </section>
+
+      <section class="details-table-section">
+        <div class="details-table-head">
+          <strong id="detailsCount">-</strong>
+          <span class="detail-muted" id="detailsActiveFilter">全部记录</span>
+        </div>
+        <div class="details-table-wrap">
+          <table class="automation-detail-table">
+            <thead>
+              <tr>
+                <th>联系人</th>
+                <th>岗位</th>
+                <th>状态</th>
+                <th>更新时间</th>
+                <th>问题与回复</th>
+                <th>来源</th>
+                <th>简历</th>
+              </tr>
+            </thead>
+            <tbody id="detailsTableBody">
+              <tr>
+                <td colspan="7">正在加载...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="details-pagination" id="detailsPagination"></div>
+      </section>
+    </main>
+
+    <div class="details-dialog-backdrop" id="detailsConversationDialog" hidden>
+      <section class="details-dialog" role="dialog" aria-modal="true" aria-labelledby="detailsConversationTitle">
+        <div class="details-dialog-head">
+          <h2 id="detailsConversationTitle">聊天详情</h2>
+          <button class="ghost-btn small" type="button" id="detailsConversationCloseBtn">关闭</button>
+        </div>
+        <div class="details-dialog-body" id="detailsConversationBody"></div>
+      </section>
+    </div>
+
+    <script src="./automation-details.js?v=20260604-proactive-opened"></script>
+  </body>
+</html>
