@@ -151,6 +151,14 @@ const elements = {
   bossAutomationStatsGrid: document.querySelector("#bossAutomationStatsGrid"),
   bossAutomationPositionBreakdown: document.querySelector("#bossAutomationPositionBreakdown"),
   bossAutomationUpdatedAt: document.querySelector("#bossAutomationUpdatedAt"),
+  dailyPiePanel: document.querySelector("#dailyPiePanel"),
+  dailyPiePlatformSelect: document.querySelector("#dailyPiePlatformSelect"),
+  dailyPieAccountSelect: document.querySelector("#dailyPieAccountSelect"),
+  dailyPieJobSelect: document.querySelector("#dailyPieJobSelect"),
+  dailyPieRefreshBtn: document.querySelector("#dailyPieRefreshBtn"),
+  dailyPieChart: document.querySelector("#dailyPieChart"),
+  dailyPieLegend: document.querySelector("#dailyPieLegend"),
+  dailyPieMeta: document.querySelector("#dailyPieMeta"),
   job51ProcessMessagesBtn: document.querySelector("#job51ProcessMessagesBtn"),
   job51ProactiveContactBtn: document.querySelector("#job51ProactiveContactBtn"),
   job51MaxTotalInput: document.querySelector("#job51MaxTotalInput"),
@@ -267,6 +275,10 @@ let bossAutomationAccountId = readStoredBossAutomationAccountId();
 let bossAutomationLastSummaryPayload = null;
 let bossAutomationSpeedFactor = normalizeBossAutomationSpeed(readStoredBossAutomationSpeed());
 let activeAutomationPlatform = "boss";
+let dailyPieRecords = [];
+let dailyPieRequestKey = "";
+let dailyPieLoadingKey = "";
+let dailyPieRequestSeq = 0;
 const AUTOMATION_SUMMARY_CACHE_TTL_MS = 15000;
 const automationSummaryCache = new Map();
 let automationSummaryAbortController = null;
@@ -278,6 +290,10 @@ const AUTOMATION_PLATFORM_LABELS = {
   job51: "51",
   zhilian: "智联",
 };
+
+const DAILY_PIE_DEFAULT_PLATFORMS = ["boss", "job51", "zhilian"];
+const DAILY_PIE_DEFAULT_ACCOUNTS = ["boss_a", "boss_b"];
+const DAILY_PIE_COLORS = ["#8aaeea", "#efbd7d", "#86cfa9", "#e79ab8", "#aaa0df", "#7fcbd7", "#d4c77d", "#ed9990", "#b5bdc8"];
 
 function normalizeBossAutomationAccountId(value) {
   const text = String(value || "").trim();
@@ -1189,6 +1205,267 @@ function renderBossAutomationSummary(payload = {}) {
     elements.bossAutomationUpdatedAt.textContent = payload.updatedAt ? `更新 ${payload.updatedAt}` : "";
   }
   elements.bossAutomationSummaryPanel.hidden = false;
+  refreshDailyPieChart().catch((error) => console.warn(error));
+}
+
+function dailyPieSelectedPlatforms() {
+  const selected = getSelectedFilterValues(elements.dailyPiePlatformSelect).map(normalizeAutomationPlatform);
+  return selected.length ? [...new Set(selected)] : [...DAILY_PIE_DEFAULT_PLATFORMS];
+}
+
+function dailyPieSelectedAccounts() {
+  const selected = getSelectedFilterValues(elements.dailyPieAccountSelect).map(normalizeBossAutomationAccountId).filter((item) => item !== "all");
+  return selected.length ? [...new Set(selected)] : [...DAILY_PIE_DEFAULT_ACCOUNTS];
+}
+
+function dailyPieRequestAccounts() {
+  const selected = getSelectedFilterValues(elements.dailyPieAccountSelect).map(normalizeBossAutomationAccountId).filter((item) => item !== "all");
+  return selected.length ? [...new Set(selected)] : ["all"];
+}
+
+function dailyPieSelectedJobs() {
+  return getSelectedFilterValues(elements.dailyPieJobSelect).map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function dailyPieDetailsPath(platform) {
+  const normalized = normalizeAutomationPlatform(platform);
+  if (normalized === "job51") return "/api/51job-automation/details";
+  if (normalized === "zhilian") return "/api/zhilian-automation/details";
+  return "/api/boss-automation/details";
+}
+
+function dailyPieLabelList(values, labeler, fallback) {
+  if (!values.length) return fallback;
+  return values.map(labeler).join("、");
+}
+
+function dailyPieRecordJob(record) {
+  return String(record?.appliedPosition || record?.position || record?.jobType || "未识别岗位").trim() || "未识别岗位";
+}
+
+function dailyPieRequestIdentity(dateState = bossAutomationSummaryDate) {
+  return [
+    normalizeDateState(dateState, getChinaDateKey()),
+    bossAutomationSummaryMode === "proactive" ? "proactive" : "process",
+    dailyPieSelectedPlatforms().join(","),
+    dailyPieRequestAccounts().join(","),
+  ].join("|");
+}
+
+function updateDailyPieJobOptions(records = []) {
+  if (!elements.dailyPieJobSelect) return;
+  const previous = new Set(dailyPieSelectedJobs());
+  const jobs = [...new Set(records.map(dailyPieRecordJob).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"));
+  elements.dailyPieJobSelect.replaceChildren(
+    (() => {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "全部岗位";
+      return option;
+    })(),
+    ...jobs.map((job) => {
+      const option = document.createElement("option");
+      option.value = job;
+      option.textContent = job;
+      option.selected = previous.has(job);
+      return option;
+    })
+  );
+  rebuildCheckboxFilter(elements.dailyPieJobSelect);
+}
+
+function animateDailyPieChart() {
+  const chart = elements.dailyPieChart;
+  if (!chart) return;
+  chart.classList.remove("is-animating");
+  void chart.offsetWidth;
+  chart.classList.add("is-animating");
+}
+
+function dailyPiePointOnCircle(angleDeg, radius = 48) {
+  const angle = (angleDeg * Math.PI) / 180;
+  return {
+    x: 50 + radius * Math.cos(angle),
+    y: 50 + radius * Math.sin(angle),
+  };
+}
+
+function dailyPieSlicePath(startPercent, endPercent) {
+  const startAngle = -90 + startPercent * 3.6;
+  const endAngle = -90 + Math.min(endPercent, 99.999) * 3.6;
+  const start = dailyPiePointOnCircle(startAngle);
+  const end = dailyPiePointOnCircle(endAngle);
+  const largeArc = endPercent - startPercent > 50 ? 1 : 0;
+  return `M 50 50 L ${start.x.toFixed(3)} ${start.y.toFixed(3)} A 48 48 0 ${largeArc} 1 ${end.x.toFixed(3)} ${end.y.toFixed(3)} Z`;
+}
+
+function moveDailyPieTooltip(event, tooltip) {
+  if (!tooltip || !elements.dailyPieChart) return;
+  const rect = elements.dailyPieChart.getBoundingClientRect();
+  tooltip.style.left = `${event.clientX - rect.left}px`;
+  tooltip.style.top = `${event.clientY - rect.top}px`;
+}
+
+function renderDailyPieSlices(slices, total) {
+  const chart = elements.dailyPieChart;
+  if (!chart || !total) return;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.classList.add("daily-pie-slices");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("aria-hidden", "true");
+
+  const tooltip = document.createElement("div");
+  tooltip.className = "daily-pie-tooltip";
+  tooltip.setAttribute("role", "tooltip");
+
+  let cursor = 0;
+  slices.forEach((slice, index) => {
+    const start = cursor;
+    const next = cursor + (slice.value / total) * 100;
+    cursor = next;
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    const color = DAILY_PIE_COLORS[index % DAILY_PIE_COLORS.length];
+    const percent = ((slice.value / total) * 100).toFixed(1);
+    const info = `${slice.label}：${slice.value} 人，占比 ${percent}%`;
+    path.classList.add("daily-pie-slice");
+    path.setAttribute("d", dailyPieSlicePath(start, next));
+    path.setAttribute("fill", color);
+    path.dataset.info = info;
+    path.addEventListener("mouseenter", (event) => {
+      path.classList.add("is-active");
+      tooltip.textContent = info;
+      tooltip.classList.add("is-visible");
+      moveDailyPieTooltip(event, tooltip);
+    });
+    path.addEventListener("mousemove", (event) => moveDailyPieTooltip(event, tooltip));
+    path.addEventListener("mouseleave", () => {
+      path.classList.remove("is-active");
+      tooltip.classList.remove("is-visible");
+    });
+    svg.append(path);
+  });
+
+  chart.append(svg, tooltip);
+}
+
+function renderDailyPieChart(records = dailyPieRecords) {
+  if (!elements.dailyPiePanel || !elements.dailyPieChart || !elements.dailyPieLegend) return;
+  const selectedJobs = dailyPieSelectedJobs();
+  const filtered = selectedJobs.length ? records.filter((record) => selectedJobs.includes(dailyPieRecordJob(record))) : records;
+  const counts = new Map();
+  for (const record of filtered) {
+    const job = dailyPieRecordJob(record);
+    counts.set(job, (counts.get(job) || 0) + 1);
+  }
+  let slices = [...counts.entries()]
+    .map(([label, value]) => ({ label, value }))
+    .filter((item) => item.value > 0)
+    .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label, "zh-CN"));
+  if (!selectedJobs.length && slices.length > 8) {
+    const top = slices.slice(0, 8);
+    const otherValue = slices.slice(8).reduce((total, item) => total + item.value, 0);
+    slices = otherValue ? [...top, { label: "其他岗位", value: otherValue }] : top;
+  }
+  const total = slices.reduce((sum, item) => sum + item.value, 0);
+  elements.dailyPiePanel.hidden = false;
+  elements.dailyPieChart.innerHTML = `<span>${total}</span>`;
+  elements.dailyPieChart.setAttribute("aria-label", `每日数据扇形图，总计 ${total} 人`);
+
+  if (!total) {
+    elements.dailyPieChart.classList.remove("is-animating");
+    elements.dailyPieChart.style.setProperty("--pie-gradient", "#eef2f7");
+    elements.dailyPieLegend.replaceChildren();
+    if (elements.dailyPieMeta) elements.dailyPieMeta.textContent = "暂无可统计数据";
+    return;
+  }
+
+  let cursor = 0;
+  const gradientParts = slices.map((slice, index) => {
+    const start = cursor;
+    const next = cursor + (slice.value / total) * 100;
+    cursor = next;
+    const color = DAILY_PIE_COLORS[index % DAILY_PIE_COLORS.length];
+    return `${color} ${start.toFixed(3)}% ${next.toFixed(3)}%`;
+  });
+  elements.dailyPieChart.style.setProperty("--pie-gradient", `conic-gradient(${gradientParts.join(", ")})`);
+  renderDailyPieSlices(slices, total);
+  animateDailyPieChart();
+  elements.dailyPieLegend.replaceChildren(
+    ...slices.map((slice, index) => {
+      const row = document.createElement("div");
+      row.className = "daily-pie-legend-row";
+      const swatch = document.createElement("span");
+      swatch.className = "daily-pie-swatch";
+      swatch.style.background = DAILY_PIE_COLORS[index % DAILY_PIE_COLORS.length];
+      const label = document.createElement("span");
+      label.className = "daily-pie-label";
+      label.textContent = slice.label;
+      const value = document.createElement("strong");
+      value.textContent = `${slice.value} 人 · ${((slice.value / total) * 100).toFixed(1)}%`;
+      row.append(swatch, label, value);
+      return row;
+    })
+  );
+
+  if (elements.dailyPieMeta) {
+    const modeText = bossAutomationSummaryMode === "proactive" ? "主动联系点开人数" : "处理消息人数";
+    const selectedAccounts = getSelectedFilterValues(elements.dailyPieAccountSelect).map(normalizeBossAutomationAccountId).filter((item) => item !== "all");
+    elements.dailyPieMeta.textContent = `${dateStateLabel(bossAutomationSummaryDate)} · ${dailyPieLabelList(
+      dailyPieSelectedPlatforms(),
+      automationPlatformLabel,
+      "全部平台"
+    )} · ${selectedAccounts.length ? dailyPieLabelList(selectedAccounts, bossAutomationAccountLabel, "全部账号") : "全部账号"} · ${modeText}`;
+  }
+}
+
+async function refreshDailyPieChart({ force = false } = {}) {
+  if (!elements.dailyPiePanel) return;
+  const dateState = normalizeDateState(bossAutomationSummaryDate, getChinaDateKey());
+  const requestKey = dailyPieRequestIdentity(dateState);
+  if (!force && requestKey === dailyPieLoadingKey) return;
+  if (!force && requestKey === dailyPieRequestKey) {
+    renderDailyPieChart(dailyPieRecords);
+    return;
+  }
+  const requestSeq = ++dailyPieRequestSeq;
+  dailyPieLoadingKey = requestKey;
+  if (elements.dailyPieMeta) elements.dailyPieMeta.textContent = "正在读取每日数据";
+  const mode = bossAutomationSummaryMode === "proactive" ? "proactive" : "process";
+  const metric = mode === "proactive" ? "proactiveOpened" : "processed";
+  try {
+    const requests = [];
+    for (const platform of dailyPieSelectedPlatforms()) {
+      for (const accountId of dailyPieRequestAccounts()) {
+        const endpoint = `${dailyPieDetailsPath(platform)}?date=${encodeURIComponent(dateState)}&mode=${encodeURIComponent(
+          mode
+        )}&metric=${encodeURIComponent(metric)}&accountId=${encodeURIComponent(accountId)}`;
+        requests.push(
+          requestJson(endpoint).then((payload) =>
+            (Array.isArray(payload.records) ? payload.records : []).map((record) => ({
+              ...record,
+              platform: normalizeAutomationPlatform(record.platform || platform),
+              accountId,
+            }))
+          )
+        );
+      }
+    }
+    const groups = await Promise.all(requests);
+    if (requestSeq !== dailyPieRequestSeq) return;
+    dailyPieRecords = groups.flat();
+    dailyPieRequestKey = requestKey;
+    updateDailyPieJobOptions(dailyPieRecords);
+    renderDailyPieChart(dailyPieRecords);
+  } catch (error) {
+    console.error(error);
+    if (requestSeq !== dailyPieRequestSeq) return;
+    dailyPieRecords = [];
+    updateDailyPieJobOptions([]);
+    renderDailyPieChart([]);
+    if (elements.dailyPieMeta) elements.dailyPieMeta.textContent = error.message || "每日数据读取失败";
+  } finally {
+    if (dailyPieLoadingKey === requestKey) dailyPieLoadingKey = "";
+  }
 }
 
 function automationSummaryCacheKey(platformParam, accountId, selectedDate) {
@@ -1959,6 +2236,17 @@ function setupCheckboxFilter(selectElement) {
   syncCheckboxFilter(selectElement);
 }
 
+function rebuildCheckboxFilter(selectElement) {
+  const widget = selectElement?.nextElementSibling?.classList?.contains("checkbox-filter")
+    ? selectElement.nextElementSibling
+    : null;
+  if (widget) widget.remove();
+  if (selectElement) {
+    selectElement.hidden = false;
+    setupCheckboxFilter(selectElement);
+  }
+}
+
 let checkboxFilterEventsReady = false;
 
 function initializeRecordCheckboxFilters() {
@@ -1982,7 +2270,20 @@ function initializeRecordCheckboxFilters() {
   checkboxFilterEventsReady = true;
 }
 
+function initializeDailyPieControls() {
+  [
+    elements.dailyPiePlatformSelect,
+    elements.dailyPieAccountSelect,
+    elements.dailyPieJobSelect,
+  ].forEach(setupCheckboxFilter);
+  elements.dailyPiePlatformSelect?.addEventListener("change", () => refreshDailyPieChart({ force: true }));
+  elements.dailyPieAccountSelect?.addEventListener("change", () => refreshDailyPieChart({ force: true }));
+  elements.dailyPieJobSelect?.addEventListener("change", () => renderDailyPieChart(dailyPieRecords));
+  elements.dailyPieRefreshBtn?.addEventListener("click", () => refreshDailyPieChart({ force: true }));
+}
+
 initializeRecordCheckboxFilters();
+initializeDailyPieControls();
 
 function syncResumeCalendarControl() {
   const dateState = datesToDateState(activeResumeDates);
@@ -4986,14 +5287,6 @@ async function showPlatformProactiveControls() {
 }
 
 async function handleProcessAutomationAction() {
-  if (activeAutomationPlatform === "boss") {
-    processBossMessages();
-    const state = getProcessMessagesState();
-    if (!state.running || state.paused) {
-      await startOrPauseProcessMessages();
-    }
-    return;
-  }
   await showPlatformProcessControls();
 }
 
@@ -5079,7 +5372,7 @@ elements.importEmailBtn?.addEventListener("click", importEmailResumes);
 elements.toggleEmailAutoBtn?.addEventListener("click", toggleEmailAutoImport);
 if (elements.bossAutomationBtn) {
   elements.bossAutomationBtn.dataset.mainHandlerReady = "1";
-  elements.bossAutomationBtn.addEventListener("click", startBossAutomation);
+  elements.bossAutomationBtn.addEventListener("click", () => openQuickAutomationPlatform("boss"));
 }
 elements.processBossMessagesBtn?.addEventListener("click", handleProcessAutomationAction);
 elements.startProcessMessagesBtn?.addEventListener("click", handleStartProcessAutomation);
@@ -5088,9 +5381,15 @@ elements.startProactiveContactBtn?.addEventListener("click", handleStartProactiv
 elements.job51QuickAutomationBtn?.addEventListener("click", () => openQuickAutomationPlatform("job51"));
 elements.zhilianQuickAutomationBtn?.addEventListener("click", () => openQuickAutomationPlatform("zhilian"));
 elements.oneClickLaunchBrowserBtn?.addEventListener("click", oneClickLaunchAutomationBrowser);
-elements.job51ProcessMessagesBtn?.addEventListener("click", () => startOrPausePlatformAutomation("job51", "process"));
+elements.job51ProcessMessagesBtn?.addEventListener("click", async () => {
+  selectAutomationPlatform("job51", "51 已选中，可以处理消息或主动联系");
+  await showPlatformProcessControls();
+});
 elements.job51ProactiveContactBtn?.addEventListener("click", () => startOrPausePlatformAutomation("job51", "proactive"));
-elements.zhilianProcessMessagesBtn?.addEventListener("click", () => startOrPausePlatformAutomation("zhilian", "process"));
+elements.zhilianProcessMessagesBtn?.addEventListener("click", async () => {
+  selectAutomationPlatform("zhilian", "智联 已选中，可以处理消息或主动联系");
+  await showPlatformProcessControls();
+});
 elements.zhilianProactiveContactBtn?.addEventListener("click", () => startOrPausePlatformAutomation("zhilian", "proactive"));
 elements.proactiveContactPositionSelect?.addEventListener("change", handleProactiveContactPositionChange);
 elements.proactiveContactCountInput?.addEventListener("change", getProactiveContactCount);

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>招聘智能体 - 简历信息解析</title>
-    <link rel="stylesheet" href="./styles.css?v=20260603-cloak-four-launch" />
+    <link rel="stylesheet" href="./styles.css?v=20260605-daily-pie-soft-hover" />
   </head>
   <body>
     <main class="app-shell">
@@ -74,7 +74,7 @@
                 <small id="bossBrowserSummary">选择平台执行招聘自动化</small>
               </div>
               <div class="folder-import-actions automation-launch-actions">
-                <button class="primary-btn" type="button" id="bossAutomationBtn" onclick="window.prepareBossAutomationPanel?.(); window.startBossAutomationFallback?.()">BOSS</button>
+                <button class="primary-btn" type="button" id="bossAutomationBtn">BOSS</button>
                 <button class="primary-btn" type="button" id="job51QuickAutomationBtn">51</button>
                 <button class="primary-btn" type="button" id="zhilianQuickAutomationBtn">智联</button>
                 <button class="ghost-btn" type="button" id="oneClickLaunchBrowserBtn">一键启动</button>
@@ -271,6 +271,46 @@
                 </div>
                 <div class="automation-stats-grid" id="bossAutomationStatsGrid"></div>
                 <div class="automation-position-breakdown" id="bossAutomationPositionBreakdown" hidden></div>
+                <section class="daily-pie-panel" id="dailyPiePanel" hidden>
+                  <div class="daily-pie-head">
+                    <div>
+                      <strong>每日数据占比</strong>
+                      <span id="dailyPieMeta">等待数据</span>
+                    </div>
+                    <button class="ghost-btn small" type="button" id="dailyPieRefreshBtn">刷新</button>
+                  </div>
+                  <div class="daily-pie-filters">
+                    <label class="automation-field compact" for="dailyPiePlatformSelect">
+                      <span>平台</span>
+                      <select id="dailyPiePlatformSelect" multiple data-checkbox-filter data-placeholder="全部平台">
+                        <option value="">全部平台</option>
+                        <option value="boss">BOSS</option>
+                        <option value="job51">51</option>
+                        <option value="zhilian">智联</option>
+                      </select>
+                    </label>
+                    <label class="automation-field compact" for="dailyPieAccountSelect">
+                      <span>账号</span>
+                      <select id="dailyPieAccountSelect" multiple data-checkbox-filter data-placeholder="全部账号">
+                        <option value="">全部账号</option>
+                        <option value="boss_a">宋峰峰</option>
+                        <option value="boss_b">和新红</option>
+                      </select>
+                    </label>
+                    <label class="automation-field" for="dailyPieJobSelect">
+                      <span>岗位</span>
+                      <select id="dailyPieJobSelect" multiple data-checkbox-filter data-placeholder="全部岗位">
+                        <option value="">全部岗位</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="daily-pie-body">
+                    <div class="daily-pie-chart" id="dailyPieChart" role="img" aria-label="每日数据扇形图">
+                      <span>0</span>
+                    </div>
+                    <div class="daily-pie-legend" id="dailyPieLegend"></div>
+                  </div>
+                </section>
               </section>
               <p class="panel-note" id="bossActionHint">已启动后可以在这里执行招聘沟通流程</p>
             </div>
@@ -298,6 +338,7 @@
                       <span>主动联系岗位</span>
                       <select id="job51ProactivePositionSelect">
                         <option value="HRBP">HRBP</option>
+                        <option value="人力资源管培生">人力资源管培生</option>
                         <option value="膨润土销售人员">膨润土销售人员</option>
                         <option value="销售管培生">销售管培生</option>
                         <option value="电气工程师">电气工程师</option>
@@ -328,6 +369,7 @@
                       <span>主动联系岗位</span>
                       <select id="zhilianProactivePositionSelect">
                         <option value="HRBP">HRBP</option>
+                        <option value="人力资源管培生">人力资源管培生</option>
                         <option value="电气工程师">电气工程师</option>
                         <option value="膨润土销售人员">膨润土销售人员</option>
                         <option value="销售管培生">销售管培生</option>
@@ -597,6 +639,7 @@
                   <option value="膨润土销售人员">膨润土销售人员</option>
                   <option value="销售管培生">销售管培生</option>
                   <option value="HRBP">HRBP</option>
+                  <option value="人力资源管培生">人力资源管培生</option>
                   <option value="国际业务管培生">国际业务管培生</option>
                   <option value="销售工程师（石油钻井泥浆膨润土）_湖州">销售工程师（石油钻井泥浆膨润土）_湖州</option>
                   <option value="电气工程师">电气工程师</option>
@@ -764,8 +807,8 @@
         }
       };
     </script>
-    <script src="./src/config/frontend-config.js?v=20260604-proactive-opened"></script>
-    <script src="./script.js?v=20260604-resume-detail-nav"></script>
+    <script src="./src/config/frontend-config.js?v=20260605-hr-trainee-proactive"></script>
+    <script src="./script.js?v=20260605-daily-pie-soft-hover"></script>
   </body>
 </html>
 
