@@ -1,0 +1,336 @@
+.jd-match-section[hidden] {
+  display: none !important;
+}
+
+.jd-match-section {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid rgba(220, 227, 236, 0.9);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--shadow);
+}
+
+.jd-match-toolbar {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.jd-match-toolbar label {
+  display: grid;
+  gap: 6px;
+  min-width: min(360px, 100%);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.jd-match-toolbar select {
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+  color: var(--text);
+  background: #fff;
+}
+
+.jd-match-toolbar span#jdMatchSummary {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.jd-source-box {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: #fbfcfe;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.jd-tag-editor {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(220px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.jd-tag-editor[hidden] {
+  display: none;
+}
+
+.jd-tag-editor label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.jd-tag-editor input,
+.jd-tag-editor select {
+  min-height: 34px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: var(--text);
+  background: #fff;
+  font: inherit;
+}
+
+.jd-tag-editor input {
+  padding: 0 10px;
+}
+
+.jd-tag-editor select {
+  padding: 0 8px;
+}
+
+.jd-tag-editor #jdTagEditorStatus {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.jd-tag-editor #jdTagEditorStatus.is-done {
+  color: #047857;
+}
+
+.jd-tag-editor #jdTagEditorStatus.is-error {
+  color: #be123c;
+}
+
+.jd-results-wrap {
+  margin-top: 14px;
+}
+
+.jd-results-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.jd-results-table th,
+.jd-results-table td {
+  padding: 11px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  font-size: 13px;
+}
+
+.jd-level {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.jd-level.is-a {
+  color: #14533a;
+  background: rgba(35, 122, 87, 0.14);
+}
+
+.jd-level.is-b {
+  color: #0e4f67;
+  background: rgba(23, 107, 135, 0.14);
+}
+
+.jd-level.is-c {
+  color: #8a5a08;
+  background: rgba(209, 151, 40, 0.18);
+}
+
+.jd-level.is-d {
+  color: #8a2f1a;
+  background: rgba(201, 81, 45, 0.14);
+}
+
+
+.jd-match-cell {
+  min-width: 138px;
+}
+
+.jd-match-cell .jd-level {
+  margin-right: 6px;
+}
+
+.jd-match-label {
+  display: inline-block;
+  max-width: 70px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.jd-rules-box {
+  margin-top: 12px;
+  margin-bottom: 0;
+}
+
+.jd-rules-box .scoring-rule-card ul {
+  max-height: 180px;
+  overflow: auto;
+}
+
+.jd-rules-box .scoring-rule-card.is-wide ul {
+  max-height: none;
+}
+
+@media (max-width: 760px) {
+  .jd-rules-box .scoring-rules-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .jd-tag-editor {
+    grid-template-columns: 1fr;
+  }
+}
+.jd-match-section.is-collapsed {
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+  transition:
+    padding 180ms ease,
+    background-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.jd-match-toggle {
+  width: 100%;
+  min-height: 52px;
+  padding: 0 18px;
+  border: 1px solid rgba(220, 227, 236, 0.9);
+  border-radius: 8px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--shadow);
+  text-align: left;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    border-color 180ms ease,
+    color 180ms ease,
+    background-color 180ms ease,
+    box-shadow 220ms ease,
+    transform 180ms ease;
+}
+
+.jd-match-toggle:hover {
+  border-color: var(--primary);
+  color: var(--primary-dark);
+  background: #fff;
+  box-shadow: 0 18px 46px rgba(25, 37, 57, 0.14);
+  transform: translateY(-1px);
+}
+
+.jd-match-toggle:active {
+  transform: translateY(0);
+}
+
+.jd-match-content {
+  margin-top: 18px;
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transform: translate3d(0, -6px, 0);
+  transform-origin: top;
+  contain: layout paint;
+  transition:
+    height 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 150ms ease,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-top 220ms ease;
+}
+
+.jd-match-content.is-expanded {
+  height: auto;
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+}
+
+.jd-match-content.is-animating {
+  height: 0;
+  will-change: height, opacity, transform;
+}
+
+.jd-match-section.is-collapsed .jd-match-content {
+  margin-top: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(0, -6px, 0);
+}
+.jd-breakdown {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+
+.adopted-rules ul {
+  max-height: 150px;
+  margin: 8px 0 0;
+  padding-left: 20px;
+  overflow-y: auto;
+  color: var(--muted);
+  line-height: 1.75;
+}
+
+.rule-section .rule-table-wrap {
+  max-height: 260px;
+  overflow: auto;
+}
+
+.records-section .table-wrap,
+.rule-section .rule-table-wrap {
+  padding-bottom: 8px;
+  scrollbar-gutter: stable both-edges;
+}
+
+.candidate-table {
+  min-width: 1120px;
+}
+
+.rule-table {
+  min-width: 1180px;
+}
+
+.candidate-table th:last-child,
+.candidate-table td:last-child {
+  min-width: 220px;
+  width: 220px;
+}
+
+.rule-table th:last-child,
+.rule-table td:last-child {
+  min-width: 132px;
+  width: 132px;
+  text-align: right;
+}
+
+.rule-table th:nth-child(3),
+.rule-table td:nth-child(3) {
+  min-width: 420px;
+}
+
+.rule-table th:nth-child(4),
+.rule-table td:nth-child(4) {
+  min-width: 260px;
+}
+

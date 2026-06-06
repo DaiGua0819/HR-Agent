@@ -1,0 +1,1500 @@
+                if terminal.humanize:
+                    terminal.pause_like_person("post_action")
+                page.wait_for_timeout(random.randint(900, 1300))
+                return {"found": True, "clicked": True, "state": state}
+            return {"found": True, "clicked": False, "state": state}
+        except Exception as error:
+            return {"found": False, "reason": safe_text(str(error), 160)}
+
+    def job51_find_next_thread(
+        self,
+        terminal: BrowserTerminal,
+        exclude_labels: list[str] | None = None,
+        allowed_positions: tuple[str, ...] | list[str] = JOB51_CONFIGURED_POSITIONS,
+    ) -> dict | None:
+        exclude_labels = exclude_labels or []
+        allowed_clean = [clean_applied_position(item) for item in allowed_positions if clean_applied_position(item)]
+        page = terminal.current_page()
+        rows = page.locator("#conversation-list .list-item")
+        try:
+            count = rows.count()
+        except Exception:
+            count = 0
+        for index in range(count):
+            row = rows.nth(index)
+            try:
+                label = safe_text(row.inner_text(timeout=800), 300)
+            except Exception:
+                continue
+            label_key = compact_conversation_label(label)
+            if not label or any(compact_conversation_label(item) and compact_conversation_label(item) in label_key for item in exclude_labels):
+                continue
+            if "平台推荐" in label or "为你推荐的人才" in label:
+                continue
+            if re.search(r"\[(送达|已读)\]", label):
+                continue
+            job = safe_text(safe_eval(page, f"""() => {{
+              const row = document.querySelectorAll('#conversation-list .list-item')[{index}];
+              const node = row ? row.querySelector('.jobname') : null;
+              return node ? String(node.innerText || node.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+            }}""") or "", 100)
+            if not job and re.search(r"\[(平台推荐|推荐)\]", label):
+                continue
+            clean_job = clean_applied_position(job or label)
+            clean_label = clean_applied_position(label)
+            if allowed_clean and not any(
+                pos in clean_job
+                or clean_job in pos
+                or pos in clean_label
+                or job51_position_label_matches(clean_job, pos)
+                or job51_position_label_matches(clean_label, pos)
+                for pos in allowed_clean
+            ):
+                continue
+            try:
+                box = row.bounding_box(timeout=1000)
+            except Exception:
+                box = None
+            return {
+                "index": index,
+                "label": label,
+                "job": job,
+                "locator": row,
+                "x": round(box["x"]) if box else None,
+                "y": round(box["y"]) if box else None,
+            }
+        return None
+
+    def job51_scroll_conversation_list(self, terminal: BrowserTerminal) -> dict:
+        page = terminal.current_page()
+        result = safe_eval(page, """() => {
+          const el = document.querySelector('#conversation-list');
+          if (!el) return { scrolled: false, reason: 'missing_list' };
+          const before = el.scrollTop || 0;
+          el.scrollTop = before + Math.max(260, Math.floor((el.clientHeight || 500) * 0.85));
+          el.dispatchEvent(new Event('scroll', { bubbles: true }));
+          return { scrolled: Math.abs((el.scrollTop || 0) - before) > 2, before, after: el.scrollTop || 0 };
+        }""")
+        page.wait_for_timeout(random.randint(520, 860))
+        return result if isinstance(result, dict) else {"scrolled": False}
+
+    def job51_wait_chat_ready(self, terminal: BrowserTerminal, timeout_ms: int = 5000) -> bool:
+        try:
+            terminal.current_page().wait_for_selector("#drop-area.input-textarea_self, #drop-area", timeout=timeout_ms)
+            return True
+        except Exception:
+            return False
+
+    def job51_extract_chat_messages(self, terminal: BrowserTerminal) -> list[dict]:
+        page = terminal.current_page()
+        messages = safe_eval(page, """() => {
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const visible = el => {
+            const box = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return box.width > 4 && box.height > 4 && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+          };
+          const rows = Array.from(document.querySelectorAll('div.message-item.mine, div.message-item.others'));
+          return rows.filter(visible).map(row => {
+            const box = row.getBoundingClientRect();
+            const cls = String(row.className || '');
+            const sender = cls.includes('mine') ? 'me' : 'other';
+            let text = normalize(row.innerText || row.textContent || '');
+            text = text.replace(/^未读\\s+/, '').trim();
+            return {
+              sender,
+              text,
+              rawText: normalize(row.innerText || row.textContent || ''),
+              className: cls,
+              x: Math.round(box.x),
+              y: Math.round(box.y)
+            };
+          }).filter(item => item.text && !/^\\d{1,2}:\\d{2}$/.test(item.text)).slice(-120);
+        }""")
+        if not isinstance(messages, list):
+            return []
+        out: list[dict] = []
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            text = safe_text(str(item.get("text") or "").strip(), 500)
+            if not text:
+                continue
+            sender = str(item.get("sender") or "")
+            if sender not in {"me", "other"}:
+                continue
+            out.append({
+                "sender": sender,
+                "text": text,
+                "rawText": safe_text(str(item.get("rawText") or text), 600),
+                "status": "",
+                "time": "",
+                "className": safe_text(str(item.get("className") or ""), 120),
+                "x": item.get("x"),
+                "y": item.get("y"),
+            })
+        return out
+
+    @timed_agent_stage("job51_verify_reply_sent", "51job发送后检查")
+    def job51_verify_reply_sent_in_current_chat(self, terminal: BrowserTerminal, text: str) -> dict:
+        expected = normalize_reply_fingerprint(str(text or ""))
+        if not expected:
+            return {"verified": False, "reason": "empty_expected"}
+        try:
+            terminal.current_page().wait_for_timeout(random.randint(650, 1050))
+            messages = self.job51_extract_chat_messages(terminal)
+        except Exception as error:
+            return {"verified": False, "reason": safe_text(str(error), 160)}
+        last_my: dict = {}
+        for item in reversed(messages[-12:]):
+            if not isinstance(item, dict) or item.get("sender") != "me":
+                continue
+            last_my = item
+            actual = normalize_reply_fingerprint(str(item.get("text") or ""))
+            if expected and actual and (expected in actual or actual in expected):
+                return {
+                    "verified": True,
+                    "message": safe_text(str(item.get("text") or ""), 120),
+                    "source": "job51_message_item",
+                }
+        current_input = safe_text(str(safe_eval(
+            terminal.current_page(),
+            "() => String((document.querySelector('#drop-area') || {}).innerText || '')",
+        ) or ""), 240)
+        return {
+            "verified": False,
+            "reason": "reply_not_found_in_recent_51job_my_messages",
+            "lastMy": safe_text(str(last_my.get("text") or ""), 120) if isinstance(last_my, dict) else "",
+            "inputContainsExpected": bool(expected and expected in normalize_reply_fingerprint(current_input)),
+            "inputText": current_input,
+        }
+
+    def job51_read_chat_context(
+        self,
+        terminal: BrowserTerminal,
+        history: dict | None = None,
+        opened: dict | None = None,
+    ) -> dict:
+        page = terminal.current_page()
+        text = safe_eval(page, "() => document.body ? document.body.innerText : ''") or ""
+        header = safe_eval(page, """() => {
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const nameNode = document.querySelector('div.im_userName span.username-text, div.im_userName, span.username-text');
+          const selected = Array.from(document.querySelectorAll('#conversation-list .list-item')).find(el => {
+            const cls = String(el.className || '');
+            return /active|current|selected|checked/i.test(cls);
+          });
+          const jobNode = selected ? selected.querySelector('.jobname') : null;
+          return {
+            name: normalize(nameNode ? (nameNode.innerText || nameNode.textContent || '') : ''),
+            selectedLabel: normalize(selected ? (selected.innerText || selected.textContent || '') : ''),
+            selectedJob: normalize(jobNode ? (jobNode.innerText || jobNode.textContent || '') : '')
+          };
+        }""") or {}
+        messages = self.job51_extract_chat_messages(terminal)
+        opened = opened if isinstance(opened, dict) else {}
+        opened_label = str(opened.get("label") or "")
+        opened_job = str(opened.get("job") or "")
+        selected_label = str((header or {}).get("selectedLabel") or "")
+        selected_job = str((header or {}).get("selectedJob") or "")
+        header_name = safe_text(str((header or {}).get("name") or ""), 60)
+        opened_name = safe_text(str(recruiter_candidate_name_from_label(opened_label)), 60)
+        selected_name = safe_text(str(recruiter_candidate_name_from_label(selected_label)), 60)
+        applicant_name = safe_text(str(opened_name or header_name or selected_name), 60)
+        applied_position = clean_applied_position(str(opened_job or ""))
+        identity_warnings: list[dict] = []
+        if opened_name and header_name and not recruiter_candidate_names_match(opened_name, header_name):
+            identity_warnings.append({
+                "type": "opened_header_name_mismatch",
+                "openedName": opened_name,
+                "headerName": header_name,
+            })
+        if opened_name and selected_name and not recruiter_candidate_names_match(opened_name, selected_name):
+            identity_warnings.append({
+                "type": "opened_selected_name_mismatch",
+                "openedName": opened_name,
+                "selectedName": selected_name,
+            })
+        if not applied_position and not identity_warnings:
+            applied_position = clean_applied_position(selected_job)
+        if not applied_position and opened_label:
+            for position in JOB51_CONFIGURED_POSITIONS:
+                if clean_applied_position(position) in clean_applied_position(opened_label):
+                    applied_position = clean_applied_position(position)
+                    break
+        if not applied_position and applicant_name:
+            haystack = str(text or "")
+            name_index = haystack.find(applicant_name)
+            while name_index >= 0 and not applied_position:
+                after_name = haystack[name_index: name_index + 900]
+                communication_match = re.search(r"沟通职位[:：]\s*([^\r\n]{1,120})", after_name)
+                if communication_match:
+                    communication_text = clean_applied_position(communication_match.group(1))
+                    for position in JOB51_CONFIGURED_POSITIONS:
+                        if clean_applied_position(position) in communication_text:
+                            applied_position = clean_applied_position(position)
+                            break
+                if applied_position:
+                    break
+                nearby = haystack[name_index: name_index + 240]
+                for position in JOB51_CONFIGURED_POSITIONS:
+                    if clean_applied_position(position) in clean_applied_position(nearby):
+                        applied_position = clean_applied_position(position)
+                        break
+                name_index = haystack.find(applicant_name, name_index + max(1, len(applicant_name)))
+        recent_source = str(history.get("text") or "") if isinstance(history, dict) and history.get("text") else text
+        last_message = last_effective_chat_message(messages)
+        last_other = last_effective_chat_message(messages, sender="other")
+        boss_rules = load_boss_chat_rules()
+        position_reply = select_position_reply(applied_position, boss_rules)
+        company_knowledge_base = select_company_knowledge_base(boss_rules, applied_position)
+        label = safe_text(opened_label or selected_label or applicant_name, 180)
+        conversation_key = build_conversation_key(page.url, messages, label or applicant_name)
+        context = {
+            "title": page.title(),
+            "url": page.url,
+            "platform": "51job",
+            "recentText": safe_text(recent_source, 1600),
+            "pageTextPreview": safe_text(text, 900),
+            "applicant": {
+                "name": applicant_name,
+                "appliedPosition": applied_position,
+                "label": label,
+                "source": "51job-chat",
+                "openedLabel": safe_text(opened_label, 180),
+                "openedName": opened_name,
+                "headerName": header_name,
+                "selectedLabel": safe_text(selected_label, 180),
+                "selectedName": selected_name,
+                "selectedJob": clean_applied_position(selected_job),
+                "identityWarnings": identity_warnings,
+                "headerNameMismatch": any(item.get("type") == "opened_header_name_mismatch" for item in identity_warnings),
+            },
+            "appliedPosition": applied_position,
+            "positionReply": position_reply,
+            "companyKnowledgeBase": company_knowledge_base,
+            "loadedHistory": history or {},
+            "messages": messages[-80:],
+            "lastMessage": last_message,
+            "lastOtherMessage": last_other,
+            "lastSender": last_message.get("sender") if last_message else "",
+            "lastOtherSignature": chat_message_signature(last_other) if last_other else "",
+            "shouldReply": bool(last_message and last_message.get("sender") == "other"),
+            "intent": classify_chat_intent(last_other.get("text", "") if last_other else ""),
+            "conversationKey": conversation_key,
+            "summary": f"51job 当前会话：{safe_text(label, 80)}；岗位：{safe_text(applied_position, 60)}",
+        }
+        context["memory"] = self.refresh_chat_memory(context, conversation_key)
+        context["companyKnowledgeHit"] = match_company_knowledge_answer(context)
+        return context
+
+    @timed_agent_stage("job51_send_message", "51job 发送消息")
+    def job51_send_message_with_verification(self, terminal: BrowserTerminal, text: str) -> dict:
+        text = strip_reply_terminal_punctuation(str(text or "").strip())
+        if not text:
+            return {"blocked": True, "message": "51job 待发送内容为空"}
+        page = terminal.current_page()
+        self.job51_dismiss_interruptions(terminal, reason="before_send_message")
+        input_locator = page.locator("#drop-area.input-textarea_self, #drop-area, [contenteditable='true']").first
+        try:
+            if not input_locator.count():
+                return {"blocked": True, "message": "51job 没有找到聊天输入框 #drop-area，已停止避免填错位置"}
+            else:
+                if terminal.humanize:
+                    terminal.pause_like_person("pre_action")
+                    highlight_target(input_locator)
+                    humanized_locator_click(terminal, input_locator, force=True)
+                input_locator.fill("", timeout=8000)
+                input_locator.type(text, delay=random.randint(CHAT_TYPE_DELAY_MS[0], CHAT_TYPE_DELAY_MS[1]), timeout=12000)
+                if terminal.humanize:
+                    terminal.pause_like_person("post_action")
+                label = "#drop-area.input-textarea_self"
+        except Exception as error:
+            return {
+                "blocked": True,
+                "message": f"51job 填写聊天输入框失败，已停止避免填错位置：{safe_text(str(error), 160)}",
+            }
+        page.wait_for_timeout(random.randint(260, 520))
+        self.job51_dismiss_interruptions(terminal, reason="after_fill_before_send")
+        send_button = page.locator("button.el-button.new-send-button.el-button--primary, button.new-send-button").first
+        if not send_button.count():
+            send_package = self.send_current_chat_reply_with_verification(terminal, text, max_attempts=CHAT_SEND_MAX_ATTEMPTS)
+            return {
+                "message": "51job 已尝试通过通用发送按钮发送",
+                "inputLabel": safe_text(label, 80),
+                "send": send_package.get("send", {}),
+                "verification": send_package.get("verification", {}),
+                "attempts": send_package.get("attempts", []),
+                "blocked": not bool((send_package.get("verification") or {}).get("verified")),
+            }
+        if terminal.humanize:
+            terminal.pause_like_person("pre_action")
+            highlight_target(send_button)
+        send_button.click(timeout=8000, force=True)
+        if terminal.humanize:
+            terminal.pause_like_person("post_action")
+        page.wait_for_timeout(random.randint(720, 1120))
+        current_input = safe_text(str(safe_eval(page, "() => String((document.querySelector('#drop-area') || {}).innerText || '')") or ""), 240)
+        if normalize_reply_fingerprint(text) in normalize_reply_fingerprint(current_input):
+            try:
+                self.job51_dismiss_interruptions(terminal, reason="send_retry_blocked_by_overlay")
+            except Exception:
+                pass
+            try:
+                send_button.click(timeout=8000, force=True)
+                page.wait_for_timeout(random.randint(900, 1300))
+            except Exception:
+                pass
+        verification = self.job51_verify_reply_sent_in_current_chat(terminal, text)
+        return {
+            "message": "51job 已发送并校验" if verification.get("verified") else "51job 已点击发送，但未在最近消息中校验到文本",
+            "inputLabel": safe_text(label, 80),
+            "send": {"message": "clicked 51job send button", "blocked": not bool(verification.get("verified"))},
+            "verification": verification,
+            "blocked": not bool(verification.get("verified")),
+        }
+
+    @timed_agent_stage("job51_send_common_word", "51job 发送常用语")
+    def job51_send_common_word_with_verification(self, terminal: BrowserTerminal, phrase: str) -> dict:
+        phrase = safe_text(str(phrase or "").strip(), 400)
+        if not phrase:
+            return {"blocked": True, "message": "51job 待发送常用语为空"}
+        page = terminal.current_page()
+        self.job51_dismiss_interruptions(terminal, reason="before_send_common_word")
+        if not self.job51_wait_chat_ready(terminal, timeout_ms=3500):
+            return {
+                "blocked": True,
+                "message": "51job 当前不是单聊输入页，未发送常用语，避免在批量/列表页误操作。",
+            }
+
+        safe_eval(page, """() => {
+          const editor = document.querySelector('#drop-area.input-textarea_self, #drop-area');
+          if (!editor) return false;
+          editor.focus();
+          editor.innerHTML = '';
+          editor.textContent = '';
+          editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: null }));
+          editor.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }""")
+
+        button = {}
+        if not is_job51_common_word_panel_open(terminal):
+            button = self.measure_current_timing_stage(
+                "job51_find_common_word_button",
+                "51job 查找常用语按钮",
+                lambda: find_job51_common_word_button(terminal),
+            )
+            if not button.get("found"):
+                return {
+                    "blocked": True,
+                    "message": "51job 没有找到单聊工具栏里的“常用语”按钮。",
+                    "state": button,
+                }
+            locator = button.get("locator")
+            if locator is None:
+                return {
+                    "blocked": True,
+                    "message": "51job 找到了“常用语”按钮信息，但没有拿到可点击元素。",
+                    "state": {k: v for k, v in button.items() if k != "locator"},
+                }
+            if terminal.humanize:
+                terminal.pause_like_person("pre_action")
+                highlight_target(locator)
+            humanized_locator_click(terminal, locator, force=True)
+            if terminal.humanize:
+                terminal.pause_like_person("post_action")
+            page.wait_for_timeout(random.randint(450, 800))
+            if not is_job51_common_word_panel_open(terminal):
+                try:
+                    humanized_locator_click(terminal, locator, force=True)
+                    page.wait_for_timeout(random.randint(500, 900))
+                except Exception:
+                    pass
+
+        item = self.measure_current_timing_stage(
+            "job51_find_common_word_item",
+            "51job 查找常用语内容",
+            lambda: find_job51_common_word_item(terminal, phrase),
+        )
+        if not item.get("found"):
+            return {
+                "blocked": True,
+                "message": f"51job 常用语面板里没有找到这句话：{safe_text(phrase, 80)}",
+                "state": item,
+                "button": {k: v for k, v in button.items() if k != "locator"},
+            }
+
+        direct_send = self.measure_current_timing_stage(
+            "job51_click_common_word_send",
+            "51job 点击常用语发送",
+            lambda: click_job51_common_word_send_button(terminal, phrase, item),
+        )
+        send_result: dict = {"directSend": direct_send}
+        if not direct_send.get("clicked"):
+            item_locator = item.get("locator")
+            if item_locator is None:
+                return {
+                    "blocked": True,
+                    "message": "51job 找到了常用语文本，但没有拿到可点击元素，也没有找到右侧发送按钮。",
+                    "state": {k: v for k, v in item.items() if k != "locator"},
+                    "directSend": direct_send,
+                }
+            try:
+                if terminal.humanize:
+                    terminal.pause_like_person("pre_action")
+                    highlight_target(item_locator)
+                humanized_locator_click(terminal, item_locator, force=True)
+                if terminal.humanize:
+                    terminal.pause_like_person("post_action")
+                page.wait_for_timeout(random.randint(350, 650))
+            except Exception as error:
+                return {
+                    "blocked": True,
+                    "message": f"51job 点击常用语条目失败：{safe_text(str(error), 160)}",
+                    "state": {k: v for k, v in item.items() if k != "locator"},
+                    "directSend": direct_send,
+                }
+            editor_text = safe_text(str(safe_eval(
+                page,
+                "() => String((document.querySelector('#drop-area') || {}).innerText || '')",
+            ) or ""), 500)
+            if normalize_reply_fingerprint(phrase) not in normalize_reply_fingerprint(editor_text):
+                return {
+                    "blocked": True,
+                    "message": f"51job 已点击常用语，但输入框没有出现目标内容：{safe_text(editor_text, 120)}",
+                    "state": {k: v for k, v in item.items() if k != "locator"},
+                    "directSend": direct_send,
+                }
+            send_button = page.locator("button.el-button.new-send-button.el-button--primary, button.new-send-button").first
+            if not send_button.count():
+                return {
+                    "blocked": True,
+                    "message": "51job 常用语已填入输入框，但没有找到发送按钮。",
+                    "state": {k: v for k, v in item.items() if k != "locator"},
+                    "directSend": direct_send,
+                }
+            if terminal.humanize:
+                terminal.pause_like_person("pre_action")
+                highlight_target(send_button)
+            send_button.click(timeout=8000, force=True)
+            if terminal.humanize:
+                terminal.pause_like_person("post_action")
+            page.wait_for_timeout(random.randint(800, 1300))
+            send_result = {
+                "message": "51job 已点击常用语条目并点击发送按钮",
+                "directSend": direct_send,
+                "filledThenSent": True,
+            }
+        else:
+            page.wait_for_timeout(random.randint(800, 1300))
+            send_result = {"message": "51job 已点击常用语右侧发送按钮", "directSend": direct_send}
+
+        verification = self.job51_verify_reply_sent_in_current_chat(terminal, phrase)
+        message = "51job 已通过常用语发送并校验" if verification.get("verified") else "51job 已触发常用语发送，但最近消息中未校验到文本"
+        return {
+            "message": message,
+            "phrase": phrase,
+            "send": send_result,
+            "verification": verification,
+            "state": {
+                "button": {k: v for k, v in button.items() if k != "locator"},
+                "item": {k: v for k, v in item.items() if k != "locator"},
+            },
+            "blocked": not bool(verification.get("verified")),
+        }
+
+    def job51_request_resume_from_current_conversation(self, terminal: BrowserTerminal) -> dict:
+        page = terminal.current_page()
+        candidate = self.job51_read_chat_context(terminal).get("applicant", {})
+        candidate_label = str(candidate.get("label") or candidate.get("name") or "")
+        state = safe_eval(page, """() => {
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const text = normalize(document.body ? document.body.innerText : '');
+          const visible = el => {
+            const box = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return box.width > 8 && box.height > 8 && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+          };
+          const buttons = Array.from(document.querySelectorAll('div.operate-item, button, [role="button"]'))
+            .filter(visible)
+            .map((el, index) => ({ index, text: normalize(el.innerText || el.textContent || ''), disabled: !!el.disabled || el.classList.contains('is-disabled') }))
+            .filter(item => item.text);
+          return { text, buttons };
+        }""") or {}
+        body_text = str(state.get("text") or "") if isinstance(state, dict) else ""
+        if re.search(r"(已.{0,6}求.{0,4}简历|已.{0,6}索.{0,4}简历|简历.{0,6}已发送|已收到.{0,4}简历)", body_text):
+            return {
+                "message": f"51job 检测到已求过或已收到简历，跳过重复点击：{safe_text(candidate_label, 80)}",
+                "skipped": True,
+                "skipReason": "already_requested",
+                "candidate": candidate,
+            }
+        buttons = state.get("buttons") if isinstance(state, dict) and isinstance(state.get("buttons"), list) else []
+        target_index = None
+        target_text = ""
+        for item in buttons:
+            label = str(item.get("text") or "")
+            if item.get("disabled"):
+                continue
+            if "简历" in label and re.search(r"(求|要|索|获取|交换|申请|请求)", label):
+                target_index = int(item.get("index") or 0)
+                target_text = label
+                break
+        if target_index is None:
+            return {
+                "blocked": True,
+                "message": f"51job 当前会话未找到可用的求简历按钮：{safe_text(candidate_label, 80)}",
+                "candidate": candidate,
+                "buttons": buttons[:12],
+            }
+        locator = page.locator('div.operate-item, button, [role="button"]').nth(target_index)
+        if terminal.humanize:
+            terminal.pause_like_person("pre_action")
+            highlight_target(locator)
+        humanized_locator_click(terminal, locator, force=True)
+        if terminal.humanize:
+            terminal.pause_like_person("post_action")
+        page.wait_for_timeout(random.randint(900, 1400))
+        confirm = page.locator("button").filter(has_text=re.compile("确定|确认|发送|索要|求简历")).first
+        confirmed = False
+        try:
+            if confirm.count():
+                if terminal.humanize:
+                    terminal.pause_like_person("pre_action")
+                    highlight_target(confirm)
+                humanized_locator_click(terminal, confirm, force=True)
+                if terminal.humanize:
+                    terminal.pause_like_person("post_action")
+                page.wait_for_timeout(random.randint(900, 1400))
+                confirmed = True
+        except Exception:
+            confirmed = False
+        message = f"51job 已点击求简历：{safe_text(candidate_label, 80)}"
+        if confirmed:
+            message += "，并处理了确认按钮"
+        return {
+            "message": message,
+            "candidate": candidate,
+            "clickedText": safe_text(target_text, 80),
+            "confirmed": confirmed,
+        }
+
+    def job51_find_resume_attachment(self, terminal: BrowserTerminal) -> dict:
+        page = terminal.current_page()
+        token = f"codex_job51_resume_attachment_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+        info = safe_eval(page, """(args) => {
+          const token = args.token;
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const visible = el => {
+            if (!el || !el.isConnected) return false;
+            const box = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return box.width > 8 && box.height > 8
+              && style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && style.opacity !== '0'
+              && box.bottom >= 0
+              && box.right >= 0
+              && box.top <= window.innerHeight
+              && box.left <= window.innerWidth;
+          };
+          const rect = el => {
+            const box = el.getBoundingClientRect();
+            return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
+          };
+          const textOf = el => normalize(el ? (el.innerText || el.textContent || '') : '');
+          const attrText = el => normalize([
+            el.getAttribute('aria-label'),
+            el.getAttribute('title'),
+            el.getAttribute('download'),
+            el.getAttribute('href'),
+            el.getAttribute('data-url'),
+            el.getAttribute('data-href'),
+            el.className
+          ].filter(Boolean).join(' '));
+          const candidates = [];
+          const seen = new Set();
+          const selector = [
+            'a',
+            'button',
+            '[role="button"]',
+            '[onclick]',
+            '[class*="resume" i]',
+            '[class*="jianli" i]',
+            '[class*="attach" i]',
+            '[class*="file" i]',
+            '[class*="download" i]',
+            '.item-container-resume',
+            '.resume-card'
+          ].join(',');
+          for (const el of Array.from(document.querySelectorAll(selector))) {
+            if (!visible(el)) continue;
+            if (el.closest('#conversation-list,.conversation-list,[class*="conversation-list" i],nav,header,.menu,.sidebar')) continue;
+            const clickable = el.closest('a,button,[role="button"],[onclick]') || el;
+            if (!visible(clickable)) continue;
+            const key = clickable.tagName + ':' + rect(clickable).x + ':' + rect(clickable).y + ':' + normalize(clickable.outerHTML || '').slice(0, 80);
+            if (seen.has(key)) continue;
+            seen.add(key);
+
+            const messageRoot = el.closest('div.message-item,div.im-message-item,.im-message-item,[class*="message-item" i]');
+            const rootText = textOf(messageRoot || el);
+            const ownText = textOf(el);
+            const clickableText = textOf(clickable);
+            const href = clickable.href || clickable.getAttribute('href') || el.href || el.getAttribute('href') || '';
+            const download = clickable.getAttribute('download') || el.getAttribute('download') || '';
+            const className = String(clickable.className || el.className || '');
+            const haystack = normalize([ownText, clickableText, rootText, attrText(el), attrText(clickable), href, download].join(' '));
+            const hasResumeWord = /(附件简历|简历附件|在线简历|简历|resume|cv|附件|文件)/i.test(haystack);
+            const hasFileExt = /\\.(pdf|docx?|PDF|DOCX?)(\\?|#|$|\\s)/.test(haystack);
+            const hasDownloadWord = /(下载|download|导出|保存)/i.test(haystack);
+            if (!hasResumeWord && !hasFileExt) continue;
+            if (/(求简历|索要简历|要简历|请求简历|发送简历|上传简历)/.test(haystack) && !hasFileExt && !/(附件|下载|在线简历)/.test(haystack)) continue;
+
+            let score = 0;
+            if (hasFileExt) score += 110;
+            if (/附件简历|简历附件/.test(haystack)) score += 100;
+            if (hasDownloadWord) score += 80;
+            if (/在线简历/.test(haystack)) score += 45;
+            if (/附件|文件/.test(haystack)) score += 35;
+            if (messageRoot) score += 30;
+            if (/others/.test(String(messageRoot?.className || ''))) score += 12;
+            if (/download|resume|attach|file/i.test(className)) score += 12;
+            if (clickable.matches('a,button,[role="button"]')) score += 10;
+            if (/(职位管理|职位发布|批量|全部岗位|未读|主动联系|人才望远镜)/.test(haystack)) score -= 120;
+            if (score < 40) continue;
+
+            const box = rect(clickable);
+            candidates.push({
+              score,
+              text: normalize(ownText || clickableText || rootText).slice(0, 240),
+              rootText: rootText.slice(0, 360),
+              href,
+              download,
+              tag: clickable.tagName,
+              className: className.slice(0, 160),
+              rect: box,
+              element: clickable
+            });
+          }
+          candidates.sort((a, b) => (b.score - a.score) || ((b.rect?.y || 0) - (a.rect?.y || 0)));
+          const best = candidates[0];
+          if (!best) return { found: false, reason: 'resume_attachment_not_found', candidates: [] };
+          best.element.setAttribute('data-codex-job51-resume-attachment', token);
+          return {
+            found: true,
+            token,
+            candidate: {
+              score: best.score,
+              text: best.text,
+              rootText: best.rootText,
+              href: best.href,
+              download: best.download,
+              tag: best.tag,
+              className: best.className,
+              rect: best.rect
+            },
+            candidates: candidates.slice(0, 8).map(item => ({
+              score: item.score,
+              text: item.text,
+              rootText: item.rootText,
+              href: item.href,
+              download: item.download,
+              tag: item.tag,
+              className: item.className,
+              rect: item.rect
+            }))
+          };
+        }""", {"token": token})
+        return info if isinstance(info, dict) else {"found": False, "reason": "resume_attachment_scan_failed"}
+
+    def job51_find_preview_download_button(self, page) -> dict:
+        token = f"codex_job51_preview_download_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+        info = safe_eval(page, """(args) => {
+          const token = args.token;
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const visible = el => {
+            if (!el || !el.isConnected) return false;
+            const box = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return box.width > 8 && box.height > 8
+              && style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && style.opacity !== '0'
+              && box.bottom >= 0
+              && box.right >= 0
+              && box.top <= window.innerHeight
+              && box.left <= window.innerWidth;
+          };
+          const rect = el => {
+            const box = el.getBoundingClientRect();
+            return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
+          };
+          const candidates = [];
+          for (const el of Array.from(document.querySelectorAll('a,button,[role="button"],[onclick],[class*="download" i]'))) {
+            if (!visible(el)) continue;
+            const text = normalize([
+              el.innerText,
+              el.textContent,
+              el.getAttribute('aria-label'),
+              el.getAttribute('title'),
+              el.getAttribute('download'),
+              el.getAttribute('href'),
+              el.className
+            ].filter(Boolean).join(' '));
+            let score = 0;
+            if (/(下载|download|保存|导出)/i.test(text)) score += 90;
+            if (/\\.(pdf|docx?|PDF|DOCX?)(\\?|#|$|\\s)/.test(text)) score += 70;
+            if (/(简历|resume|cv)/i.test(text)) score += 20;
+            if (/(取消|关闭|发送|求简历|职位|筛选|刷新)/.test(text)) score -= 80;
+            if (score < 50) continue;
+            candidates.push({
+              score,
+              text: text.slice(0, 160),
+              href: el.href || el.getAttribute('href') || '',
+              download: el.getAttribute('download') || '',
+              tag: el.tagName,
+              className: String(el.className || '').slice(0, 140),
+              rect: rect(el),
+              element: el
+            });
+          }
+          candidates.sort((a, b) => b.score - a.score);
+          const best = candidates[0];
+          if (!best) return { found: false, reason: 'preview_download_button_not_found', candidates: [] };
+          best.element.setAttribute('data-codex-job51-preview-download', token);
+          return {
+            found: true,
+            token,
+            candidate: {
+              score: best.score,
+              text: best.text,
+              href: best.href,
+              download: best.download,
+              tag: best.tag,
+              className: best.className,
+              rect: best.rect
+            },
+            candidates: candidates.slice(0, 5).map(item => ({
+              score: item.score,
+              text: item.text,
+              href: item.href,
+              download: item.download,
+              tag: item.tag,
+              className: item.className,
+              rect: item.rect
+            }))
+          };
+        }""", {"token": token})
+        return info if isinstance(info, dict) else {"found": False, "reason": "preview_download_scan_failed"}
+
+    def job51_fetch_attachment_href(self, page, href: str, original_name: str = "") -> dict:
+        href = str(href or "").strip()
+        if not href or href.startswith(("blob:", "javascript:", "#")):
+            return {"ok": False, "reason": "unsupported_href"}
+        absolute_url = urljoin(str(getattr(page, "url", "") or JOB51_CHAT_URL), href)
+        suffix = resume_attachment_suffix(original_name, absolute_url)
+        if suffix not in LOCAL_FILE_EXTENSIONS:
+            return {"ok": False, "reason": "href_not_resume_file", "url": safe_text(absolute_url, 240)}
+        response = page.context.request.get(absolute_url, timeout=15000)
+        if not response.ok:
+            return {"ok": False, "reason": f"http_{response.status}", "url": safe_text(absolute_url, 240)}
+        body = response.body()
+        if not body:
+            return {"ok": False, "reason": "empty_response", "url": safe_text(absolute_url, 240)}
+        headers = response.headers or {}
+        filename = response_attachment_filename(headers, original_name or absolute_url)
+        return {
+            "ok": True,
+            "bytes": body,
+            "filename": filename,
+            "url": safe_text(absolute_url, 240),
+            "contentType": safe_text(headers.get("content-type", ""), 120),
+        }
+
+    def job51_fetch_visible_resume_blob_pdf(self, page, filename_hint: str = "") -> dict:
+        payload = safe_eval(page, """async (args) => {
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const visible = el => {
+            if (!el || !el.isConnected) return false;
+            const box = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return box.width > 80 && box.height > 80
+              && style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && style.opacity !== '0'
+              && box.bottom >= 0
+              && box.right >= 0
+              && box.top <= window.innerHeight
+              && box.left <= window.innerWidth;
+          };
+          const frames = Array.from(document.querySelectorAll('iframe,embed,object'))
+            .map(el => ({
+              el,
+              src: el.src || el.data || el.getAttribute('src') || el.getAttribute('data') || '',
+              title: normalize(el.title || el.getAttribute('aria-label') || ''),
+              className: String(el.className || '')
+            }))
+            .filter(item => item.src && String(item.src).startsWith('blob:') && visible(item.el));
+          const target = frames[0];
+          if (!target) return { ok: false, reason: 'visible_resume_blob_not_found' };
+          try {
+            const response = await fetch(target.src);
+            const buffer = await response.arrayBuffer();
+            const bytes = new Uint8Array(buffer);
+            const isPdf = bytes.length >= 5
+              && bytes[0] === 37 && bytes[1] === 80 && bytes[2] === 68 && bytes[3] === 70 && bytes[4] === 45;
+            if (!isPdf) {
+              return {
+                ok: false,
+                reason: 'blob_is_not_pdf',
+                src: target.src,
+                contentType: response.headers.get('content-type') || '',
+                size: bytes.length
+              };
+            }
+            let binary = '';
+            const chunkSize = 0x8000;
+            for (let index = 0; index < bytes.length; index += chunkSize) {
+              binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+            }
+            return {
+              ok: true,
+              src: target.src,
+              contentType: response.headers.get('content-type') || 'application/pdf',
+              size: bytes.length,
+              filename: args.filenameHint || '51job_resume.pdf',
+              base64: btoa(binary)
+            };
+          } catch (error) {
+            return { ok: false, reason: 'blob_fetch_failed', src: target.src, error: String(error && error.message || error) };
+          }
+        }""", {"filenameHint": filename_hint or "51job_resume.pdf"})
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            return payload if isinstance(payload, dict) else {"ok": False, "reason": "visible_resume_blob_scan_failed"}
+        try:
+            content = base64.b64decode(str(payload.get("base64") or ""), validate=True)
+        except Exception as error:
+            return {"ok": False, "reason": "blob_base64_decode_failed", "error": safe_text(str(error), 160)}
+        if not content.startswith(b"%PDF-"):
+            return {"ok": False, "reason": "blob_decoded_not_pdf", "size": len(content)}
+        return {
+            "ok": True,
+            "bytes": content,
+            "filename": sanitize_filename(str(payload.get("filename") or filename_hint or "51job_resume.pdf")),
+            "url": safe_text(str(payload.get("src") or ""), 240),
+            "contentType": safe_text(str(payload.get("contentType") or "application/pdf"), 120),
+            "size": len(content),
+        }
+
+    def job51_resume_download_memory_keys(
+        self,
+        context: dict | None,
+        candidate_name: str = "",
+        applied_position: str = "",
+    ) -> list[str]:
+        context = context if isinstance(context, dict) else {}
+        applicant = context.get("applicant") if isinstance(context.get("applicant"), dict) else {}
+        label = safe_text(str(applicant.get("label") or ""), 180)
+        conversation_key = safe_text(str(context.get("conversationKey") or ""), 160)
+        candidate_name = safe_text(str(candidate_name or applicant.get("name") or recruiter_candidate_name_from_label(label)), 60)
+        applied_position = safe_text(str(applied_position or applicant.get("appliedPosition") or context.get("appliedPosition") or ""), 100)
+        identity = build_recruiter_candidate_identity(context, label, conversation_key)
+        raw_keys = [
+            str(identity.get("identityKey") or ""),
+            conversation_key,
+            compact_conversation_label(label),
+            compact_conversation_label(f"{candidate_name}|{applied_position}"),
+        ]
+        keys: list[str] = []
+        for raw in raw_keys:
+            raw = str(raw or "").strip()
+            if not raw:
+                continue
+            key = "job51_resume_download|" + stable_digest(raw, 24)
+            if key not in keys:
+                keys.append(key)
+        return keys
+
+    def job51_find_downloaded_resume_memory(
+        self,
+        context: dict | None,
+        candidate_name: str = "",
+        applied_position: str = "",
+    ) -> dict:
+        context = context if isinstance(context, dict) else {}
+        candidate_name = safe_text(str(candidate_name or ""), 60)
+        applied_position = clean_applied_position(str(applied_position or ""))
+        index: dict = {}
+        for memory_file in scoped_json_siblings(JOB51_RESUME_DOWNLOADS_FILE):
+            data = load_json(memory_file, {})
+            if isinstance(data, dict):
+                index.update(data)
+        for key in self.job51_resume_download_memory_keys(context, candidate_name, applied_position):
+            item = index.get(key)
+            if not isinstance(item, dict):
+                continue
+            file_path = Path(str(item.get("filePath") or ""))
+            if file_path.exists() and file_path.is_file():
+                item_name = safe_text(str(item.get("candidateName") or ""), 60)
+                item_position = clean_applied_position(str(item.get("appliedPosition") or ""))
+                if item_name and candidate_name and not recruiter_candidate_names_match(item_name, candidate_name):
+                    continue
+                if item_position and applied_position and item_position != clean_applied_position(applied_position):
+                    continue
+                if not job51_resume_path_matches_candidate(file_path, candidate_name, applied_position):
+                    continue
+                return {
+                    **item,
+                    "memoryKey": key,
+                    "fileHash": str(item.get("fileHash") or job51_resume_file_hash(file_path)),
+                    "fileSize": int(item.get("fileSize") or file_path.stat().st_size or 0),
+                    "source": "job51_resume_download_index",
+                }
+        if candidate_name and candidate_name != "未知候选人" and applied_position and applied_position != "未知岗位":
+            account_part = safe_resume_file_part(f"{AGENT_ACCOUNT_ID}_{AGENT_ACCOUNT_NAME}", AGENT_ACCOUNT_ID)
+            folders = [JOB51_RESUME_DIR / account_part]
+            try:
+                folders.extend(path for path in JOB51_RESUME_DIR.iterdir() if path.is_dir() and path not in folders)
+            except Exception:
+                pass
+            name_part = safe_resume_file_part(candidate_name, "未知候选人")
+            position_part = safe_resume_file_part(applied_position, "未知岗位")
+            matches: list[Path] = []
+            try:
+                for folder in folders:
+                    if not folder.exists():
+                        continue
+                    matches.extend(
+                        path
+                        for path in folder.glob(f"{name_part}_{position_part}_51job_*")
+                        if path.is_file() and path.suffix.lower() in LOCAL_FILE_EXTENSIONS
+                    )
+                matches = sorted(matches, key=lambda path: path.stat().st_mtime, reverse=True)
+            except Exception:
+                matches = []
+            if matches:
+                latest = matches[0]
+                return {
+                    "candidateName": candidate_name,
+                    "appliedPosition": applied_position,
+                    "filePath": str(latest),
+                    "filename": latest.name,
+                    "fileHash": job51_resume_file_hash(latest),
+                    "fileSize": latest.stat().st_size,
+                    "downloadedAt": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(latest.stat().st_mtime)),
+                    "source": "job51_resume_folder_match",
+                }
+        return {}
+
+    def job51_validate_resume_download_context(
+        self,
+        context: dict | None,
+        candidate_name: str,
+        applied_position: str,
+    ) -> dict:
+        context = context if isinstance(context, dict) else {}
+        applicant = context.get("applicant") if isinstance(context.get("applicant"), dict) else {}
+        label = safe_text(str(applicant.get("label") or ""), 180)
+        warnings = applicant.get("identityWarnings") if isinstance(applicant.get("identityWarnings"), list) else []
+        candidate_name = safe_text(str(candidate_name or ""), 60)
+        applied_position = clean_applied_position(str(applied_position or ""))
+        if not candidate_name or candidate_name == "未知候选人":
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "job51_candidate_name_unknown",
+                "message": "51job 当前候选人姓名未识别，已停止下载，避免把附件记到错误候选人名下。",
+            }
+        if not applied_position or applied_position == "未知岗位":
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "job51_position_unknown",
+                "message": "51job 当前沟通岗位未识别，已停止下载，避免把附件记到错误岗位名下。",
+            }
+        if warnings:
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "job51_candidate_identity_mismatch",
+                "message": "51job 当前聊天头部与刚打开的联系人不一致，已停止下载，等待页面同步后再处理。",
+                "warnings": warnings,
+            }
+        if label and not candidate_label_matches(label, candidate_name):
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "job51_candidate_label_mismatch",
+                "message": "51job 当前候选人姓名与会话列表标签不一致，已停止下载，避免串人保存。",
+                "label": label,
+                "candidateName": candidate_name,
+            }
+        return {
+            "ok": True,
+            "candidateName": candidate_name,
+            "appliedPosition": applied_position,
+            "label": label,
+        }
+
+    def job51_mark_resume_downloaded(self, context: dict | None, result: dict) -> dict:
+        context = context if isinstance(context, dict) else {}
+        result = result if isinstance(result, dict) else {}
+        applicant = context.get("applicant") if isinstance(context.get("applicant"), dict) else {}
+        candidate_label = safe_text(str(applicant.get("label") or result.get("candidateLabel") or ""), 180)
+        candidate_name = safe_text(str(result.get("candidateName") or applicant.get("name") or recruiter_candidate_name_from_label(candidate_label)), 60)
+        applied_position = clean_applied_position(str(result.get("appliedPosition") or applicant.get("appliedPosition") or context.get("appliedPosition") or ""))
+        conversation_key = safe_text(str(context.get("conversationKey") or ""), 160)
+        file_path = Path(str(result.get("filePath") or ""))
+        file_hash = str(result.get("fileHash") or "")
+        file_size = int(result.get("fileSize") or 0)
+        if file_path.exists() and file_path.is_file():
+            file_hash = file_hash or job51_resume_file_hash(file_path)
+            try:
+                file_size = file_size or file_path.stat().st_size
+            except Exception:
+                file_size = file_size or 0
+        item = {
+            "platform": "51job",
+            "accountId": AGENT_ACCOUNT_ID,
+            "accountName": AGENT_ACCOUNT_NAME,
+            "candidateName": candidate_name,
+            "candidateLabel": candidate_label,
+            "appliedPosition": applied_position,
+            "conversationKey": conversation_key,
+            "filePath": str(result.get("filePath") or ""),
+            "filename": str(result.get("filename") or ""),
+            "fileHash": file_hash,
+            "fileSize": file_size,
+            "downloadMethod": str(result.get("downloadMethod") or ""),
+            "downloadedAt": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        index = load_json(JOB51_RESUME_DOWNLOADS_FILE, {})
+        if not isinstance(index, dict):
+            index = {}
+        keys = self.job51_resume_download_memory_keys(context, candidate_name, applied_position)
+        for key in keys:
+            index[key] = item
+        save_json(JOB51_RESUME_DOWNLOADS_FILE, index)
+        self.set_recruiter_basic_state(
+            conversation_key,
+            candidate_label or candidate_name,
+            "job51_resume_downloaded",
+            context=context,
+            platform="51job",
+            resumeDownloaded=True,
+            resumeFilePath=item["filePath"],
+            resumeFilename=item["filename"],
+            resumeDownloadMethod=item["downloadMethod"],
+        )
+        return {"keys": keys, "item": item}
+
+    def job51_close_resume_download_surfaces(self, terminal: BrowserTerminal, origin_page=None) -> dict:
+        origin_page = origin_page or terminal.current_page()
+        context = origin_page.context
+        closed_pages: list[dict] = []
+        for page in list(context.pages):
+            if page == origin_page:
+                continue
+            try:
+                url = str(getattr(page, "url", "") or "")
+                title = page.title()
+            except Exception:
+                url = ""
+                title = ""
+            haystack = f"{url} {title}"
+            should_close = (
+                "ehire.51job.com" in url
+                and "/Revision/chat" not in url
+                and re.search(r"(resume|jianli|preview|download|pdf|doc|简历|预览)", haystack, flags=re.I)
+            )
+            if not should_close:
+                continue
+            try:
+                page.close()
+                closed_pages.append({"url": safe_text(url, 180), "title": safe_text(title, 80)})
+            except Exception:
+                pass
+        try:
+            origin_page.bring_to_front()
+        except Exception:
+            pass
+        clicked = safe_eval(origin_page, """() => {
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const visible = el => {
+            if (!el || !el.isConnected) return false;
+            const box = el.getBoundingClientRect();
+            const style = getComputedStyle(el);
+            return box.width > 8 && box.height > 8 && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+          };
+          const roots = Array.from(document.querySelectorAll([
+            '.con.con-ehire',
+            '.con-close',
+            '.el-dialog__wrapper',
+            '.el-dialog',
+            '.resume-common-dialog',
+            '.IM-resume-operation',
+            '.con-container',
+            '.new-resume-online-main-ui',
+            '.resume-detail-wrap',
+            '[class*="resume-detail" i]',
+            '[class*="resume-online" i]',
+            '[class*="preview" i]'
+          ].join(','))).filter(root => {
+            if (!visible(root)) return false;
+            const text = normalize(root.innerText || root.textContent || '');
+            const className = String(root.className || '');
+            return /con-ehire|con-close|IM-resume|resume|cv/i.test(className)
+              || /(简历|附件|预览|下载|求职意向|个人优势|工作经历|resume|cv)/i.test(text + ' ' + className);
+          });
+          let clicked = 0;
+          for (const root of roots) {
+            const candidates = Array.from(root.querySelectorAll('button,a,[role="button"],i,span,div')).filter(el => {
+              if (!visible(el)) return false;
+              const text = normalize([el.innerText, el.textContent, el.getAttribute('aria-label'), el.getAttribute('title'), el.className].filter(Boolean).join(' '));
+              if (/(关闭|close|el-dialog__headerbtn|icon-close|btn-close|\\bclose\\b|×|x)/i.test(text)) return true;
+              return false;
+            }).sort((a, b) => {
+              const ar = a.getBoundingClientRect();
+              const br = b.getBoundingClientRect();
+              return (br.y - ar.y) || (br.x - ar.x);
+            });
+            const target = candidates[0];
+            if (!target) continue;
+            target.click();
+            clicked += 1;
+            break;
+          }
+          return { clicked };
+        }""") or {}
+        try:
+            origin_page.wait_for_timeout(random.randint(300, 650))
+        except Exception:
+            pass
+        return {
+            "closedPages": closed_pages,
+            "closedInlineSurfaces": int((clicked if isinstance(clicked, dict) else {}).get("clicked") or 0),
+        }
+
+    def job51_resume_download_suitability_guard(
+        self,
+        terminal: BrowserTerminal,
+        context: dict | None,
+        previous_state: dict | None = None,
+        accepted_by_flow: dict | None = None,
+    ) -> dict:
+        context = context if isinstance(context, dict) else {}
+        if isinstance(accepted_by_flow, dict) and accepted_by_flow.get("accepted"):
+            return {
+                "allowed": True,
+                "reason": accepted_by_flow.get("reason") or "accepted_by_current_screening_flow",
+                "source": accepted_by_flow.get("source") or "current_flow",
+                "screening": accepted_by_flow.get("screening") if isinstance(accepted_by_flow.get("screening"), dict) else {},
+            }
+
+        candidate = context.get("applicant") if isinstance(context.get("applicant"), dict) else {}
+        candidate_label = str(candidate.get("label") or candidate.get("name") or "")
+        conversation_key = str(context.get("conversationKey") or "")
+        candidate_state_key = recruiter_basic_candidate_state_key(candidate_label)
+        previous_state = previous_state if isinstance(previous_state, dict) else (
+            self.get_chat_state(conversation_key) or self.get_chat_state(candidate_state_key)
+        )
+        status = str((previous_state or {}).get("status") or "")
+        if status.startswith(("position_screening_accepted", "basic_conditions_accepted")) or status == "job51_resume_downloaded":
+            return {
+                "allowed": True,
+                "reason": "previous_state_accepted",
+                "source": "chat_state",
+                "stateStatus": status,
+            }
+
+        position_reply = context.get("positionReply") if isinstance(context.get("positionReply"), dict) else {}
+        knowledge_base = context.get("companyKnowledgeBase") if isinstance(context.get("companyKnowledgeBase"), dict) else {}
+        screening_rules = knowledge_base.get("screening") if isinstance(knowledge_base.get("screening"), dict) else {}
+        messages = context.get("messages", []) if isinstance(context.get("messages"), list) else []
+
+        if should_use_position_screening_flow(context, position_reply):
+            analysis = analyze_position_screening(messages, screening_rules)
+            if analysis.get("status") != "not_asked" and context.get("lastSender") == "other":
+                try:
+                    analysis = enhance_position_screening_with_model(context, screening_rules, analysis, previous_state)
+                except Exception as error:
+                    analysis = {
+                        **analysis,
+                        "modelEnhanceError": safe_text(str(error), 160),
+                    }
+            return {
+                "allowed": analysis.get("status") == "accept",
+                "reason": analysis.get("reason") or analysis.get("status") or "position_screening_unknown",
+                "source": "position_screening",
+                "screening": analysis,
+                "message": "51job 当前候选人尚未通过岗位筛选，不能下载简历。" if analysis.get("status") != "accept" else "",
+            }
+
+        if is_explicit_ai_app_basic_conditions_position(context):
+            phrase = str(position_reply.get("initialCommonPhrase") or BASIC_CONDITIONS_PHRASE).strip()
+            screening = analyze_basic_condition_screening(messages, phrase)
+        screening = apply_basic_waiting_state_to_screening(screening, previous_state, context)
+        if screening.get("status") != "not_asked" and context.get("lastSender") == "other":
+            rule_screening = screening
+            try:
+                screening = enhance_basic_condition_screening_with_model(context, phrase, screening, previous_state)
+                screening = preserve_zhilian_basic_acceptance_after_model(screening, rule_screening, platform="job51")
+            except Exception as error:
+                screening = {
+                    **screening,
+                        "modelEnhanceError": safe_text(str(error), 160),
+                    }
+            return {
+                "allowed": screening.get("status") == "accept",
+                "reason": screening.get("reason") or screening.get("status") or "basic_conditions_unknown",
+                "source": "basic_conditions",
+                "screening": screening,
+                "message": "51job 当前候选人尚未明确接受 AI 岗位基础条件，不能下载简历。" if screening.get("status") != "accept" else "",
+            }
+
+        return {
+            "allowed": False,
+            "reason": "suitability_not_confirmed",
+            "source": "unknown",
+            "message": "51job 当前候选人没有明确的合适判断，不能下载简历。",
+        }
+
+    def job51_is_online_resume_detail_page(self, page) -> bool:
+        try:
+            url = str(getattr(page, "url", "") or "")
+        except Exception:
+            url = ""
+        if "/Revision/talent/resume/detail" in url:
+            return True
+        state = safe_eval(page, """() => {
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const text = normalize(document.body ? document.body.innerText : '');
+          const hasImResumeSurface = !!document.querySelector([
+            '#sensor_imresume_download',
+            '#sensor_imresume_print',
+            '.IM-resume-operation',
+            '.con-container .resume',
+            '.baseinfo-container.IM-resume-item',
+            '.IM-base-module.IM-resume-item'
+          ].join(','));
+          if (hasImResumeSurface && /求职意向/.test(text) && /(个人优势|工作经历|教育经历)/.test(text)) return true;
+          return /(人才状态|投递日期|求职意向)/.test(text) && /(保存|打印|转发|更多操作)/.test(text) && /(简历|工作经历|教育经历|个人优势)/.test(text);
+        }""")
+        return bool(state)
+
+    def job51_find_online_resume_entry(self, terminal: BrowserTerminal) -> dict:
+        page = terminal.current_page()
+        token = f"codex_job51_online_resume_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+        info = safe_eval(page, """(args) => {
+          const token = args.token;
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const visible = el => {
+            if (!el || !el.isConnected) return false;
+            const box = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return box.width > 8 && box.height > 8
+              && style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && style.opacity !== '0'
+              && box.bottom >= 0
+              && box.right >= 0
+              && box.top <= window.innerHeight
+              && box.left <= window.innerWidth;
+          };
+          const rect = el => {
+            const box = el.getBoundingClientRect();
+            return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
+          };
+          const textOf = el => normalize(el ? (el.innerText || el.textContent || '') : '');
+          const candidates = [];
+          const seen = new Set();
+          const selector = [
+            '#sensor_Bchat_newzxjl',
+            '.chat-user-operate .file-style.online',
+            '.chat-user-operate .file-style',
+            '.chat-user-operate [tabindex]',
+            '.resume-element',
+            '.item-container-resume',
+            '.resume-card',
+            '[class*="resume" i]',
+            '[class*="file-style" i]',
+            'a',
+            'button',
+            '[role="button"]',
+            '[onclick]'
+          ].join(',');
+          for (const el of Array.from(document.querySelectorAll(selector))) {
+            if (!visible(el)) continue;
+            if (el.closest('#conversation-list,.conversation-list,[class*="conversation-list" i],nav,header,.menu,.sidebar')) continue;
+            const clickable = el.closest('a,button,[role="button"],[onclick],#sensor_Bchat_newzxjl,.chat-user-operate .file-style,.chat-user-operate [tabindex],.resume-element,.item-container-resume,[class*="resume" i],[class*="file-style" i]') || el;
+            if (!visible(clickable)) continue;
+            const root = el.closest('div.message-item,div.im-message-item,.im-message-item,[class*="message-item" i]') || clickable;
+            const haystack = normalize([
+              textOf(el),
+              textOf(clickable),
+              textOf(root),
+              el.getAttribute('aria-label'),
+              el.getAttribute('title'),
+              clickable.getAttribute('aria-label'),
+              clickable.getAttribute('title'),
+              clickable.getAttribute('href'),
+              el.className,
+              clickable.className
+            ].filter(Boolean).join(' '));
+            if (!/在线简历/.test(haystack)) continue;
+            if (/(求简历|索要简历|要简历|请求简历|上传简历)/.test(haystack) && !/在线简历/.test(haystack)) continue;
+            const box = rect(clickable);
+            const key = `${clickable.tagName}:${box.x}:${box.y}:${haystack.slice(0, 80)}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            let score = 100;
+            if (/sensor_Bchat_newzxjl|file-style online|chat-user-operate/i.test(haystack)) score += 80;
+            if (/resume-element|item-container-resume|resume-card/i.test(String(clickable.className || '') + ' ' + String(root.className || ''))) score += 140;
+            if (/在线简历/.test(textOf(clickable))) score += 60;
+            if (/在线简历/.test(textOf(root))) score += 35;
+            if (/others|left|message/i.test(String(root.className || ''))) score += 15;
+            if (box.x > 260) score += 10;
+            if (/(批量|职位管理|全部岗位|未读|人才望远镜|主动联系)/.test(haystack)) score -= 120;
+            candidates.push({
+              score,
+              text: haystack.slice(0, 260),
+              tag: clickable.tagName,
+              className: String(clickable.className || '').slice(0, 160),
+              rect: box,
+              element: clickable
+            });
+          }
+          candidates.sort((a, b) => (b.score - a.score) || ((b.rect?.y || 0) - (a.rect?.y || 0)));
+          const best = candidates[0];
+          if (!best || best.score < 80) return { found: false, reason: 'online_resume_entry_not_found', candidates: candidates.slice(0, 8) };
+          best.element.setAttribute('data-codex-job51-online-resume', token);
+          return {
+            found: true,
+            token,
+            candidate: {
+              score: best.score,
+              text: best.text,
+              tag: best.tag,
+              className: best.className,
+              rect: best.rect
+            },
+            candidates: candidates.slice(0, 8).map(item => ({
+              score: item.score,
+              text: item.text,
+              tag: item.tag,
+              className: item.className,
+              rect: item.rect
+            }))
+          };
+        }""", {"token": token})
+        return info if isinstance(info, dict) else {"found": False, "reason": "online_resume_scan_failed"}
+
+    def job51_open_online_resume_detail(self, terminal: BrowserTerminal, entry: dict) -> dict:
+        origin_page = terminal.current_page()
+        locator = origin_page.locator(f"[data-codex-job51-online-resume='{entry.get('token')}']").first
+        if not locator.count():
+            return {"ok": False, "reason": "online_resume_entry_element_missing", "entry": {k: v for k, v in entry.items() if k != "token"}}
+
+        before_pages = list(getattr(origin_page.context, "pages", []) or [])
+        detail_page = None
+        opened_by = "current_page"
+        clicked_entry = False
+        try:
+            with origin_page.context.expect_page(timeout=8000) as page_info:
+                if terminal.humanize:
+                    terminal.pause_like_person("pre_action")
+                    highlight_target(locator)
+                humanized_locator_click(terminal, locator, force=True)
+                clicked_entry = True
+                if terminal.humanize:
+                    terminal.pause_like_person("post_action")
+            detail_page = page_info.value
+            opened_by = "new_page"
+        except Exception:
+            if not clicked_entry:
+                try:
+                    if terminal.humanize:
+                        terminal.pause_like_person("pre_action")
+                        highlight_target(locator)
+                    humanized_locator_click(terminal, locator, force=True)
+                    clicked_entry = True
+                    if terminal.humanize:
+                        terminal.pause_like_person("post_action")
+                except Exception as error:
+                    return {"ok": False, "reason": "online_resume_click_failed", "error": safe_text(str(error), 160)}
+
+        origin_page.wait_for_timeout(random.randint(900, 1400))
+        pages = list(getattr(origin_page.context, "pages", []) or [])
+        if detail_page is None:
+            new_pages = [page for page in pages if page not in before_pages]
+            for page in reversed(new_pages + pages):
+                try:
+                    if self.job51_is_online_resume_detail_page(page):
+                        detail_page = page
+                        opened_by = "detected_page"
+                        break
+                except Exception:
+                    continue
+        if detail_page is None and self.job51_is_online_resume_detail_page(origin_page):
+            detail_page = origin_page
+            opened_by = "same_page"
+        if detail_page is None:
+            return {
+                "ok": False,
+                "reason": "online_resume_detail_not_opened",
+                "entry": {k: v for k, v in entry.items() if k != "token"},
+                "pages": [
+                    {"url": safe_text(str(getattr(page, "url", "") or ""), 180), "title": safe_text(page.title(), 80)}
+                    for page in pages[-6:]
+                ],
+            }
+
+        try:
+            detail_page.bring_to_front()
+            detail_page.wait_for_load_state("domcontentloaded", timeout=8000)
+        except Exception:
+            pass
+        try:
+            detail_page.wait_for_selector("body", timeout=5000)
+        except Exception:
+            pass
+        terminal.page = detail_page
+        return {
+            "ok": True,
+            "page": detail_page,
+            "originPage": origin_page,
+            "openedBy": opened_by,
+            "url": safe_text(str(getattr(detail_page, "url", "") or ""), 240),
+            "title": safe_text(detail_page.title(), 100),
+            "entry": {k: v for k, v in entry.items() if k != "token"},
+        }
+
+    def job51_find_online_resume_save_button(self, page) -> dict:
+        token = f"codex_job51_online_resume_save_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+        info = safe_eval(page, """(args) => {
+          const token = args.token;
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const visible = el => {
+            if (!el || !el.isConnected) return false;
+            const box = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return box.width > 8 && box.height > 8
+              && style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && style.opacity !== '0'
+              && box.bottom >= 0
+              && box.right >= 0
+              && box.top <= window.innerHeight
+              && box.left <= window.innerWidth;
+          };
+          const rect = el => {
+            const box = el.getBoundingClientRect();
+            return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
+          };
+          const candidates = [];
+          const selector = [
+            '#sensor_imresume_download',
+            '[id*="imresume_download" i]',
+            '#eh_save_popup_action_ref',
+            '[id*="save" i]',

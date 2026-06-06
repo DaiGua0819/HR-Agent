@@ -1,0 +1,1949 @@
+      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]"))
+    ) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        const parsedText = normalizeRuleSuggestionText(parsed);
+        if (parsedText) return parsedText;
+      } catch {
+        // Keep the original text when it only looks like JSON.
+      }
+    }
+    return trimmed;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => normalizeRuleSuggestionText(item))
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  if (typeof value !== "object") return String(value || "").trim();
+
+  const lines = [];
+  const primary =
+    value.suggestion ||
+    value.rule ||
+    value.change ||
+    value.title ||
+    value.summary ||
+    value.description ||
+    value.content ||
+    value.text;
+  const dimension = value.dimension || value.category || value.field || value.target || value.scope;
+  const reason = value.reason || value.rationale || value.why;
+  const evidence = value.evidence || value.example || value.examples || value.case;
+  const before = value.before || value.oldRule || value.from;
+  const after = value.after || value.newRule || value.to;
+  const score = value.scoreDelta ?? value.weight ?? value.points ?? value.score;
+
+  if (primary && primary !== value) lines.push(normalizeRuleSuggestionText(primary));
+  if (dimension) lines.push(`维度：${normalizeRuleSuggestionText(dimension)}`);
+  if (reason) lines.push(`原因：${normalizeRuleSuggestionText(reason)}`);
+  if (evidence) lines.push(`依据：${normalizeRuleSuggestionText(evidence)}`);
+  if (before || after) {
+    lines.push(`调整：${normalizeRuleSuggestionText(before) || "-"} -> ${normalizeRuleSuggestionText(after) || "-"}`);
+  }
+  if (score !== undefined && score !== null && score !== "") {
+    lines.push(`分值/权重：${normalizeRuleSuggestionText(score)}`);
+  }
+
+  if (lines.length) return lines.filter(Boolean).join("\n");
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value || "").trim();
+  }
+}
+
+function normalizeRuleSuggestionArray(value) {
+  const items = Array.isArray(value) ? value : [value];
+  return items
+    .map((item) => normalizeRuleSuggestionText(item))
+    .filter(Boolean);
+}
+
+function sanitizeFeedback(input = {}) {
+  const decision = String(input.decision || "pending").trim();
+  const allowedDecisions = new Set(["suitable", "unsuitable", "pending", "interview"]);
+  return {
+    decision: allowedDecisions.has(decision) ? decision : "pending",
+    positiveTags: normalizeStringArray(input.positiveTags),
+    negativeTags: normalizeStringArray(input.negativeTags),
+    dimensions: normalizeStringArray(input.dimensions),
+    reason: String(input.reason || "").trim(),
+    affectsScoring: Boolean(input.affectsScoring),
+    reviewedAt: "",
+    review: null,
+  };
+}
+
+function publicRuleSuggestion(row) {
+  const payload = parsePayload(row.payload, {});
+  return {
+    id: row.id,
+    resumeId: row.resume_id,
+    jobType: normalizeJobType(row.job_type || payload.jobType || DEFAULT_JOB_TYPE),
+    suggestion:
+      normalizeRuleSuggestionText(row.suggestion) ||
+      normalizeRuleSuggestionText(payload.suggestion) ||
+      normalizeRuleSuggestionText(payload.suggestedRuleChanges),
+    status: row.status,
+    sourceSummary: row.source_summary || "",
+    resumeName: payload.resumeName || "",
+    resumePhone: payload.resumePhone || "",
+    createdAt: row.created_at,
+    adoptedAt: row.adopted_at || "",
+    rejectedAt: row.rejected_at || "",
+  };
+}
+
+function listRuleSuggestionRows(jobType = "") {
+  const normalizedJobType = jobType ? normalizeJobType(jobType) : "";
+  const whereClause = normalizedJobType ? "WHERE job_type = ?" : "";
+  const statement = getDb().prepare(
+    `SELECT id, resume_id, job_type, suggestion, status, source_summary, payload, created_at, adopted_at, rejected_at, updated_at
+     FROM rule_suggestions
+     ${whereClause}
+     ORDER BY
+       CASE status WHEN 'pending' THEN 0 WHEN 'adopted' THEN 1 ELSE 2 END,
+       created_at DESC`
+  );
+  return normalizedJobType ? statement.all(normalizedJobType) : statement.all();
+}
+
+function createRuleSuggestionsFromFeedback(record, feedback) {
+  const suggestions = normalizeRuleSuggestionArray(feedback?.review?.suggestedRuleChanges).slice(0, 12);
+  if (!feedback?.affectsScoring || !suggestions.length) return [];
+
+  const now = new Date().toISOString();
+  const inserted = [];
+  const db = getDb();
+  const jobType = normalizeJobType(record.jobType || DEFAULT_JOB_TYPE);
+  const insert = db.prepare(`
+    INSERT INTO rule_suggestions
+      (id, resume_id, job_type, suggestion, status, source_summary, payload, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+  `);
+
+  suggestions.forEach((suggestion) => {
+    const id = crypto.randomUUID();
+    insert.run(
+      id,
+      record.id,
+      jobType,
+      suggestion,
+      feedback.review?.summary || "",
+      JSON.stringify({
+        jobType,
+        resumeName: record.name || "",
+        resumePhone: record.phone || "",
+        decision: feedback.decision,
+        positiveTags: feedback.positiveTags,
+        negativeTags: feedback.negativeTags,
+        dimensions: feedback.dimensions,
+        reason: feedback.reason,
+        scoreDiagnosis: feedback.review?.scoreDiagnosis || "",
+        suggestedRuleChanges: suggestions,
+      }),
+      now,
+      now
+    );
+    inserted.push(id);
+  });
+
+  return inserted;
+}
+
+function getAdoptedRulesText() {
+  try {
+    const rows = listAdoptedRuleRows();
+
+    if (!rows.length) return "";
+    return `\n\n以下是人工审核后已采纳的评分规则补充，后续解析和评分必须参考：\n${rows
+      .map((row, index) => `${index + 1}. 【${normalizeJobType(row.job_type || DEFAULT_JOB_TYPE)}】${normalizeRuleSuggestionText(row.suggestion)}`)
+      .filter((line) => !line.endsWith("】"))
+      .join("\n")}`;
+  } catch {
+    return "";
+  }
+}
+
+function listAdoptedRuleRows(limit = 30, jobType = "") {
+  const normalizedJobType = jobType ? normalizeJobType(jobType) : "";
+  const whereClause = normalizedJobType ? "WHERE status = 'adopted' AND job_type = ?" : "WHERE status = 'adopted'";
+  const statement = getDb().prepare(
+    `SELECT id, resume_id, job_type, suggestion, source_summary, payload, created_at, adopted_at
+     FROM rule_suggestions
+     ${whereClause}
+     ORDER BY adopted_at ASC, created_at ASC
+     LIMIT ?`
+  );
+  return normalizedJobType ? statement.all(normalizedJobType, limit) : statement.all(limit);
+}
+
+function getCurrentScoringVersion(jobType = DEFAULT_JOB_TYPE) {
+  const normalizedJobType = normalizeJobType(jobType || DEFAULT_JOB_TYPE);
+  const baseMeta = getBaseScoringMeta(normalizedJobType);
+
+  try {
+    const adoptedCount = getDb()
+      .prepare("SELECT COUNT(*) AS count FROM rule_suggestions WHERE status = 'adopted' AND job_type = ?")
+      .get(normalizedJobType).count;
+    return adoptedCount ? `${baseMeta.version}+rules-${adoptedCount}` : baseMeta.version;
+  } catch {
+    return baseMeta.version;
+  }
+}
+
+function getScoringVersionMeta(version = "", jobType = DEFAULT_JOB_TYPE) {
+  const normalizedJobType = normalizeJobType(jobType || DEFAULT_JOB_TYPE);
+  const baseMeta = getBaseScoringMeta(normalizedJobType);
+  const rawVersion = String(version || getCurrentScoringVersion(normalizedJobType) || baseMeta.version);
+  const match = rawVersion.match(/^(.+?)(?:\+rules-(\d+))?$/);
+  const baseVersion = match?.[1] || rawVersion;
+  const adoptedRuleCount = match?.[2] ? Number(match[2]) : 0;
+  const isKnownBase = baseVersion === baseMeta.version;
+
+  return {
+    version: rawVersion,
+    baseVersion,
+    displayName: isKnownBase ? baseMeta.name : `评分版本 ${baseVersion}`,
+    description: isKnownBase ? baseMeta.description : SCORING_VERSION_DESCRIPTION,
+    adoptedRuleCount,
+    ruleScope: adoptedRuleCount
+      ? `${baseMeta.ruleScope} + ${adoptedRuleCount} 条人工补充规则`
+      : baseMeta.ruleScope,
+    isCurrent: rawVersion === getCurrentScoringVersion(normalizedJobType),
+  };
+}
+
+function getAppliedAdoptedRulesForVersion(version = "", jobType = DEFAULT_JOB_TYPE) {
+  const normalizedJobType = normalizeJobType(jobType || DEFAULT_JOB_TYPE);
+
+  const rawVersion = String(version || "");
+  if (!rawVersion) return listAdoptedRuleRows(30, normalizedJobType);
+
+  const match = rawVersion.match(/\+rules-(\d+)$/);
+  const limit = match?.[1] ? Number(match[1]) : 0;
+  return limit > 0 ? listAdoptedRuleRows(limit, normalizedJobType) : [];
+}
+
+function getPositionScoringDefinition(jobType) {
+  const normalizedJobType = normalizeJobType(jobType || DEFAULT_JOB_TYPE);
+  const direct = POSITION_SCORING_RULES[normalizedJobType] || null;
+  if (!direct) return null;
+  if (!direct.inherit) return direct;
+  const base = POSITION_SCORING_RULES[direct.inherit] || {};
+  return {
+    ...base,
+    ...direct,
+    mustHave: direct.mustHave || base.mustHave || [],
+    bonus: direct.bonus || base.bonus || [],
+    risks: direct.risks || base.risks || [],
+  };
+}
+
+function buildPositionScoringDimensions(definition = {}) {
+  return [
+    {
+      name: "必须项",
+      weight: "优先级最高",
+      logic: "必须项用于判断候选人是否进入后续复核；缺失时不要因为关键词或加分项给高优先级。",
+      items: definition.mustHave || [],
+    },
+    {
+      name: "加分项",
+      weight: "排序增强",
+      logic: "加分项用于区分优先级；命中越多越值得优先看，但不能替代必须项。",
+      items: definition.bonus || [],
+    },
+    {
+      name: "风险项",
+      weight: "降级/复核",
+      logic: "风险项命中时需要降级或人工复核，避免纯关键词匹配误判。",
+      items: definition.risks || [],
+    },
+  ].filter((dimension) => dimension.items.length);
+}
+
+function truncateFeedbackTag(text, maxLength = 28) {
+  const value = String(text || "")
+    .replace(/[。；;，,]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!value) return "";
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+}
+
+function uniqueLimitedStrings(values, limit = 14) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function buildFeedbackTagOptions(jobType, definition = null) {
+  const normalizedJobType = normalizeJobType(jobType || DEFAULT_JOB_TYPE);
+  const mustHave = Array.isArray(definition?.mustHave) ? definition.mustHave : [];
+  const bonus = Array.isArray(definition?.bonus) ? definition.bonus : [];
+  const risks = Array.isArray(definition?.risks) ? definition.risks : [];
+
+  if (!definition) {
+    return {
+      positiveTags: ["基础信息完整", "岗位归类可信", "经历可复核", "表达清楚"],
+      negativeTags: ["基础信息不足", "岗位归类存疑", "经历不清楚", "需要人工复核"],
+      dimensions: ["岗位归类", "基础信息", "经历完整度", "表达质量", "人工复核"],
+    };
+  }
+
+  return {
+    positiveTags: uniqueLimitedStrings([
+      "必须项满足",
+      "加分项突出",
+      `${normalizedJobType}岗位匹配`,
+      ...mustHave.map((item) => `满足：${truncateFeedbackTag(item)}`),
+      ...bonus.map((item) => `加分：${truncateFeedbackTag(item)}`),
+      "经历真实完整",
+      "表达沟通好",
+    ]),
+    negativeTags: uniqueLimitedStrings([
+      "必须项缺失",
+      "信息不足",
+      "表达不清",
+      `${normalizedJobType}岗位不匹配`,
+      ...mustHave.map((item) => `缺失：${truncateFeedbackTag(item)}`),
+      ...risks.map((item) => `风险：${truncateFeedbackTag(item)}`),
+    ]),
+    dimensions: uniqueLimitedStrings([
+      "必须项",
+      "加分项",
+      "风险项",
+      `${normalizedJobType}岗位适配`,
+      "行业/产品经验",
+      "项目或职责证据",
+      "学历专业",
+      "表达质量",
+      "信息完整度",
+    ], 12),
+  };
+}
+
+function getCurrentScoringRules(jobType, version = "") {
+  const normalizedJobType = normalizeJobType(jobType || DEFAULT_JOB_TYPE);
+  const scoringVersion = String(version || getCurrentScoringVersion(normalizedJobType));
+  const versionMeta = getScoringVersionMeta(scoringVersion, normalizedJobType);
+  const scoringDefinition = getPositionScoringDefinition(normalizedJobType);
+  const isAiV4 = isAiScoringJobType(normalizedJobType);
+
+  if (!scoringDefinition) {
+    return {
+      jobType: normalizedJobType,
+      scoringVersion,
+      versionMeta,
+      rules: {
+        title: `${normalizedJobType}评分规则`,
+        description:
+          "当前岗位还没有配置专属必须项和加分项，暂时只做简历基础信息提取、岗位归类和人工复核。",
+        dimensions: [],
+        scoreBands: [
+          "优先补齐该岗位的必须项、加分项和风险项。",
+          "未配置前不要自动给出高优先级判断。"
+        ],
+      },
+      feedbackTags: buildFeedbackTagOptions(normalizedJobType, null),
+    };
+  }
+
+  return {
+    jobType: normalizedJobType,
+    scoringVersion,
+    versionMeta,
+    rules: {
+      title: scoringDefinition.title || `${normalizedJobType}评分规则`,
+      description: isAiV4
+        ? AI_V4_SCORING_VERSION_DESCRIPTION
+        : scoringDefinition.description || "按岗位必须项、加分项和风险项进行复核。",
+      dimensions: isAiV4 ? buildAiV4ScoringDimensions(scoringDefinition) : buildPositionScoringDimensions(scoringDefinition),
+      scoreBands: isAiV4
+        ? [
+            "项目经历最多 65 分：必须先有Agent/RAG/大模型应用项目门槛，再看项目证据、本人职责、工程落地和模块深度。",
+            "技术栈最多 35 分：重点看LLM Agent、RAG、工具调用、Prompt、大模型、后端服务化和部署能力。",
+            "三条已采纳回灌会额外影响人工复核方向：LoRA/QLoRA微调能力、Agent能力纵深、RAG技术深度校验。",
+          ]
+        : [
+            "A：必须项明确满足，并命中多个高价值加分项，建议优先查看。",
+            "B：必须项基本满足，有部分加分项，建议进入人工复核。",
+            "C：必须项信息不足，或只命中少量加分项，暂缓判断。",
+            "D：关键必须项缺失，或命中明显风险项，建议跳过或人工确认。",
+          ],
+    },
+    feedbackTags: buildFeedbackTagOptions(normalizedJobType, scoringDefinition),
+  };
+}
+
+function readJdTagOverrides() {
+  try {
+    const payload = JSON.parse(fsSync.readFileSync(JD_TAG_OVERRIDES_PATH, "utf8"));
+    return payload && typeof payload === "object" ? payload : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writeJdTagOverrides(overrides) {
+  await fs.mkdir(path.dirname(JD_TAG_OVERRIDES_PATH), { recursive: true });
+  await fs.writeFile(JD_TAG_OVERRIDES_PATH, JSON.stringify(overrides || {}, null, 2), "utf8");
+}
+
+function normalizeJdTagGroup(group) {
+  const value = String(group || "").trim();
+  if (value === "mustHave" || value === "bonus" || value === "risks") return value;
+  if (/risk|风险/i.test(value)) return "risks";
+  if (/bonus|加分/i.test(value)) return "bonus";
+  return "mustHave";
+}
+
+function uniqueJdTags(values, limit = 80) {
+  const seen = new Set();
+  const tags = [];
+  for (const value of values || []) {
+    const tag = String(value || "").trim();
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    tags.push(tag);
+    if (tags.length >= limit) break;
+  }
+  return tags;
+}
+
+function applyJdTagOverrides(profileId, group, baseTags, overrides = readJdTagOverrides()) {
+  const entry = overrides?.[profileId]?.[group] || {};
+  const removed = new Set(normalizeStringArray(entry.removed));
+  return uniqueJdTags([...normalizeStringArray(baseTags), ...normalizeStringArray(entry.added)]).filter((tag) => !removed.has(tag));
+}
+
+function buildJdDimensions(profileId, scoringDefinition, overrides = readJdTagOverrides()) {
+  const mustHave = applyJdTagOverrides(profileId, "mustHave", scoringDefinition?.mustHave || [], overrides);
+  const bonus = applyJdTagOverrides(profileId, "bonus", scoringDefinition?.bonus || [], overrides);
+  const risks = applyJdTagOverrides(profileId, "risks", scoringDefinition?.risks || [], overrides);
+  return [
+    {
+      key: "mustHave",
+      name: "必须项",
+      weight: "45%",
+      logic: "必须项是 JD 匹配的主体；完全缺失时会限制最终等级。",
+      tags: mustHave,
+    },
+    {
+      key: "bonus",
+      name: "加分项",
+      weight: "35%",
+      logic: "加分项用于区分优先级，命中越多越靠前。",
+      tags: bonus,
+    },
+    {
+      key: "risks",
+      name: "风险项",
+      weight: "降级",
+      logic: "风险项命中时会扣分，并进入人工复核。",
+      tags: risks,
+    },
+  ].filter((dimension) => dimension.tags.length);
+}
+
+function buildJdProfile(definition, overrides = readJdTagOverrides()) {
+  const scoringDefinition = getPositionScoringDefinition(definition.jobType) || {};
+  const dimensions = buildJdDimensions(definition.id, scoringDefinition, overrides);
+  const tags = uniqueJdTags(dimensions.flatMap((dimension) => dimension.tags));
+  return {
+    id: definition.id,
+    title: scoringDefinition.title || `${definition.jobType} JD 匹配`,
+    shortTitle: definition.shortTitle || definition.jobType,
+    matchedJobTypes: uniqueJdTags(definition.matchedJobTypes || [definition.jobType]),
+    sourceJobNames: uniqueJdTags([definition.jobType, ...(definition.matchedJobTypes || [])]),
+    targetRoles: uniqueJdTags(definition.targetRoles || [definition.jobType]),
+    sources: [{ name: `${definition.jobType}岗位评分规则` }],
+    tags,
+    rules: {
+      title: scoringDefinition.title || `${definition.jobType} JD 匹配规则`,
+      description: scoringDefinition.description || "根据岗位必须项、加分项和风险项进行 JD 匹配。",
+      targetRoles: uniqueJdTags(definition.targetRoles || [definition.jobType]),
+      sourceJobNames: uniqueJdTags([definition.jobType, ...(definition.matchedJobTypes || [])]),
+      matchedJobTypes: uniqueJdTags(definition.matchedJobTypes || [definition.jobType]),
+      tags,
+      dimensions,
+      synonymHints: [
+        "销售/客户开发/商务拓展可互相参考。",
+        "技术支持/应用测试/配方服务可互相参考。",
+        "HRBP/人力资源/招聘支持可互相参考。",
+      ],
+      reviewChecklist: [
+        "先看必须项是否有明确证据。",
+        "再看加分项是否来自真实项目或工作经历。",
+        "命中风险项时不要只按关键词高排。",
+      ],
+      boosts: [
+        "简历岗位归属与当前 JD 一致时加权。",
+        "文件名、专业、经历中出现岗位核心词时加权。",
+      ],
+      scoreBands: [
+        "A：75 分及以上，必须项和加分项都有较好命中。",
+        "B：55-74 分，基本匹配，建议人工复核。",
+        "C：35-54 分，信息不足或只命中部分标签。",
+        "D：35 分以下，关键项缺失或风险较多。",
+      ],
+      guardrails: [
+        "必须项完全未命中时最高 C。",
+        "风险项命中 2 条及以上时最高 B。",
+      ],
+    },
+  };
+}
+
+function listJdProfiles() {
+  const overrides = readJdTagOverrides();
+  return JD_PROFILE_DEFINITIONS.map((definition) => buildJdProfile(definition, overrides));
+}
+
+function findJdProfile(profileId) {
+  const id = String(profileId || "").trim();
+  return listJdProfiles().find((profile) => profile.id === id) || null;
+}
+
+function normalizeJdSearchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\s+/g, "");
+}
+
+function getResumeSearchText(record = {}) {
+  return normalizeJdSearchText(
+    [
+      record.name,
+      record.phone,
+      record.jobType,
+      record.major,
+      record.school,
+      record.schoolLevel,
+      record.graduation,
+      record.fileName,
+      JSON.stringify(record.projects || []),
+      JSON.stringify(record.scoreBreakdown || {}),
+      JSON.stringify(record.parseQuality || {}),
+      JSON.stringify(record.feedback || {}),
+    ].join(" ")
+  );
+}
+
+function buildAiV4ResumeMatchText(record = {}) {
+  return [
+    record.name,
+    record.phone,
+    record.jobType,
+    record.major,
+    record.school,
+    record.schoolLevel,
+    record.graduation,
+    record.fileName,
+    record.source,
+    record.sourceLabel,
+    JSON.stringify(record.projects || []),
+    JSON.stringify(record.parseQuality?.warnings || []),
+  ].join(" ");
+}
+
+function getAiV4RuleHitLabels(text, rules = []) {
+  const source = String(text || "");
+  return rules.filter((rule) => rule.pattern.test(source)).map((rule) => rule.label);
+}
+
+function calculateAiV4MatchScoreDetails(text) {
+  const source = String(text || "");
+  const hasAgentProject = AI_V4_AGENT_PROJECT_GATE_PATTERNS.some((pattern) => pattern.test(source));
+  const projectHits = hasAgentProject ? getAiV4RuleHitLabels(source, AI_V4_PROJECT_RULES) : [];
+  const skillHits = getAiV4RuleHitLabels(source, AI_V4_SKILL_RULES);
+  const projectScoreRaw = (projectHits.length / AI_V4_PROJECT_RULES.length) * 65;
+  const techScoreRaw = (skillHits.length / AI_V4_SKILL_RULES.length) * 35;
+
+  return {
+    score: Math.max(0, Math.min(100, Math.round(projectScoreRaw + techScoreRaw))),
+    projectScore: Math.max(0, Math.min(65, Math.round(projectScoreRaw))),
+    techScore: Math.max(0, Math.min(35, Math.round(techScoreRaw))),
+    projectHits,
+    skillHits,
+    hasAgentProject,
+  };
+}
+
+function buildAiV4ScoringDimensions() {
+  return [
+    {
+      name: "项目经历",
+      weight: "65分",
+      logic: "先命中Agent/RAG/大模型应用项目门槛，再按项目证据、本人职责、工程落地和Agent/RAG模块深度计分。",
+      items: AI_V4_PROJECT_RULES.map((rule) => rule.label),
+    },
+    {
+      name: "技术栈",
+      weight: "35分",
+      logic: "按LLM Agent开发栈、RAG、工具调用、Prompt、大模型、后端服务化和部署能力计分。",
+      items: AI_V4_SKILL_RULES.map((rule) => rule.label),
+    },
+  ];
+}
+
+function cleanJdKeyword(value) {
+  return String(value || "")
+    .replace(/^(有|懂|熟悉|具备|能够|能接受|接受|必须|需要|优先|同时|明确|重点看)/, "")
+    .replace(/(之一|优先|作为核心判断项|相关|经验|经历|背景|能力|方向|岗位)$/g, "")
+    .replace(/[“”"'.。；;，,]+/g, "")
+    .trim();
+}
+
+function extractJdKeywords(tags = []) {
+  const values = [];
+  for (const tag of tags || []) {
+    const text = String(tag || "");
+    const parts = text.split(/[，,。、；;：:（）()\s/]+|或|和|及|与|、/g);
+    for (const part of parts) {
+      const clean = cleanJdKeyword(part);
+      if (clean.length >= 2 && !JD_MATCH_STOP_WORDS.has(clean)) values.push(clean);
+    }
+    const latin = text.match(/[A-Za-z][A-Za-z0-9+#.-]{1,}/g) || [];
+    values.push(...latin);
+  }
+  return uniqueJdTags(values, 120);
+}
+
+function matchJdKeywords(tags, searchText) {
+  const matched = [];
+  for (const keyword of extractJdKeywords(tags)) {
+    const normalized = normalizeJdSearchText(keyword);
+    if (normalized.length >= 2 && searchText.includes(normalized)) matched.push(keyword);
+  }
+  return uniqueJdTags(matched, 60);
+}
+
+function matchJdRuleItems(tags, searchText) {
+  const matchedItems = [];
+  const matchedKeywords = [];
+  for (const tag of tags || []) {
+    const keywords = extractJdKeywords([tag]);
+    const itemMatches = keywords.filter((keyword) => {
+      const normalized = normalizeJdSearchText(keyword);
+      return normalized.length >= 2 && searchText.includes(normalized);
+    });
+    if (!itemMatches.length) continue;
+    matchedItems.push(tag);
+    matchedKeywords.push(...itemMatches);
+  }
+  return {
+    items: uniqueJdTags(matchedItems, 60),
+    keywords: uniqueJdTags(matchedKeywords, 60),
+  };
+}
+
+function profileMatchesResume(profile, record) {
+  const recordJobType = normalizeJobType(record.jobType || "", `${record.fileName || ""} ${record.name || ""}`);
+  const matchedJobTypes = new Set((profile?.matchedJobTypes || []).map((jobType) => normalizeJobType(jobType)));
+  return matchedJobTypes.size === 0 || matchedJobTypes.has(recordJobType);
+}
+
+function getJdLevel(score) {
+  if (score >= 75) return "A 优先";
+  if (score >= 55) return "B 复核";
+  if (score >= 35) return "C 暂缓";
+  return "D 不优先";
+}
+
+function calculateJdMatch(record, profile) {
+  const searchText = getResumeSearchText(record);
+  const dimensions = profile.rules?.dimensions || [];
+  const must = dimensions.find((dimension) => dimension.key === "mustHave") || { tags: [] };
+  const bonus = dimensions.find((dimension) => dimension.key === "bonus") || { tags: [] };
+  const risks = dimensions.find((dimension) => dimension.key === "risks") || { tags: [] };
+  const mustMatches = matchJdRuleItems(must.tags, searchText);
+  const bonusMatches = matchJdRuleItems(bonus.tags, searchText);
+  const riskMatches = matchJdRuleItems(risks.tags, searchText);
+  const matchedKeywords = uniqueJdTags([...mustMatches.keywords, ...bonusMatches.keywords, ...riskMatches.keywords], 30);
+  const mustRatio = must.tags?.length ? mustMatches.items.length / Math.max(1, must.tags.length) : 0;
+  const bonusRatio = bonus.tags?.length ? bonusMatches.items.length / Math.max(1, bonus.tags.length) : 0;
+  const recordJobType = normalizeJobType(record.jobType || "", `${record.fileName || ""} ${record.name || ""}`);
+  const roleBoost = (profile.matchedJobTypes || []).some((jobType) => normalizeJobType(jobType) === recordJobType) ? 15 : 0;
+  const focusBoost = matchedKeywords.some((keyword) => searchText.includes(normalizeJdSearchText(keyword))) ? 5 : 0;
+  const riskPenalty = Math.min(30, riskMatches.items.length * 10);
+  let score = Math.round(mustRatio * 50 + bonusRatio * 30 + roleBoost + focusBoost - riskPenalty);
+  const capReasons = [];
+  if ((must.tags || []).length && !mustMatches.items.length) {
+    score = Math.min(score, 45);
+    capReasons.push("必须项未命中");
+  }
+  if ((must.tags || []).length && mustRatio > 0 && mustRatio < 0.5) {
+    score = Math.min(score, 68);
+    capReasons.push("必须项命中不足一半");
+  }
+  if (riskMatches.items.length >= 2) {
+    score = Math.min(score, 74);
+    capReasons.push("风险项较多");
+  }
+  score = Math.max(0, Math.min(100, score));
+  const level = getJdLevel(score);
+  return {
+    resumeId: record.id,
+    name: record.name || "",
+    phone: record.phone || "",
+    jobType: recordJobType,
+    score,
+    level,
+    profileId: profile.id,
+    profileTitle: profile.title,
+    profileShortTitle: profile.shortTitle,
+    matchedKeywords,
+    suggestion: score >= 75 ? "建议优先查看" : score >= 55 ? "建议人工复核" : score >= 35 ? "信息不足，暂缓判断" : "不建议优先处理",
+    breakdown: {
+      core: mustMatches.items.length,
+      industry: bonusMatches.items.length,
+      capability: matchedKeywords.length,
+      education: 0,
+      bonus: bonusMatches.items.length,
+      riskPenalty,
+      roleBoost,
+      focusBoost,
+      capReasons,
+    },
+  };
+}
+
+function summarizeJdCounts(results = []) {
+  const counts = { total: results.length, A: 0, B: 0, C: 0, D: 0 };
+  for (const result of results) {
+    const key = String(result.level || "D").charAt(0);
+    if (Object.prototype.hasOwnProperty.call(counts, key)) counts[key] += 1;
+  }
+  return counts;
+}
+
+function buildAutoJdProfileForJobType(jobType) {
+  const normalizedJobType = normalizeJobType(jobType || DEFAULT_JOB_TYPE);
+  if (!getPositionScoringDefinition(normalizedJobType)) return null;
+  return buildJdProfile({
+    id: `auto_${normalizedJobType}`,
+    jobType: normalizedJobType,
+    shortTitle: normalizedJobType,
+    matchedJobTypes: [normalizedJobType],
+    targetRoles: [normalizedJobType],
+  });
+}
+
+function findPositionRuleProfileForRecord(record = {}) {
+  const normalizedJobType = normalizeJobType(record.jobType || "", `${record.fileName || ""} ${record.name || ""}`);
+  const profiles = listJdProfiles().filter((profile) =>
+    profileMatchesResume(profile, { ...record, jobType: normalizedJobType })
+  );
+  if (profiles.length) {
+    return (
+      profiles.find((profile) =>
+        [...(profile.sourceJobNames || []), ...(profile.matchedJobTypes || [])].some(
+          (jobType) => normalizeJobType(jobType) === normalizedJobType
+        )
+      ) || profiles[0]
+    );
+  }
+  return buildAutoJdProfileForJobType(normalizedJobType);
+}
+
+function calculatePositionRuleMatch(record = {}) {
+  const normalizedJobType = normalizeJobType(record.jobType || "", `${record.fileName || ""} ${record.name || ""}`);
+  const profile = findPositionRuleProfileForRecord({ ...record, jobType: normalizedJobType });
+  if (!profile) return null;
+  return calculateJdMatch({ ...record, jobType: normalizedJobType }, profile);
+}
+
+function applyAiV4Scoring(record = {}) {
+  const normalizedJobType = normalizeJobType(record.jobType || AI_SCORING_JOB_TYPE, `${record.fileName || ""} ${record.name || ""}`);
+  const existingBreakdown = record.scoreBreakdown && typeof record.scoreBreakdown === "object" ? record.scoreBreakdown : {};
+  const aiScore = calculateAiV4MatchScoreDetails(buildAiV4ResumeMatchText({ ...record, jobType: normalizedJobType }));
+  const hitEvidence = uniqueLimitedStrings([...aiScore.projectHits, ...aiScore.skillHits], 8);
+
+  return {
+    ...record,
+    jobType: normalizedJobType,
+    matchScore: aiScore.score,
+    jdMatch: null,
+    scoreBreakdown: {
+      ...existingBreakdown,
+      projectScore: aiScore.projectScore,
+      techScore: aiScore.techScore,
+      summary: `v4 Agent项目深度评分 ${aiScore.score} 分：项目经历 ${aiScore.projectScore}/65，技术栈 ${aiScore.techScore}/35。`,
+      strengths: uniqueLimitedStrings(
+        [
+          ...aiScore.projectHits.map((item) => `项目命中：${item}`),
+          ...aiScore.skillHits.map((item) => `技术命中：${item}`),
+        ],
+        8
+      ),
+      risks: aiScore.hasAgentProject
+        ? normalizeStringArray(existingBreakdown.risks).filter((item) => !/必须项|风险项扣分|命中不足/.test(item)).slice(0, 8)
+        : uniqueLimitedStrings(["未命中Agent/RAG/大模型应用项目门槛"], 8),
+      evidence: hitEvidence,
+    },
+    scoringVersion: getCurrentScoringVersion(normalizedJobType),
+  };
+}
+
+function applyPositionRuleScoring(record = {}) {
+  const normalizedJobType = normalizeJobType(record.jobType || "", `${record.fileName || ""} ${record.name || ""}`);
+  if (isAiScoringJobType(normalizedJobType)) {
+    return applyAiV4Scoring({ ...record, jobType: normalizedJobType });
+  }
+
+  const scoringResult = calculatePositionRuleMatch({ ...record, jobType: normalizedJobType });
+  if (!scoringResult) {
+    return {
+      ...record,
+      jobType: normalizedJobType,
+      matchScore: normalizeScoreValue(record.matchScore),
+      scoringVersion: getCurrentScoringVersion(normalizedJobType),
+    };
+  }
+
+  const existingBreakdown = record.scoreBreakdown && typeof record.scoreBreakdown === "object" ? record.scoreBreakdown : {};
+  const matchedKeywords = normalizeStringArray(scoringResult.matchedKeywords).slice(0, 8);
+  const capReasons = normalizeStringArray(scoringResult.breakdown?.capReasons).slice(0, 4);
+  const ruleRisks = [
+    ...capReasons,
+    scoringResult.breakdown?.riskPenalty ? `风险项扣分 ${scoringResult.breakdown.riskPenalty}` : "",
+  ].filter(Boolean);
+
+  return {
+    ...record,
+    jobType: normalizedJobType,
+    matchScore: scoringResult.score,
+    scoreBreakdown: {
+      ...existingBreakdown,
+      summary: `规则评分 ${scoringResult.score} 分（${scoringResult.level}）：${scoringResult.suggestion}`,
+      strengths: uniqueLimitedStrings(
+        [
+          ...normalizeStringArray(existingBreakdown.strengths),
+          ...matchedKeywords.map((keyword) => `命中：${keyword}`),
+        ],
+        8
+      ),
+      risks: uniqueLimitedStrings([...normalizeStringArray(existingBreakdown.risks), ...ruleRisks], 8),
+      evidence: uniqueLimitedStrings(
+        [
+          ...normalizeStringArray(existingBreakdown.evidence),
+          ...matchedKeywords,
+          scoringResult.profileShortTitle ? `规则：${scoringResult.profileShortTitle}` : "",
+        ],
+        8
+      ),
+    },
+    scoringVersion: getCurrentScoringVersion(normalizedJobType),
+  };
+}
+
+function recordsNeedScoreUpdate(left = {}, right = {}) {
+  return (
+    String(left.jobType || "") !== String(right.jobType || "") ||
+    String(left.matchScore ?? "") !== String(right.matchScore ?? "") ||
+    String(left.scoringVersion || "") !== String(right.scoringVersion || "") ||
+    JSON.stringify(left.scoreBreakdown || {}) !== JSON.stringify(right.scoreBreakdown || {})
+  );
+}
+
+function publicRecord(record) {
+  return {
+    id: record.id,
+    name: record.name,
+    phone: record.phone,
+    jobType: normalizeJobType(record.jobType, `${record.fileName || ""} ${record.name || ""} ${record.school || ""}`),
+    school: record.school,
+    major: record.major || "",
+    schoolLevel: normalizeSchoolLevel(record.schoolLevel, record.school),
+    graduation: record.graduation,
+    matchScore: record.matchScore ?? "",
+    scoreBreakdown: record.scoreBreakdown || null,
+    parseQuality: record.parseQuality || null,
+    projects: Array.isArray(record.projects) ? record.projects : [],
+    fileName: record.fileName || "",
+    parseMode: record.parseMode || "",
+    source: record.source || "",
+    sourceLabel: record.sourceLabel || "",
+    sourceName: record.sourceName || "",
+    sourcePlatform: record.sourcePlatform || "",
+    platform: record.platform || "",
+    importSource: record.importSource || "",
+    accountId: record.accountId || "",
+    accountName: record.accountName || "",
+    hasPdf: Boolean(record.pdfPath),
+    scoringVersion: record.scoringVersion || getCurrentScoringVersion(record.jobType),
+    scoringVersionMeta: getScoringVersionMeta(record.scoringVersion || getCurrentScoringVersion(record.jobType), record.jobType),
+    feedback: record.feedback || null,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
+function createRecordPayload(body = {}) {
+  const nestedResume = body.resume && typeof body.resume === "object" ? body.resume : {};
+  const source = {
+    ...nestedResume,
+    ...body,
+    fileName: body.fileName || body.filename || nestedResume.fileName || nestedResume.filename || "",
+    parseMode: body.parseMode || nestedResume.parseMode || "",
+  };
+  const fields = sanitizeResumeFields(source);
+  const details = sanitizeResumeDetails(source);
+  const sourceMeta = buildResumeSourceMetadata(source);
+  const now = new Date().toISOString();
+  return applyPositionRuleScoring({
+    id: crypto.randomUUID(),
+    ...fields,
+    ...details,
+    fileName: String(source.fileName || "").trim(),
+    parseMode: String(source.parseMode || "").trim(),
+    ...sourceMeta,
+    pdfPath: "",
+    scoringVersion: getCurrentScoringVersion(fields.jobType),
+    feedback: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+function getBossBrowserStartHint() {
+  return [
+    "请用普通 Chrome/Edge 启动一个调试浏览器并登录 BOSS：",
+    'chrome.exe --remote-debugging-port=9222 --user-data-dir="%USERPROFILE%\\Documents\\New project\\招聘智能体\\data\\boss-browser-profile"',
+    "打开 BOSS 候选人页面后，再回到系统点击检测或获取。",
+  ].join("\n");
+}
+
+async function isCdpReady(cdpPort) {
+  try {
+    await fetchLocalJson(`http://127.0.0.1:${cdpPort}/json/version`, { timeoutMs: 1200 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function spawnDetached(command, args, cwd, env = {}) {
+  const child = spawn(command, args, {
+    cwd,
+    env: { ...process.env, ...env },
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  child.unref();
+  return child.pid;
+}
+
+function spawnDetachedBrowser(command, args, cwd, env = {}) {
+  const child = spawn(command, args, {
+    cwd,
+    env: { ...process.env, ...env },
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false,
+  });
+  child.unref();
+  return child.pid;
+}
+
+function findCloakBrowserExecutable() {
+  const explicit = String(process.env.CLOAK_BROWSER_PATH || process.env.CLOAK_BROWSER_EXE || "").trim();
+  const candidates = [];
+  if (explicit) candidates.push(explicit);
+
+  try {
+    const entries = fsSync.existsSync(DEFAULT_CLOAK_BROWSER_ROOT)
+      ? fsSync.readdirSync(DEFAULT_CLOAK_BROWSER_ROOT, { withFileTypes: true })
+      : [];
+    entries
+      .filter((entry) => entry.isDirectory() && /^chromium-/i.test(entry.name))
+      .sort((left, right) => right.name.localeCompare(left.name))
+      .forEach((entry) => candidates.push(path.join(DEFAULT_CLOAK_BROWSER_ROOT, entry.name, "chrome.exe")));
+  } catch {
+    // Best-effort discovery only; explicit error is raised below if no executable exists.
+  }
+
+  candidates.push(
+    path.join(process.env.LOCALAPPDATA || "", "CloakBrowser", "CloakBrowser.exe"),
+    path.join(process.env.LOCALAPPDATA || "", "Programs", "CloakBrowser", "CloakBrowser.exe"),
+    path.join(process.env.PROGRAMFILES || "", "CloakBrowser", "CloakBrowser.exe"),
+    path.join(process.env["PROGRAMFILES(X86)"] || "", "CloakBrowser", "CloakBrowser.exe")
+  );
+
+  return candidates.find((candidate) => candidate && fsSync.existsSync(candidate)) || "";
+}
+
+function logBrowserLaunch(event, payload = {}) {
+  try {
+    console.log(`[browser-launch] ${event} ${JSON.stringify(payload)}`);
+  } catch {
+    console.log(`[browser-launch] ${event}`);
+  }
+}
+
+function buildCdpBrowserArgs(cdpPort, profileDir, startUrl) {
+  return [
+    `--remote-debugging-port=${cdpPort}`,
+    "--remote-allow-origins=*",
+    `--user-data-dir=${profileDir}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-session-crashed-bubble",
+    "--disable-background-mode",
+    "--disable-renderer-backgrounding",
+    "--disable-background-timer-throttling",
+    startUrl || "about:blank",
+  ];
+}
+
+function launchCloakBrowserDirectly({ cdpPort, profileDir, startUrl, browserPath }) {
+  fsSync.mkdirSync(profileDir, { recursive: true });
+  const args = buildCdpBrowserArgs(cdpPort, profileDir, startUrl);
+  const pid = spawnDetachedBrowser(browserPath, args, AUTOMATION_WORKSPACE);
+  return { pid, args };
+}
+
+async function waitForCdpReady(cdpPort, timeoutMs = 75000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await isCdpReady(cdpPort)) return true;
+    await sleep(300);
+  }
+  return false;
+}
+
+const browserLaunchJobs = new Map();
+const BROWSER_LAUNCH_JOB_TTL_MS = 30 * 60 * 1000;
+
+function cleanupBrowserLaunchJobs() {
+  const cutoff = Date.now() - BROWSER_LAUNCH_JOB_TTL_MS;
+  for (const [jobId, job] of browserLaunchJobs.entries()) {
+    if (Number(job.updatedAtMs || job.createdAtMs || 0) < cutoff) {
+      browserLaunchJobs.delete(jobId);
+    }
+  }
+}
+
+function browserLaunchTargetLabel(target = {}) {
+  return `${target.platformLabel || automationPlatformLabel(target.platform)} ${target.accountName || automationAccountLabel(target.accountId)} ${target.cdpPort || ""}`.trim();
+}
+
+function buildBrowserLaunchSummary(job) {
+  const targets = Array.isArray(job?.targets) ? job.targets : [];
+  const summary = targets.reduce(
+    (acc, target) => {
+      if (target.status === "ready") acc.ready += 1;
+      if (target.status === "needs_login") acc.needsLogin += 1;
+      if (target.status === "failed") acc.failed += 1;
+      if (target.status === "running") acc.running += 1;
+      if (target.status === "pending") acc.pending += 1;
+      return acc;
+    },
+    { ready: 0, needsLogin: 0, failed: 0, running: 0, pending: 0 }
+  );
+  summary.total = targets.length;
+  return summary;
+}
+
+function updateBrowserLaunchJob(job, patch = {}) {
+  Object.assign(job, patch, {
+    updatedAt: new Date().toISOString(),
+    updatedAtMs: Date.now(),
+  });
+  job.summary = buildBrowserLaunchSummary(job);
+  const doneCount = job.summary.ready + job.summary.needsLogin + job.summary.failed;
+  if (doneCount >= job.summary.total && job.summary.total) {
+    if (job.summary.failed >= job.summary.total) {
+      job.status = "failed";
+    } else if (job.summary.failed > 0) {
+      job.status = "completed_with_errors";
+    } else {
+      job.status = "completed";
+    }
+  }
+  job.message = formatBrowserLaunchJobMessage(job);
+}
+
+function formatBrowserLaunchJobMessage(job) {
+  const summary = job.summary || buildBrowserLaunchSummary(job);
+  const failedTargets = (job.targets || []).filter((target) => target.status === "failed");
+  const base = `浏览器启动：成功 ${summary.ready} 个，需要登录 ${summary.needsLogin} 个，失败 ${summary.failed} 个`;
+  if (!failedTargets.length) return base;
+  const failedText = failedTargets
+    .map((target) => `${browserLaunchTargetLabel(target)} 启动失败：${target.error || "未知错误"}`)
+    .join("；");
+  return `${base}；${failedText}`;
+}
+
+function getPublicBrowserLaunchJob(job) {
+  if (!job) return null;
+  const targets = job.targets.map((target) => ({
+    accountId: target.accountId,
+    accountName: target.accountName,
+    platform: target.platform,
+    platformLabel: target.platformLabel,
+    cdpPort: target.cdpPort,
+    debugUrl: target.debugUrl,
+    profileDir: target.profileDir,
+    startUrl: target.startUrl,
+    status: target.status,
+    attempt: target.attempt,
+    maxAttempts: target.maxAttempts,
+    started: Boolean(target.started),
+    needsLogin: Boolean(target.needsLogin),
+    authenticated: Boolean(target.authenticated),
+    openedNewTab: Boolean(target.openedNewTab),
+    pid: target.pid || null,
+    launchMethod: target.launchMethod || "",
+    browserPath: target.browserPath || "",
+    page: target.page || null,
+    error: target.error || "",
+  }));
+  return {
+    id: job.id,
+    status: job.status,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    targets,
+    failures: targets.filter((target) => target.status === "failed"),
+    summary: job.summary || buildBrowserLaunchSummary(job),
+    message: job.message || formatBrowserLaunchJobMessage(job),
+  };
+}
+
+function makeBrowserLaunchTarget(account, platform, maxAttempts) {
+  const normalizedPlatform = normalizeAutomationPlatformId(platform);
+  const platformConfig = BROWSER_PLATFORM_CONFIG[normalizedPlatform] || BROWSER_PLATFORM_CONFIG.boss;
+  const cdpTarget = account.platforms?.[normalizedPlatform] || {};
+  return {
+    account,
+    platform: normalizedPlatform,
+    accountId: account.id,
+    accountName: account.name,
+    platformLabel: platformConfig.label,
+    cdpPort: cdpTarget.cdpPort || 0,
+    profileDir: cdpTarget.profileDir || "",
+    startUrl: platformConfig.startUrl,
+    status: "pending",
+    attempt: 0,
+    maxAttempts,
+    started: false,
+    needsLogin: false,
+    authenticated: false,
+    openedNewTab: false,
+    pid: null,
+    launchMethod: "",
+    browserPath: "",
+    page: null,
+    error: "",
+  };
+}
+
+async function runBrowserLaunchTarget(job, target, waitTimeoutMs) {
+  for (let attempt = 1; attempt <= target.maxAttempts; attempt += 1) {
+    Object.assign(target, {
+      status: "running",
+      attempt,
+      error: "",
+    });
+    updateBrowserLaunchJob(job);
+    try {
+      const result = await startBrowserTarget(target.account, target.platform, { waitTimeoutMs });
+      Object.assign(target, result, {
+        status: result.needsLogin ? "needs_login" : "ready",
+        error: "",
+      });
+      updateBrowserLaunchJob(job);
+      return;
+    } catch (error) {
+      if (error.launchPid) target.pid = error.launchPid;
+      if (error.launchMethod) target.launchMethod = error.launchMethod;
+      if (error.browserPath) target.browserPath = error.browserPath;
+      target.error = error.message || "启动失败";
+      updateBrowserLaunchJob(job);
+      if (attempt < target.maxAttempts) {
+        await sleep(1000);
+      }
+    }
+  }
+  target.status = "failed";
+  updateBrowserLaunchJob(job);
+}
+
+async function runBrowserLaunchJob(jobId) {
+  const job = browserLaunchJobs.get(jobId);
+  if (!job || job.started) return;
+  job.started = true;
+  updateBrowserLaunchJob(job, { status: "running" });
+  await Promise.all(job.targets.map((target) => runBrowserLaunchTarget(job, target, job.waitTimeoutMs)));
+  updateBrowserLaunchJob(job);
+}
+
+async function fetchCdpJson(cdpPort, pathSuffix, { method = "GET", timeoutMs = 5000 } = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`http://127.0.0.1:${cdpPort}${pathSuffix}`, {
+      method,
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || payload.message || `CDP 请求失败：${response.status}`);
+    return payload;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function normalizeBrowserHost(value = "") {
+  try {
+    return new URL(value).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function isBlankBrowserPage(page = {}) {
+  const url = String(page.url || "").trim().toLowerCase();
+  return !url || url === "about:blank" || url.startsWith("chrome://newtab") || url.startsWith("devtools:");
+}
+
+function pageMatchesStartUrl(page = {}, startUrl = "") {
+  if (isBlankBrowserPage(page)) return false;
+  const targetHost = normalizeBrowserHost(startUrl);
+  const pageHost = normalizeBrowserHost(page.url || "");
+  return Boolean(targetHost && pageHost && pageHost === targetHost);
+}
+
+function pickPlatformPage(pages, startUrl) {
+  const pageList = Array.isArray(pages) ? pages.filter((page) => page.type === "page") : [];
+  return pageList.find((page) => pageMatchesStartUrl(page, startUrl)) || null;
+}
+
+function pickBlankPage(pages) {
+  const pageList = Array.isArray(pages) ? pages.filter((page) => page.type === "page") : [];
+  return pageList.find((page) => isBlankBrowserPage(page)) || null;
+}
+
+function browserTargetLooksLoggedOut(page = {}, platform = "", inspected = {}) {
+  const text = `${page.url || ""} ${page.title || ""} ${inspected.href || ""} ${inspected.title || ""} ${inspected.text || ""}`.toLowerCase();
+  if (/login|passport|signin|sso|auth/.test(text)) return true;
+  if (/请登录|未登录|重新登录|登录后|扫码登录|账号登录|密码登录|验证码|安全验证|企业登录/.test(text)) return true;
+  if (platform === "boss" && /登录boss|boss直聘登录/.test(text)) return true;
+  if (platform === "51job" && /前程无忧.*登录|51job.*登录/.test(text)) return true;
+  if (platform === "zhilian" && /智联.*登录|zhaopin.*登录/.test(text)) return true;
+  return false;
+}
+
+function browserTargetLooksAuthenticated(platform = "", account = {}, inspected = {}) {
+  const text = `${inspected.href || ""} ${inspected.title || ""} ${inspected.text || ""}`;
+  if (platform === "boss") {
+    const accountName = String(account.name || "").trim();
+    return Boolean(accountName && text.includes(accountName) && /职位管理|牛人管理|招聘数据|沟通/.test(text));
+  }
+  if (platform === "51job") {
+    return /人才沟通/.test(text) && /职位管理|工作台|全部职位|人才管理/.test(text);
+  }
+  if (platform === "zhilian") {
+    return /互动|聊天/.test(text) && /人才管理|个人中心|全部职位/.test(text);
+  }
+  return Boolean(text && !/请登录|未登录|登录后/.test(text));
+}
+
+function cdpMessageToString(data) {
+  if (typeof data === "string") return data;
+  if (Buffer.isBuffer(data)) return data.toString("utf8");
+  if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
+  return String(data || "");
+}
+
+function callPageCdp(page, method, params = {}, timeoutMs = 6000) {
+  if (!page?.webSocketDebuggerUrl || typeof WebSocket !== "function") return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const id = Date.now() + Math.floor(Math.random() * 100000);
+    const ws = new WebSocket(page.webSocketDebuggerUrl);
+    const timer = setTimeout(() => {
+      try {
+        ws.close();
+      } catch {
+        // Ignore close failures during timeout cleanup.
+      }
+      reject(new Error(`CDP command timeout: ${method}`));
+    }, timeoutMs);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      try {
+        ws.close();
+      } catch {
+        // Ignore close failures after command completion.
+      }
+    };
+
+    ws.addEventListener("open", () => {
+      ws.send(JSON.stringify({ id, method, params }));
+    });
+    ws.addEventListener("error", (event) => {
+      cleanup();
+      reject(new Error(event?.message || `CDP websocket failed: ${method}`));
+    });
+    ws.addEventListener("message", (event) => {
+      let payload = null;
+      try {
+        payload = JSON.parse(cdpMessageToString(event.data));
+      } catch {
+        return;
+      }
+      if (payload.id !== id) return;
+      cleanup();
+      if (payload.error) {
+        reject(new Error(payload.error.message || `CDP command failed: ${method}`));
+      } else {
+        resolve(payload.result || {});
+      }
+    });
+  });
+}
+
+async function inspectCdpPage(page) {
+  const expression =
+    "(() => ({ href: location.href, title: document.title || '', readyState: document.readyState, text: ((document.body && document.body.innerText) || '').slice(0, 3000) }))()";
+  if (page?.webSocketDebuggerUrl && typeof CdpClient === "function") {
+    const client = new CdpClient(page.webSocketDebuggerUrl);
+    try {
+      await client.connect();
+      return (await client.evaluate(expression, { timeoutMs: 8000 })) || {};
+    } catch (error) {
+      logBrowserLaunch("inspect-failed", {
+        url: page.url || "",
+        title: page.title || "",
+        error: error.message || String(error),
+      });
+    } finally {
+      client.close();
+    }
+  }
+
+  const result = await callPageCdp(page, "Runtime.evaluate", {
+    expression,
+    returnByValue: true,
+    awaitPromise: true,
+  }).catch((error) => {
+    logBrowserLaunch("inspect-fallback-failed", {
+      url: page?.url || "",
+      title: page?.title || "",
+      error: error.message || String(error),
+    });
+    return null;
+  });
+  return result?.result?.value || {};
+}
+
+async function activateCdpPage(cdpPort, page) {
+  if (!page?.id) return;
+  await fetchCdpJson(cdpPort, `/json/activate/${encodeURIComponent(page.id)}`, { timeoutMs: 2500 }).catch(() => null);
+}
+
+async function openPlatformCdpPage(cdpPort, startUrl) {
+  const created = await fetchCdpJson(cdpPort, `/json/new?${encodeURIComponent(startUrl)}`, {
+    method: "PUT",
+    timeoutMs: 6000,
+  }).catch(() => null);
+  if (created?.id) await activateCdpPage(cdpPort, created);
+  return created;
+}
+
+async function waitForPlatformPageReady(cdpPort, startUrl, platform, account, timeoutMs = 20000) {
+  const startedAt = Date.now();
+  let lastPage = null;
+  while (Date.now() - startedAt < timeoutMs) {
+    const pages = await fetchCdpJson(cdpPort, "/json/list", { timeoutMs: 4000 }).catch(() => []);
+    const page = pickPlatformPage(pages, startUrl);
+    if (page) {
+      lastPage = page;
+      await activateCdpPage(cdpPort, page);
+      const inspected = await inspectCdpPage(page);
+      const pageUrl = inspected.href || page.url || "";
+      const readyState = inspected.readyState || "";
+      const resultPage = {
+        title: inspected.title || page.title || "",
+        url: pageUrl || startUrl,
+        readyState,
+      };
+      if (pageMatchesStartUrl({ url: pageUrl || page.url }, startUrl) && readyState !== "loading") {
+        const needsLogin = browserTargetLooksLoggedOut(page, platform, inspected);
+        const authenticated = browserTargetLooksAuthenticated(platform, account, inspected);
+        if (needsLogin || authenticated) {
+          return {
+            page: resultPage,
+            needsLogin,
+            authenticated,
+          };
+        }
+      }
+    }
+    await sleep(500);
+  }
+
+  const observed = lastPage?.url || "about:blank";
+  const error = new Error(`浏览器页面未确认登录态：期望 ${startUrl}，实际 ${observed}`);
+  error.statusCode = 500;
+  throw error;
+}
+
+function getBrowserAutomationAccounts(accountId = "all") {
+  const normalized = normalizeBossAutomationAccountId(accountId);
+  if (normalized === "all") return BROWSER_AUTOMATION_ACCOUNTS;
+  return BROWSER_AUTOMATION_ACCOUNTS.filter((account) => account.id === normalized);
+}
+
+async function focusOrOpenCdpPage(target, startUrl, platform, account) {
+  const pages = await fetchCdpJson(target.cdpPort, "/json/list").catch(() => []);
+  const existing = pickPlatformPage(pages, startUrl);
+  let openedNewTab = false;
+
+  if (existing?.webSocketDebuggerUrl) {
+    await activateCdpPage(target.cdpPort, existing);
+  } else {
+    const blankPage = pickBlankPage(pages);
+    if (blankPage?.id) await activateCdpPage(target.cdpPort, blankPage);
+    const created = await openPlatformCdpPage(target.cdpPort, startUrl);
+    openedNewTab = Boolean(created);
+  }
+
+  const result = await waitForPlatformPageReady(target.cdpPort, startUrl, platform, account);
+  return { openedNewTab, ...result };
+}
+
+async function startBrowserTarget(account, platform, { waitTimeoutMs = 30000 } = {}) {
+  const normalizedPlatform = normalizeAutomationPlatformId(platform);
+  const platformConfig = BROWSER_PLATFORM_CONFIG[normalizedPlatform] || BROWSER_PLATFORM_CONFIG.boss;
+  const target = account.platforms?.[normalizedPlatform];
+  if (!target?.cdpPort || !target.profileDir) {
+    const error = new Error(`${account.name} ${platformConfig.label} 浏览器未配置`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const wasRunning = await isCdpReady(target.cdpPort);
+  let pid = null;
+  let launchMethod = wasRunning ? "reuse-cdp" : "direct-cloakbrowser";
+  let browserPath = "";
+  if (!wasRunning) {
+    const cloakBrowserPath = findCloakBrowserExecutable();
+    if (!cloakBrowserPath) {
+      const error = new Error("未找到 CloakBrowser，已停止启动；不能回退到普通 Chrome/Edge");
+      error.statusCode = 500;
+      throw error;
+    }
+    browserPath = cloakBrowserPath;
+    try {
+      const launch = launchCloakBrowserDirectly({
+        cdpPort: target.cdpPort,
+        profileDir: target.profileDir,
+        startUrl: platformConfig.startUrl,
+        browserPath: cloakBrowserPath,
+      });
+      pid = launch.pid;
+      logBrowserLaunch("started", {
+        accountId: account.id,
+        accountName: account.name,
+        platform: normalizedPlatform,
+        cdpPort: target.cdpPort,
+        pid,
+        profileDir: target.profileDir,
+        browserPath: cloakBrowserPath,
+        method: launchMethod,
+      });
+    } catch (spawnError) {
+      const error = new Error(`${account.name} ${platformConfig.label} CloakBrowser 进程启动失败：${spawnError.message || spawnError}`);
+      error.statusCode = 500;
+      error.launchMethod = launchMethod;
+      error.browserPath = cloakBrowserPath;
+      throw error;
+    }
+    const ready = await waitForCdpReady(target.cdpPort, waitTimeoutMs);
+    if (!ready) {
+      const error = new Error(
+        `${account.name} ${platformConfig.label} CloakBrowser 已启动 PID ${pid || "-"}，但 ${target.cdpPort} 端口未就绪；路径：${cloakBrowserPath}`
+      );
+      error.statusCode = 500;
+      error.launchPid = pid;
+      error.launchMethod = launchMethod;
+      error.browserPath = cloakBrowserPath;
+      throw error;
+    }
+    logBrowserLaunch("ready", {
+      accountId: account.id,
+      accountName: account.name,
+      platform: normalizedPlatform,
+      cdpPort: target.cdpPort,
+      pid,
+      method: launchMethod,
+    });
+  }
+
+  const pageResult = await focusOrOpenCdpPage(target, platformConfig.startUrl, normalizedPlatform, account);
+  logBrowserLaunch("page-ready", {
+    accountId: account.id,
+    accountName: account.name,
+    platform: normalizedPlatform,
+    cdpPort: target.cdpPort,
+    url: pageResult.page?.url || "",
+    title: pageResult.page?.title || "",
+    needsLogin: Boolean(pageResult.needsLogin),
+    authenticated: Boolean(pageResult.authenticated),
+  });
+  return {
+    accountId: account.id,
+    accountName: account.name,
+    platform: normalizedPlatform,
+    platformLabel: platformConfig.label,
+    cdpPort: target.cdpPort,
+    debugUrl: `http://127.0.0.1:${target.cdpPort}`,
+    profileDir: target.profileDir,
+    startUrl: platformConfig.startUrl,
+    started: !wasRunning,
+    pid,
+    launchMethod,
+    browserPath,
+    authenticated: Boolean(pageResult.authenticated),
+    ...pageResult,
+  };
+}
+
+function getBrowserLaunchSpecs(body = {}) {
+  if (
+    body.launchSet === "default-six" ||
+    body.launchSet === "default-four" ||
+    body.mode === "default-six" ||
+    body.mode === "default-four" ||
+    body.defaultFour === true
+  ) {
+    return DEFAULT_BROWSER_LAUNCH_TARGETS;
+  }
+  if (Array.isArray(body.targets) && body.targets.length) {
+    return body.targets;
+  }
+  return [{ platform: body.platform || body.source || "boss", accountId: body.accountId || body.account || "all" }];
+}
+
+function getBrowserLaunchPlan(body = {}) {
+  const seen = new Set();
+  const plan = [];
+  for (const spec of getBrowserLaunchSpecs(body)) {
+    const platform = normalizeAutomationPlatformId(spec.platform || spec.source || body.platform || "boss");
+    const accountId = normalizeBossAutomationAccountId(spec.accountId || spec.account || "all");
+    const accounts = getBrowserAutomationAccounts(accountId);
+    for (const account of accounts) {
+      const key = `${account.id}:${platform}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      plan.push({ account, platform });
+    }
+  }
+  return plan;
+}
+
+async function handleStartAutomationBrowser(request, response) {
+  try {
+    cleanupBrowserLaunchJobs();
+    const body = await readJsonBody(request).catch(() => ({}));
+    const plan = getBrowserLaunchPlan(body);
+    if (!plan.length) {
+      sendJson(response, 400, { error: "?????????" });
+      return;
+    }
+
+    const waitTimeoutMs = Math.max(10000, Math.min(Number(body.waitTimeoutMs || 45000), 90000));
+    const maxAttempts = Math.max(1, Math.min(Number(body.maxAttempts || (body.retryFailed === false ? 1 : 2)), 3));
+    const now = new Date();
+    const job = {
+      id: crypto.randomUUID(),
+      status: "pending",
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      createdAtMs: now.getTime(),
+      updatedAtMs: now.getTime(),
+      waitTimeoutMs,
+      maxAttempts,
+      started: false,
+      targets: plan.map((item) => makeBrowserLaunchTarget(item.account, item.platform, maxAttempts)),
+      summary: null,
+      message: "",
+    };
+
+    updateBrowserLaunchJob(job, { status: "running" });
+    browserLaunchJobs.set(job.id, job);
+    runBrowserLaunchJob(job.id).catch((error) => {
+      const current = browserLaunchJobs.get(job.id);
+      if (!current) return;
+      current.status = "failed";
+      current.message = error.message || "?????????";
+      updateBrowserLaunchJob(current);
+    });
+
+    sendJson(response, 202, {
+      ok: true,
+      jobId: job.id,
+      job: getPublicBrowserLaunchJob(job),
+      message: "???????????",
+    });
+  } catch (error) {
+    sendJson(response, error.statusCode || 500, { error: error.message || "???????" });
+  }
+}
+
+function handleGetAutomationBrowserJob(jobId, response) {
+  cleanupBrowserLaunchJobs();
+  const job = browserLaunchJobs.get(jobId);
+  if (!job) {
+    sendJson(response, 404, { ok: false, error: "??????????????" });
+    return;
+  }
+  sendJson(response, 200, {
+    ok: true,
+    jobId: job.id,
+    job: getPublicBrowserLaunchJob(job),
+  });
+}
+
+function configuredAutomationSources(sourceKeys) {
+  return sourceKeys.filter((sourceKey) => Boolean(AUTOMATION_SUMMARY_SOURCES[sourceKey]?.baseUrl));
+}
+
+function platformAutomationSources(platform, accountId) {
+  const normalizedPlatform = normalizeAutomationPlatformId(platform);
+  const normalizedAccount = normalizeBossAutomationAccountId(accountId);
+  if (normalizedPlatform === "boss") return bossAutomationSources(normalizedAccount);
+
+  const sourceByAccount =
+    normalizedPlatform === "51job"
+      ? { boss_a: "job51_a", boss_b: "job51_b" }
+      : { boss_a: "zhilian_a", boss_b: "zhilian_b" };
+  const sourceKeys =
+    normalizedAccount === "all"
+      ? [sourceByAccount.boss_a, sourceByAccount.boss_b]
+      : [sourceByAccount[normalizedAccount]];
+  const configured = configuredAutomationSources(sourceKeys);
+  if (configured.length) return configured;
+
+  const error = new Error(`${automationPlatformLabel(normalizedPlatform)} ${automationAccountLabel(normalizedAccount)}自动化服务未配置`);
+  error.statusCode = 502;
+  throw error;
+}
+
+function countSummaryValue(source, ...keys) {
+  for (const key of keys) {
+    const value = Number(source?.[key] || 0);
+    if (Number.isFinite(value) && value) return value;
+  }
+  return 0;
+}
+
+function sumSummaryValues(items, section, ...keys) {
+  return items.reduce((total, item) => total + countSummaryValue(item?.[section] || {}, ...keys), 0);
+}
+
+function buildBossAutomationSummaryPayload(items, { accountId = "all", date = "" } = {}) {
+  const selectedDate = date || new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
+  const selectedDates = automationDateListFromState(selectedDate);
+  const useAll = selectedDate === "all";
+  const section = useAll ? "allSummary" : "todaySummary";
+  const requestedResume =
+    sumSummaryValues(items, section, "requestedResume") + sumSummaryValues(items, section, "alreadyRequestedResume");
+  const processed = sumSummaryValues(items, section, "processedRecords", "processedPeople");
+  const askedQuestions = sumSummaryValues(items, section, "askedQuestions", "sentBasic");
+  const downloadedResume = sumSummaryValues(items, section, "downloadedResume");
+  const knowledgeAnswered = sumSummaryValues(items, section, "knowledgeAnswered");
+  const candidateQuestions = sumSummaryValues(items, section, "candidateQuestions");
+  const proactiveOpened = sumSummaryValues(items, section, "proactiveOpened", "opened", "openedCandidates");
+  const greeted = sumSummaryValues(items, section, "greeted");
+  const recent = [];
+  for (const item of items) {
+    const latestEvents = Array.isArray(item.latestEvents) ? item.latestEvents : [];
+    const latestReports = Array.isArray(item.latestReports) ? item.latestReports : [];
+    for (const event of latestEvents.slice(0, 6)) {
+      recent.push({
+        time: String(event.time || event.createdAt || "").slice(0, 19),
+        text: String(event.message || event.action || event.type || "自动化事件").slice(0, 180),
+      });
+    }
+    for (const report of latestReports.slice(0, 4)) {
+      recent.push({
+        time: String(report.createdAt || "").slice(0, 19),
+        text: String(report.message || report.type || "自动化报告").slice(0, 180),
+      });
+    }
+  }
+  let metrics = [
+    { key: "processed", label: "处理人数", value: processed },
+    { key: "sentCompanyInfo", label: "询问问题", value: askedQuestions },
+    { key: "requestedResume", label: "求简历", value: requestedResume },
+    { key: "userQuestions", label: "候选人提问", value: candidateQuestions },
+    { key: "savedResumes", label: "获取简历", value: downloadedResume },
+    { key: "knowledgeAnswered", label: "已答疑", value: knowledgeAnswered },
+    { key: "proactiveOpened", label: "点开人数", value: proactiveOpened },
+    { key: "proactiveGreeted", label: "主动打招呼", value: greeted },
+    { key: "proactiveReplied", label: "主动回复", value: 0 },
+    { key: "proactiveQualified", label: "主动符合", value: 0 },
+  ];
+  let recentItems = recent.slice(0, 12);
+  if (selectedDates.length > 1) {
+    const records = automationDetailRecordsFromSummaries(items, selectedDate);
+    const dedupedRecords = dedupeAutomationDetailRecords(records, "processed", { includeDate: false });
+    metrics = automationMetricPayloadFromRecords(records, { includeDate: false });
+    recentItems = dedupedRecords.slice(0, 12).map((record) => ({
+      time: String(record.updatedAt || "").slice(0, 19),
+      text: String(record.phrase || record.candidateLabel || record.statusLabel || "自动化记录").slice(0, 180),
+    }));
+  }
+  return {
+    accountId: normalizeBossAutomationAccountId(accountId),
+    date: selectedDate,
+    today: items[0]?.today || new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date()),
+    updatedAt: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+    metrics,
+    proactiveByPosition: [],
+    recent: recentItems,
+  };
+}
+
+function buildAutomationSummaryPayloadFromRecords(records = [], { platform = "boss", accountId = "all", date = "" } = {}) {
+  const selectedDate = normalizeAutomationDetailDate(date);
+  const filteredRecords = (Array.isArray(records) ? records : [])
+    .filter((record) => automationDetailDateMatches(record.updatedAt, selectedDate))
+    .sort((a, b) => Number(b.updatedAtTs || 0) - Number(a.updatedAtTs || 0));
+  const includeDate = selectedDate !== "all";
+  const recentRecords = dedupeAutomationDetailRecords(
+    filteredRecords.filter((record) => record.type !== "event" && automationRecordHasCandidateIdentity(record)),
+    "processed",
+    { includeDate }
+  );
+  return {
+    platform: normalizeAutomationPlatformId(platform),
+    accountId: normalizeBossAutomationAccountId(accountId),
+    date: selectedDate,
+    today: automationChinaDateKey(),
+    updatedAt: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+    metrics: automationMetricPayloadFromRecords(filteredRecords, { includeDate }),
+    proactiveByPosition: [],
+    recent: recentRecords.slice(0, 12).map((record) => ({
+      time: String(record.updatedAt || "").slice(0, 19),
+      text: String(record.phrase || record.candidateLabel || record.statusLabel || "自动化记录").slice(0, 180),
+    })),
+    deepStats: true,
+  };
+}
+
+function automationChinaDateKey(date = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function automationDateListFromState(value = "") {
+  return [
+    ...new Set(
+      String(value || "")
+        .split(/[,\s]+/)
+        .map((item) => String(item || "").trim())
+        .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item))
+    ),
+  ].sort();
+}
+
+function normalizeAutomationDetailDate(value = "") {
+  const text = String(value || "").trim();
+  if (text === "all" || text === "全部") return "all";
+  const dates = automationDateListFromState(text);
+  if (dates.length) return dates.join(",");
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : automationChinaDateKey();
+}
+
+function automationDetailDateMatches(value = "", selectedDate = automationChinaDateKey()) {
+  if (selectedDate === "all") return true;
+  const dates = automationDateListFromState(selectedDate);
+  if (dates.length) return dates.some((date) => String(value || "").startsWith(date));
+  return String(value || "").startsWith(selectedDate);
+}
+
+function automationDetailMetricPayload(items, platform, { accountId = "all", date = "" } = {}) {
+  if (platform === "boss") {
+    return buildBossAutomationSummaryPayload(items, { accountId, date }).metrics;
+  }
+  const selectedDate = normalizeAutomationDetailDate(date);
+  const section = selectedDate === "all" ? "allSummary" : "todaySummary";
+  const summary = items.reduce((next, item) => {
+    const source = item?.[section] || {};
+    for (const [key, value] of Object.entries(source)) {
+      if (typeof value === "number") next[key] = (next[key] || 0) + value;
+    }
+    return next;
+  }, {});
+  const requestedResume = Number(summary.requestedResume || 0) + Number(summary.alreadyRequestedResume || 0);
+  const proactiveOpened = Number(summary.proactiveOpened || summary.opened || summary.openedCandidates || 0);
+  return [
+    { key: "processed", label: "处理人数", value: Number(summary.processedRecords || summary.processedPeople || 0) },
+    { key: "sentCompanyInfo", label: "询问问题", value: Number(summary.askedQuestions || summary.sentBasic || 0) },
+    { key: "requestedResume", label: "求简历", value: requestedResume },
+    { key: "userQuestions", label: "候选人提问", value: Number(summary.candidateQuestions || 0) },
+    { key: "savedResumes", label: "获取简历", value: Number(summary.downloadedResume || 0) },
+    { key: "knowledgeAnswered", label: "已答疑", value: Number(summary.knowledgeAnswered || 0) },
+    { key: "proactiveOpened", label: "点开人数", value: proactiveOpened },
+    { key: "proactiveGreeted", label: "主动打招呼", value: Number(summary.greeted || 0) },
+    { key: "proactiveReplied", label: "主动回复", value: 0 },
+    { key: "proactiveQualified", label: "主动符合", value: 0 },
+  ];
+}
+
+function normalizeAutomationDetailStatusGroup(action = "", status = "", reportType = "") {
+  const text = `${action} ${status} ${reportType}`.toLowerCase();
+  if (/already_viewed|already_greeted|state_duplicate|identity_duplicate|resume_open_failed|no_greet_button/.test(text)) return "processed";
+  if (/dry_run_would_greet|screening_not_qualified|not_qualified|no_hi_button/.test(text) && /proactive|recommend|主动|推荐/.test(text)) {
+    return "proactiveOpened";
+  }
+  if (/qualified|符合|matched/.test(text)) return "proactiveQualified";
+  if (/reply|replied|回复/.test(text) && /proactive|greet|主动/.test(text)) return "proactiveReplied";
+  if (/greeted|proactive_greeted|(^|[_\s-])greet($|[_\s-])|打招呼|已主动联系|已主动打招呼/.test(text)) return "proactiveGreeted";
+  if (/opened|open.*candidate|open.*resume|detail|resume_dialog|read_resume|点开|查看候选/.test(text) && /proactive|recommend|主动|推荐/.test(text)) {
+    return "proactiveOpened";
+  }
+  if (/download|saved_resume|resume_download|accepted_resume_downloaded|获取简历|下载简历/.test(text)) return "savedResumes";
+  if (/request.*resume|requested_resume|accepted_requested_resume|求简历/.test(text)) return "requestedResume";
+  if (/candidate_question|user_question|question_pool|knowledge_gap|needs_human_answer|knowledge_unknown/.test(text)) return "userQuestions";
+  if (/knowledge_answered|(^|[_\s-])answered|答疑/.test(text)) return "knowledgeAnswered";
+  if (
+    /sent_basic_conditions|basic_conditions_(sent|waiting)|sent_position_screening|position_screening_(sent|waiting)|screening_question|sent_screening|已发公司情况|岗位筛选问题|筛选问题/.test(
+      text
+    )
+  ) {
+    return "sentCompanyInfo";
+  }
+  if (/waiting|not_asked|pending|blocked|halted/.test(text)) return "waiting";
+  return "processed";
+}
+
+function automationDetailStatusLabel(statusGroup, action = "", status = "") {
+  const labels = {
+    processed: "已处理",
+    sentCompanyInfo: "已询问",
+    requestedResume: "已求简历",
+    userQuestions: "候选人提问",
+    savedResumes: "已获取简历",
+    knowledgeAnswered: "已答疑",
+    proactiveOpened: "已点开",
+    proactiveGreeted: "已主动打招呼",
+    proactiveReplied: "主动联系后已回复",
+    proactiveQualified: "主动联系后符合",
+    waiting: "等待/待判断",
+  };
+  return labels[statusGroup] || action || status || "已处理";
+}
+
+function automationDetailFlags(statusGroup) {
+  return {
+    sentCompanyInfo: statusGroup === "sentCompanyInfo",
+    requestedResume: statusGroup === "requestedResume",
+    userQuestions: statusGroup === "userQuestions",
+    savedResumes: statusGroup === "savedResumes",
+    knowledgeAnswered: statusGroup === "knowledgeAnswered",
+    proactiveOpened:
+      statusGroup === "proactiveOpened" ||
+      statusGroup === "proactiveGreeted" ||
+      statusGroup === "proactiveReplied" ||
+      statusGroup === "proactiveQualified",
+    proactiveGreeted: statusGroup === "proactiveGreeted" || statusGroup === "proactiveReplied" || statusGroup === "proactiveQualified",
+    proactiveReplied: statusGroup === "proactiveReplied" || statusGroup === "proactiveQualified",
+    proactiveQualified: statusGroup === "proactiveQualified",
+    waiting: statusGroup === "waiting",
+  };
+}
+
+function automationDateKeyFromValue(value = "") {
+  const match = String(value || "").match(/\d{4}-\d{2}-\d{2}/);
+  return match ? match[0] : "";
+}
+
+function normalizeAutomationName(value = "") {
+  return String(value || "")
+    .replace(/\s+/g, "")
+    .replace(/[，,。.;；:：()（）【】\[\]<>《》"'“”‘’]/g, "")
+    .trim();
+}
+
+function cleanAutomationCandidateName(value = "") {
+  const name = String(value || "")
+    .replace(/^[\d\s.、-]+/, "")
+    .replace(/^\d{1,2}[:：]\d{2}\s*/, "")
+    .replace(/^\d{1,2}\/\d{1,2}\s*/, "")
+    .replace(/^\d{4}-\d{2}-\d{2}\s*/, "")
+    .replace(/[，,。.;；:：()（）【】\[\]<>《》"'“”‘’]/g, "")
+    .trim();
+  if (!name) return "";
+  if (/^\d+$/.test(name) || /^\d{1,2}[:：]\d{2}$/.test(name) || /^\d{1,2}\/\d{1,2}$/.test(name)) return "";
+  if (/^(候选人|自动化事件|未知|未命名|人才|对方|简历|附件简历|在线简历|已投|不合适)$/i.test(name)) return "";
+  if (/^(hrbp|hr|AI实习生|AI应用开发实习生|AI应用开发工程师|电气工程师|销售管培生|国际业务管培生|膨润土销售人员)$/i.test(name)) return "";
+  if (normalizeJobType(name) === name && RESUME_LIBRARY_JOB_TYPES.includes(name)) return "";
+  return name;
+}
+
+function automationJobMarkersForParsing(jobType = "") {
+  const markers = [
+    jobType,
+    normalizeJobType(jobType),
+    ...RESUME_LIBRARY_JOB_TYPES,
+    ...LEGACY_JOB_TYPES,
+    "AI应用开发实习生",
+    "AI实习生",
+    "AI应用开发工程师",
+    "应用技术管培生",
+    "膨润土销售人员",
+    "膨润土销售",
+    "人力资源管培生",
+    "hrbp",
+    "HRBP",
+    "电气工程师",
+    "销售管培生",
+    "国际业务管培生",
+  ];
+  return [...new Set(markers.filter(Boolean))].sort((left, right) => right.length - left.length);
+}
+
+function automationCandidateNameFromLabel(label = "", jobType = "") {
+  const text = String(label || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  for (const marker of automationJobMarkersForParsing(jobType)) {
+    const index = text.toLowerCase().indexOf(String(marker).toLowerCase());
+    if (index <= 0) continue;
+    const prefix = text
+      .slice(0, index)
+      .replace(/^\d+\s+/, "")
+      .replace(/^\d{1,2}[:：]\d{2}\s+/, "")
+      .trim();
+    const token = prefix.split(/\s+/)[0] || "";
+    const name = cleanAutomationCandidateName(token);
+    if (name) return name;
+  }
+  const stripped = text
