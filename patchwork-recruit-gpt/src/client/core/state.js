@@ -251,6 +251,7 @@ let isBatchRunning = false;
 let currentBatchJobId = "";
 let currentBatchStatus = "";
 let batchPollTimer = 0;
+let automationBrowserStatusTimer = 0;
 let batchPage = 1;
 let recordsPage = 1;
 let resumeCache = [];

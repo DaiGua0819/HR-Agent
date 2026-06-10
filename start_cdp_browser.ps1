@@ -37,6 +37,7 @@ if (-not [string]::IsNullOrWhiteSpace($BrowserPath)) {
   $candidates += $BrowserPath
 }
 $candidates += @(
+  "$PSScriptRoot\cloakbrowser-runtime\chromium-146.0.7680.177.4\chrome.exe",
   "$env:USERPROFILE\.cloakbrowser\chromium-146.0.7680.177.4\chrome.exe",
   "$env:LOCALAPPDATA\CloakBrowser\CloakBrowser.exe",
   "$env:LOCALAPPDATA\Programs\CloakBrowser\CloakBrowser.exe",

@@ -27,7 +27,7 @@ const {
 } = require("./server/utils/resumeSource");
 
 const PORT = Number(process.env.PORT || 8765);
-const HOST = "127.0.0.1";
+const HOST = process.env.WEB_HOST || process.env.HOST || "127.0.0.1";
 const ROOT = __dirname;
 const AUTOMATION_WORKSPACE = path.dirname(ROOT);
 const DATA_DIR = path.join(ROOT, "data");
@@ -1295,11 +1295,10 @@ function normalizeSchoolLevel(schoolLevel, school) {
   return level || "待确认";
 }
 
-function normalizeJobType(jobType, context = "") {
-  const value = String(jobType || "").trim();
+function normalizeJobTypeBySignal(text = "") {
+  const value = String(text || "").trim();
   if (RESUME_LIBRARY_JOB_TYPES.includes(value)) return value;
 
-  const text = `${value} ${String(context || "")}`;
   if (/AI应用开发实习生|AI实习生|AI应用开发工程师|AI开发工程师|人工智能实习|智能体实习|Agent实习|智能体开发工程师/i.test(text)) {
     return AI_SCORING_JOB_TYPE;
   }
@@ -1316,7 +1315,59 @@ function normalizeJobType(jobType, context = "") {
   if (/\u7535\u6c14|PLC|HMI|\u4e0a\u4f4d\u673a|\u81ea\u52a8\u5316|\u7535\u63a7|\u4eea\u63a7|\u63a5\u7ebf|\u8054\u52a8|\u8c03\u8bd5|CAD|\u673a\u7535/i.test(text)) return "\u7535\u6c14\u5de5\u7a0b\u5e08";
   if (/国际业务管培|国际|外贸|海外|跨境|英语|商务英语|外贸销售|化工原料外贸/i.test(text)) return "国际业务管培生";
   if (/销售|客户开发|销售工程师|销售经理|市场|商务/i.test(text)) return "膨润土销售人员";
+  return "";
+}
+
+function normalizeJobType(jobType, context = "") {
+  const value = String(jobType || "").trim();
+  if (RESUME_LIBRARY_JOB_TYPES.includes(value)) return value;
+
+  const text = `${value} ${String(context || "")}`;
+  const inferred = normalizeJobTypeBySignal(text);
+  if (inferred) return inferred;
   return DEFAULT_JOB_TYPE;
+}
+
+function extractPlatformJobTypeFromFileName(fileName = "") {
+  const baseName = path.basename(String(fileName || "")).replace(/\.[^.\\/]+$/, "");
+  if (!baseName) return "";
+
+  const candidates = [];
+  const bracketMatches = [...baseName.matchAll(/【([^】]+)】/g)].map((match) => String(match[1] || "").trim());
+  for (const bracketText of bracketMatches) {
+    if (!bracketText) continue;
+    candidates.push(bracketText);
+    const firstSegment = bracketText
+      .split(/[_＿]/)
+      .map((part) => part.trim())
+      .find(Boolean);
+    if (firstSegment) candidates.push(firstSegment);
+  }
+
+  if (!candidates.length && /(boss|51job|zhilian|智联|邮箱|recruiter|resume|简历)/i.test(baseName)) {
+    candidates.push(baseName);
+    baseName
+      .split(/[_＿\-\s]+/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .forEach((part) => candidates.push(part));
+  }
+
+  for (const candidate of candidates) {
+    const inferred = normalizeJobTypeBySignal(candidate);
+    if (inferred) return inferred;
+  }
+  return "";
+}
+
+function resolveResumeJobType(input = {}) {
+  const fileJobType = extractPlatformJobTypeFromFileName(input.fileName || input.filename || input.sourcePath || "");
+  if (fileJobType) return fileJobType;
+
+  return normalizeJobType(
+    input.jobType || input.appliedPosition || input.position || "",
+    `${input.context || ""} ${input.name || ""} ${input.school || ""}`
+  );
 }
 
 function isAiScoringJobType(jobType, context = "") {
@@ -1344,7 +1395,7 @@ function getBaseScoringMeta(jobType = DEFAULT_JOB_TYPE) {
 function sanitizeResumeFields(input = {}) {
   const rawScore = input.matchScore;
   const numericScore = rawScore === "" || rawScore === null || rawScore === undefined ? NaN : Number(rawScore);
-  const normalizedJobType = normalizeJobType(input.jobType, `${input.fileName || ""} ${input.name || ""} ${input.school || ""}`);
+  const normalizedJobType = resolveResumeJobType(input);
   const matchScore = Number.isFinite(numericScore)
     ? Math.max(0, Math.min(100, Math.round(numericScore)))
     : "";

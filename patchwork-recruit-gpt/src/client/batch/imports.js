@@ -221,6 +221,20 @@ async function copyActiveResumePdf() {
   }
 }
 
+function openActiveResumeConversationFromPdf(event) {
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+  if (!activeDetailResume?.id) {
+    setPdfCopyStatus("没有可打开的聊天记录", "is-error");
+    return;
+  }
+  if (typeof openResumeConversation !== "function") {
+    setPdfCopyStatus("聊天记录功能未加载", "is-error");
+    return;
+  }
+  openResumeConversation(activeDetailResume.id);
+}
+
 async function renderPdfPreview(pdfUrl) {
   elements.pdfPages.replaceChildren();
   elements.pdfPages.scrollTop = 0;
@@ -254,7 +268,7 @@ async function renderPdfPreview(pdfUrl) {
       const ratio = window.devicePixelRatio || 1;
 
       canvas.className = "pdf-page-canvas";
-      canvas.title = "点击复制本地 PDF 文件";
+      canvas.title = "左键复制 PDF；右键查看聊天记录";
       canvas.width = Math.floor(viewport.width * ratio);
       canvas.height = Math.floor(viewport.height * ratio);
       canvas.style.width = `${Math.floor(viewport.width)}px`;
@@ -264,6 +278,7 @@ async function renderPdfPreview(pdfUrl) {
       elements.pdfPages.appendChild(canvas);
       await page.render({ canvasContext: context, viewport }).promise;
       canvas.addEventListener("click", copyActiveResumePdf);
+      canvas.addEventListener("contextmenu", openActiveResumeConversationFromPdf);
     }
   } catch (error) {
     console.error(error);
@@ -288,6 +303,8 @@ function renderPdfFallback(pdfUrl, message) {
   link.target = "_blank";
   link.rel = "noopener";
   link.textContent = "打开原始 PDF";
+  link.title = "左键打开原始 PDF；右键查看聊天记录";
+  link.addEventListener("contextmenu", openActiveResumeConversationFromPdf);
 
   const frame = document.createElement("iframe");
   frame.className = "pdf-fallback-frame";

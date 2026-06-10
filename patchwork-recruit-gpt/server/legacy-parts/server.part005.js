@@ -163,6 +163,11 @@ const server = http.createServer((request, response) => {
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/automation-browser/status") {
+    handleAutomationBrowserStatus(request, response);
+    return;
+  }
+
   if (automationBrowserJobMatch && request.method === "GET") {
     handleGetAutomationBrowserJob(automationBrowserJobMatch[1], response);
     return;

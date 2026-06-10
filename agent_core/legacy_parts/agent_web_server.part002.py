@@ -107,6 +107,44 @@
             })
         return normalized
 
+    def infer_boss_applied_position_from_label(self, label: str, rules: dict | None = None) -> str:
+        label_clean = clean_applied_position(label)
+        if not label_clean:
+            return ""
+        rules = rules if isinstance(rules, dict) else load_boss_chat_rules()
+        candidates: list[str] = []
+        configured = rules.get("positionReplies") or rules.get("position_replies") or rules.get("jobReplies") or rules.get("job_replies")
+        if isinstance(configured, dict):
+            candidates.extend(str(key or "") for key in configured.keys())
+            for item in configured.values():
+                if isinstance(item, dict):
+                    aliases = item.get("aliases") if isinstance(item.get("aliases"), list) else []
+                    match_positions = item.get("matchPositions") if isinstance(item.get("matchPositions"), list) else []
+                    candidates.extend(str(value or "") for value in aliases + match_positions)
+        kb = rules.get("companyKnowledgeBase") if isinstance(rules.get("companyKnowledgeBase"), dict) else {}
+        sections = kb.get("sections") if isinstance(kb.get("sections"), dict) else {}
+        for title, section in sections.items():
+            candidates.append(str(title or ""))
+            if isinstance(section, dict):
+                aliases = section.get("aliases") if isinstance(section.get("aliases"), list) else []
+                match_positions = section.get("matchPositions") if isinstance(section.get("matchPositions"), list) else []
+                candidates.extend(str(value or "") for value in aliases + match_positions)
+        label_compact = compact_conversation_label(label_clean).lower()
+        clean_candidates: list[str] = []
+        for value in candidates:
+            clean = clean_applied_position(value)
+            if clean and clean not in clean_candidates:
+                clean_candidates.append(clean)
+        for candidate in sorted(clean_candidates, key=len, reverse=True):
+            candidate_compact = compact_conversation_label(candidate).lower()
+            if candidate_compact and (
+                candidate_compact in label_compact
+                or label_compact in candidate_compact
+                or candidate in label_clean
+            ):
+                return candidate
+        return ""
+
     def read_current_applicant_context(self, terminal: BrowserTerminal) -> dict:
         page = terminal.current_page()
         info = safe_eval(page, r"""() => {
@@ -118,10 +156,24 @@
             return box.width > 10 && box.height > 8 && box.bottom > 0 && box.y < window.innerHeight
               && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
           };
-          const selected = Array.from(document.querySelectorAll(
-            ".geek-item.selected, [class*='geek-item'][class*='selected']"
-          )).find(visible);
-          const row = selected ? (selected.closest(".geek-item-wrap") || selected) : null;
+          const selected = Array.from(document.querySelectorAll([
+            ".geek-item.selected",
+            ".geek-item.active",
+            ".geek-item.current",
+            ".geek-item.cur",
+            ".geek-item.checked",
+            "[class*='geek-item'][class*='selected']",
+            "[class*='geek-item'][class*='active']",
+            "[class*='geek-item'][class*='current']",
+            "[class*='geek-item'][class*='cur']",
+            "[class*='geek-item'][class*='checked']",
+            "[class*='listitem'][class*='selected']",
+            "[class*='listitem'][class*='active']",
+            "[class*='geek'][aria-selected='true']",
+            "[class*='listitem'][aria-selected='true']"
+          ].join(","))).map((el) => el.closest(".geek-item-wrap") || el.closest(".geek-item") || el)
+            .find(visible);
+          const row = selected || null;
           const text = normalize(row ? (row.innerText || row.textContent || "") : "");
           const nameNode = row ? row.querySelector(".geek-name, [class*='geek-name'], [class*='name']") : null;
           const jobNode = row ? row.querySelector(".source-job, [class*='source-job']") : null;
@@ -158,6 +210,14 @@
         if not isinstance(info, dict):
             return {}
         applied_position = clean_applied_position(str(info.get("appliedPosition") or ""))
+        inferred_position = self.infer_boss_applied_position_from_label(str(info.get("label") or ""))
+        if inferred_position and (
+            not applied_position
+            or inferred_position in applied_position
+            or applied_position in inferred_position
+            or len(applied_position) > 40
+        ):
+            applied_position = inferred_position
         return {
             "name": safe_text(str(info.get("name") or ""), 40),
             "appliedPosition": applied_position,

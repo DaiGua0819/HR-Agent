@@ -958,7 +958,30 @@ def read_recruiter_selected_candidate(terminal: BrowserTerminal) -> dict:
         info = page.evaluate(
             r"""() => {
               const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
-              const selected = Array.from(document.querySelectorAll(".geek-item.selected, [class*='geek-item'][class*='selected']"))
+              const visible = (el) => {
+                if (!el) return false;
+                const box = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return box.width > 80 && box.height > 35 && box.bottom > 0 && box.y < window.innerHeight
+                  && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+              };
+              const selected = Array.from(document.querySelectorAll([
+                ".geek-item.selected",
+                ".geek-item.active",
+                ".geek-item.current",
+                ".geek-item.cur",
+                ".geek-item.checked",
+                "[class*='geek-item'][class*='selected']",
+                "[class*='geek-item'][class*='active']",
+                "[class*='geek-item'][class*='current']",
+                "[class*='geek-item'][class*='cur']",
+                "[class*='geek-item'][class*='checked']",
+                "[class*='listitem'][class*='selected']",
+                "[class*='listitem'][class*='active']",
+                "[class*='geek'][aria-selected='true']",
+                "[class*='listitem'][aria-selected='true']"
+              ].join(","))).map((el) => el.closest(".geek-item-wrap") || el.closest(".geek-item") || el)
+                .filter(visible)
                 .map((el) => normalize(el.innerText || el.textContent || ""))
                 .find(Boolean) || "";
               const chatHeader = Array.from(document.querySelectorAll(

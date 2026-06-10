@@ -1390,6 +1390,44 @@
         }""", {"token": token})
         return info if isinstance(info, dict) else {"found": False, "reason": "online_resume_scan_failed"}
 
+    def job51_dom_click_online_resume_entry(self, page, token: str) -> dict:
+        token = str(token or "").strip()
+        if not token:
+            return {"ok": False, "reason": "online_resume_dom_click_missing_token"}
+        result = safe_eval(page, """(args) => {
+          const token = args.token;
+          const selector = `[data-codex-job51-online-resume="${String(token).replace(/"/g, '\\"')}"]`;
+          const el = document.querySelector(selector);
+          if (!el || !el.isConnected) return { ok: false, reason: 'online_resume_dom_element_missing' };
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const visible = node => {
+            if (!node || !node.isConnected) return false;
+            const box = node.getBoundingClientRect();
+            const style = window.getComputedStyle(node);
+            return box.width > 8 && box.height > 8
+              && style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && style.opacity !== '0'
+              && box.bottom >= 0
+              && box.right >= 0
+              && box.top <= window.innerHeight
+              && box.left <= window.innerWidth;
+          };
+          const target = el.closest('a,button,[role="button"],[onclick],#sensor_Bchat_newzxjl,.chat-user-operate .file-style,.chat-user-operate [tabindex],.resume-element,.item-container-resume,[class*="resume" i],[class*="file-style" i]') || el;
+          if (!visible(target)) return { ok: false, reason: 'online_resume_dom_element_not_visible' };
+          target.scrollIntoView({ block: 'center', inline: 'center' });
+          if (typeof target.focus === 'function') target.focus({ preventScroll: true });
+          target.click();
+          const box = target.getBoundingClientRect();
+          return {
+            ok: true,
+            tag: target.tagName,
+            text: normalize(target.innerText || target.textContent || target.getAttribute('title') || target.getAttribute('aria-label') || '').slice(0, 160),
+            rect: { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) }
+          };
+        }""", {"token": token})
+        return result if isinstance(result, dict) else {"ok": False, "reason": "online_resume_dom_click_failed"}
+
     def job51_open_online_resume_detail(self, terminal: BrowserTerminal, entry: dict) -> dict:
         origin_page = terminal.current_page()
         locator = origin_page.locator(f"[data-codex-job51-online-resume='{entry.get('token')}']").first
@@ -1405,7 +1443,9 @@
                 if terminal.humanize:
                     terminal.pause_like_person("pre_action")
                     highlight_target(locator)
-                humanized_locator_click(terminal, locator, force=True)
+                dom_click = self.job51_dom_click_online_resume_entry(origin_page, str(entry.get("token") or ""))
+                if not dom_click.get("ok"):
+                    raise AgentError(dom_click.get("reason") or "online_resume_dom_click_failed")
                 clicked_entry = True
                 if terminal.humanize:
                     terminal.pause_like_person("post_action")
@@ -1417,7 +1457,9 @@
                     if terminal.humanize:
                         terminal.pause_like_person("pre_action")
                         highlight_target(locator)
-                    humanized_locator_click(terminal, locator, force=True)
+                    dom_click = self.job51_dom_click_online_resume_entry(origin_page, str(entry.get("token") or ""))
+                    if not dom_click.get("ok"):
+                        raise AgentError(dom_click.get("reason") or "online_resume_dom_click_failed")
                     clicked_entry = True
                     if terminal.humanize:
                         terminal.pause_like_person("post_action")

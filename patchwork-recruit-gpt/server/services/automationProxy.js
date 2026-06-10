@@ -123,6 +123,20 @@ function createAutomationProxyService({
     }
   }
 
+  function platformPathPrefix(platform) {
+    if (platform === "51job") return "/api/51job";
+    if (platform === "zhilian") return "/api/zhilian";
+    return `/api/${platform}`;
+  }
+
+  function proxyStartActionFromPath(platform, targetPath = "") {
+    const cleanPath = String(targetPath || "").split("?")[0];
+    const prefix = platformPathPrefix(platform);
+    if (cleanPath === `${prefix}/process-messages`) return "处理消息";
+    if (cleanPath === `${prefix}/proactive-contact`) return "主动联系";
+    return "";
+  }
+
   async function proxyPlatformAutomationResponse(request, response, platform, targetPath, { timeoutMs = 900000 } = {}) {
     const normalizedPlatform = normalizePlatformId(platform);
     try {
@@ -131,15 +145,27 @@ function createAutomationProxyService({
       const requestUrl = new URL(request.url, getRequestBaseUrl());
       const accountId = normalizeAccountId(body.accountId || requestUrl.searchParams.get("accountId") || "all");
       const sourceKeys = platformSources(normalizedPlatform, accountId);
+      const startAction = request.method === "POST" ? proxyStartActionFromPath(normalizedPlatform, targetPath) : "";
       console.log(`[automation-proxy] platform=${normalizedPlatform} account=${accountId} sourceKeys=${sourceKeys.join(",")} path=${targetPath}`);
       const results = await Promise.all(
-        sourceKeys.map((sourceKey) =>
-          fetchAgentJson(sourceKey, targetPath, {
+        sourceKeys.map(async (sourceKey) => {
+          if (startAction) {
+            await fetchAgentJson(sourceKey, "/api/pause", {
+              method: "POST",
+              body: {
+                paused: false,
+                pause: false,
+                reason: `开始${platformLabel(normalizedPlatform)}${startAction}前自动解除暂停`,
+              },
+              timeoutMs: 30000,
+            });
+          }
+          return fetchAgentJson(sourceKey, targetPath, {
             method: request.method,
             body,
             timeoutMs,
-          })
-        )
+          });
+        })
       );
       const parts = results.map(({ payload, source }) => {
         const text = payload.reply || payload.message || payload.result?.reply || payload.result?.message || "完成";

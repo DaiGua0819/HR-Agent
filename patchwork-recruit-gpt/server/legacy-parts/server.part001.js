@@ -969,6 +969,19 @@ function findCloakBrowserExecutable() {
   const candidates = [];
   if (explicit) candidates.push(explicit);
 
+  const projectCloakBrowserRoot = path.join(AUTOMATION_WORKSPACE, "cloakbrowser-runtime");
+  try {
+    const entries = fsSync.existsSync(projectCloakBrowserRoot)
+      ? fsSync.readdirSync(projectCloakBrowserRoot, { withFileTypes: true })
+      : [];
+    entries
+      .filter((entry) => entry.isDirectory() && /^chromium-/i.test(entry.name))
+      .sort((left, right) => right.name.localeCompare(left.name))
+      .forEach((entry) => candidates.push(path.join(projectCloakBrowserRoot, entry.name, "chrome.exe")));
+  } catch {
+    // Best-effort discovery only; explicit error is raised below if no executable exists.
+  }
+
   try {
     const entries = fsSync.existsSync(DEFAULT_CLOAK_BROWSER_ROOT)
       ? fsSync.readdirSync(DEFAULT_CLOAK_BROWSER_ROOT, { withFileTypes: true })
@@ -1624,6 +1637,92 @@ function handleGetAutomationBrowserJob(jobId, response) {
     jobId: job.id,
     job: getPublicBrowserLaunchJob(job),
   });
+}
+
+function automationBrowserSourceKey(platform, accountId) {
+  const normalizedPlatform = normalizeAutomationPlatformId(platform);
+  const normalizedAccount = normalizeBossAutomationAccountId(accountId);
+  if (normalizedPlatform === "boss") return normalizedAccount === "boss_b" ? "boss_b" : "boss_a";
+  if (normalizedPlatform === "51job") return normalizedAccount === "boss_b" ? "job51_b" : "job51_a";
+  if (normalizedPlatform === "zhilian") return normalizedAccount === "boss_b" ? "zhilian_b" : "zhilian_a";
+  return "";
+}
+
+async function inspectAutomationBrowserStatusTarget(account, platform) {
+  const normalizedPlatform = normalizeAutomationPlatformId(platform);
+  const platformConfig = BROWSER_PLATFORM_CONFIG[normalizedPlatform] || BROWSER_PLATFORM_CONFIG.boss;
+  const cdpTarget = account.platforms?.[normalizedPlatform] || {};
+  const cdpPort = Number(cdpTarget.cdpPort || 0);
+  const sourceKey = automationBrowserSourceKey(normalizedPlatform, account.id);
+  const source = AUTOMATION_SUMMARY_SOURCES[sourceKey] || {};
+  const baseUrl = String(source.baseUrl || "").replace(/\/+$/, "");
+  const target = {
+    platform: normalizedPlatform,
+    accountId: account.id,
+    accountName: account.name,
+    platformLabel: platformConfig.label,
+    sourceKey,
+    agentPort: baseUrl ? Number(new URL(baseUrl).port || 0) : 0,
+    cdpPort,
+    cdpReady: false,
+    agentReady: false,
+    agentBusy: false,
+    status: "closed",
+    error: "",
+  };
+
+  const [cdpReady, agentStatus] = await Promise.all([
+    cdpPort ? isCdpReady(cdpPort).catch(() => false) : Promise.resolve(false),
+    sourceKey
+      ? fetchAgentJson(sourceKey, "/api/status", { timeoutMs: 1200 })
+          .then(({ payload }) => ({ ok: true, payload }))
+          .catch((error) => ({ ok: false, error: error.message || "账号服务未响应" }))
+      : Promise.resolve({ ok: false, error: "账号服务未配置" }),
+  ]);
+
+  target.cdpReady = Boolean(cdpReady);
+  target.agentReady = Boolean(agentStatus.ok);
+  target.agentBusy = Boolean(agentStatus.payload?.busy);
+  target.status = target.cdpReady ? "ready" : "closed";
+  if (!target.agentReady && agentStatus.error) target.agentError = agentStatus.error;
+  return target;
+}
+
+async function handleAutomationBrowserStatus(request, response) {
+  try {
+    const requestUrl = new URL(request.url, `http://${HOST}:${PORT}`);
+    const requestedPlatform = String(requestUrl.searchParams.get("platform") || "all").trim().toLowerCase();
+    const requestedAccount = requestUrl.searchParams.get("accountId") || "all";
+    const platforms = !requestedPlatform || requestedPlatform === "all" || requestedPlatform === "*"
+      ? ["boss", "51job", "zhilian"]
+      : [normalizeAutomationPlatformId(requestedPlatform)];
+    const accounts = getBrowserAutomationAccounts(requestedAccount);
+    const targets = [];
+    for (const account of accounts) {
+      for (const platform of platforms) {
+        targets.push(inspectAutomationBrowserStatusTarget(account, platform));
+      }
+    }
+    const inspectedTargets = await Promise.all(targets);
+    const summary = inspectedTargets.reduce(
+      (acc, target) => {
+        if (target.cdpReady) acc.cdpReady += 1;
+        if (target.agentReady) acc.agentReady += 1;
+        if (!target.cdpReady) acc.closed += 1;
+        return acc;
+      },
+      { cdpReady: 0, agentReady: 0, closed: 0 }
+    );
+    sendJson(response, 200, {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      intervalMs: 3000,
+      summary,
+      targets: inspectedTargets,
+    });
+  } catch (error) {
+    sendJson(response, 500, { ok: false, error: error.message || "浏览器状态读取失败" });
+  }
 }
 
 function configuredAutomationSources(sourceKeys) {

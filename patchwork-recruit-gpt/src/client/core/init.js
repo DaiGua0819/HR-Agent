@@ -285,25 +285,63 @@ function renderBrowserLaunchButton(button, status = "idle") {
 }
 
 function getBrowserLaunchButtonStatus(target = {}) {
+  if (target.status === "closed" || target.status === "offline" || target.cdpReady === false) return "idle";
   if (target.status === "ready" || target.status === "needs_login") return "running";
   if (target.status === "failed") return "failed";
   if (target.status === "running" || target.status === "pending") return "starting";
-  if (target.started || target.authenticated || target.needsLogin) return "running";
+  if (target.cdpReady || target.started || target.authenticated || target.needsLogin) return "running";
   return "idle";
+}
+
+function findBrowserLaunchButton(target = {}) {
+  const platform = normalizeAutomationPlatform(target.platform);
+  const accountId = normalizeBossAutomationAccountId(target.accountId);
+  return elements.browserLaunchButtons?.find((candidate) => (
+    normalizeAutomationPlatform(candidate.dataset.browserLaunchPlatform) === platform &&
+    normalizeBossAutomationAccountId(candidate.dataset.browserLaunchAccount) === accountId
+  ));
 }
 
 function syncBrowserLaunchButtonsFromJob(payload) {
   const job = getBrowserLaunchJob(payload) || {};
   const targets = Array.isArray(job.targets) ? job.targets : [];
   for (const target of targets) {
-    const platform = normalizeAutomationPlatform(target.platform);
-    const accountId = normalizeBossAutomationAccountId(target.accountId);
-    const button = elements.browserLaunchButtons?.find((candidate) => (
-      normalizeAutomationPlatform(candidate.dataset.browserLaunchPlatform) === platform &&
-      normalizeBossAutomationAccountId(candidate.dataset.browserLaunchAccount) === accountId
-    ));
+    const button = findBrowserLaunchButton(target);
     renderBrowserLaunchButton(button, getBrowserLaunchButtonStatus(target));
   }
+}
+
+function syncBrowserLaunchButtonsFromStatus(payload = {}) {
+  const targets = Array.isArray(payload.targets) ? payload.targets : [];
+  for (const target of targets) {
+    const button = findBrowserLaunchButton(target);
+    if (!button) continue;
+    const launchingUntil = Number(button.dataset.launchingUntil || 0);
+    const status = getBrowserLaunchButtonStatus(target);
+    if (status === "idle" && button.classList.contains("is-starting") && Date.now() < launchingUntil) continue;
+    renderBrowserLaunchButton(button, status);
+    button.dataset.agentReady = target.agentReady ? "1" : "0";
+    button.dataset.cdpReady = target.cdpReady ? "1" : "0";
+  }
+}
+
+async function refreshAutomationBrowserStatuses({ silent = false } = {}) {
+  try {
+    const payload = await requestJson("/api/automation-browser/status");
+    syncBrowserLaunchButtonsFromStatus(payload);
+    return payload;
+  } catch (error) {
+    if (!silent) console.warn(error);
+    return null;
+  }
+}
+
+function startAutomationBrowserStatusMonitor() {
+  window.clearInterval(automationBrowserStatusTimer);
+  refreshAutomationBrowserStatuses({ silent: true }).catch(() => {});
+  automationBrowserStatusTimer = window.setInterval(() => {
+    refreshAutomationBrowserStatuses({ silent: true }).catch(() => {});
+  }, 3000);
 }
 
 function setBrowserLaunchButtonsDisabled(disabled, exceptButton = null) {
@@ -318,6 +356,7 @@ function setBrowserLaunchButtonsDisabled(disabled, exceptButton = null) {
 
 async function launchAutomationBrowserTarget(button) {
   const target = getBrowserLaunchButtonTarget(button);
+  if (button) button.dataset.launchingUntil = String(Date.now() + 90000);
   renderBrowserLaunchButton(button, "starting");
   setBrowserLaunchButtonsDisabled(true, button);
   selectAutomationPlatform(target.platform, `${target.label} 正在启动`);
@@ -364,7 +403,9 @@ async function launchAutomationBrowserTarget(button) {
     if (elements.bossBrowserSummary) elements.bossBrowserSummary.textContent = message;
     setStatus(message);
   } finally {
+    if (button) button.dataset.launchingUntil = "";
     setBrowserLaunchButtonsDisabled(false, button);
+    refreshAutomationBrowserStatuses({ silent: true }).catch(() => {});
   }
 }
 
@@ -417,6 +458,7 @@ async function oneClickLaunchAutomationBrowserJobMode() {
   } finally {
     if (button) button.disabled = false;
     setBrowserLaunchButtonsDisabled(false, button);
+    refreshAutomationBrowserStatuses({ silent: true }).catch(() => {});
   }
 }
 
@@ -1407,6 +1449,7 @@ elements.retryFailedBtn.addEventListener("click", () => {
 window.addEventListener("popstate", refreshResumeView);
 
 refreshAutomationStats().catch((error) => console.warn(error));
+startAutomationBrowserStatusMonitor();
 refreshEmailAutoStatus().catch((error) => console.warn(error));
 emailAutoStatusTimer = window.setInterval(() => {
   refreshEmailAutoStatus().catch((error) => console.warn(error));
