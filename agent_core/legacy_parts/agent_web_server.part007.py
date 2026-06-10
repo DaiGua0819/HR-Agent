@@ -21,7 +21,7 @@
         if not isinstance(info, dict):
             return {"selected": False, "reason": "selected_position_probe_failed"}
         label = str(info.get("selectedLabel") or "")
-        matches = bool(label and target_position and zhilian_position_label_matches(label, target_position))
+        matches = bool(label and target_position and proactive_position_label_matches(label, target_position))
         return {
             **info,
             "matchesTarget": matches,
@@ -132,7 +132,7 @@
             if not label:
                 continue
             visible_labels.append(label)
-            if zhilian_position_label_matches(label, target_position):
+            if proactive_position_label_matches(label, target_position):
                 selected = self.zhilian_click_and_verify_recommend_position(
                     terminal,
                     item,
@@ -164,7 +164,7 @@
                 continue
             if label:
                 visible_labels.append(label)
-            if zhilian_position_label_matches(label, target_position):
+            if proactive_position_label_matches(label, target_position):
                 selected = self.zhilian_click_and_verify_recommend_position(
                     terminal,
                     item,

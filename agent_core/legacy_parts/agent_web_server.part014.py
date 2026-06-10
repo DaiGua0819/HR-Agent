@@ -79,9 +79,9 @@ def recommend_candidate_age_check(text: str, target_position: str = "") -> dict:
     elif recommend_target_is_bentonite_sales(target_position):
         max_age = 35
         reason_suffix = "bentonite_sales"
-    elif recommend_target_is_hrbp(target_position):
+    elif recommend_target_is_hr_screening_position(target_position):
         max_age = 30
-        reason_suffix = "hrbp"
+        reason_suffix = recommend_hr_position_category(target_position) or "hr"
     elif recommend_target_is_international_business_trainee(target_position):
         max_age = 25
         reason_suffix = "international_business_trainee"
@@ -138,7 +138,7 @@ def recommend_candidate_bentonite_sales_keyword_check(text: str, target_position
 
 
 def recommend_candidate_hrbp_major_check(text: str, target_position: str = "") -> dict:
-    if not recommend_target_is_hrbp(target_position):
+    if not recommend_target_is_hr_screening_position(target_position):
         return {
             "allowed": True,
             "reason": "major_not_required_for_position",

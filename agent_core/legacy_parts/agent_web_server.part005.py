@@ -669,7 +669,7 @@
                 continue
             visible_labels.append(label)
             normalized = clean_applied_position(label.replace("已结束", ""))
-            if job51_position_label_matches(normalized, target_position):
+            if proactive_position_label_matches(normalized, target_position):
                 if terminal.humanize:
                     terminal.pause_like_person("pre_action")
                     highlight_target(item)
@@ -824,8 +824,8 @@
             major = recommend_candidate_international_business_major_check(evidence_text, "国际业务管培生")
             if not major.get("allowed"):
                 return {"allowed": False, "reason": major.get("reason") or "missing_international_business_major", "education": education, "age": age, "major": major}
-        elif recommend_target_is_hrbp(target_clean):
-            major = recommend_candidate_hrbp_major_check(evidence_text, "HRBP")
+        elif recommend_target_is_hr_screening_position(target_clean):
+            major = recommend_candidate_hrbp_major_check(evidence_text, target_clean)
             if not major.get("allowed"):
                 return {"allowed": False, "reason": major.get("reason") or "missing_hrbp_related_major", "education": education, "age": age, "major": major}
         elif "电气工程师" in target_clean or "电气自动化" in target_clean:

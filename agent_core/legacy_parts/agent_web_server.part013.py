@@ -108,6 +108,51 @@ def recommend_position_has_terms(value: str, terms: list[str]) -> bool:
     return all(normalize_recommend_position(term) in normalized for term in terms if term)
 
 
+def recommend_hr_position_category(value: str) -> str:
+    normalized = normalize_recommend_position(value)
+    if not normalized:
+        return ""
+    if any(term in normalized for term in ["人力资源管培生", "人力资源管培", "人资管培", "人力资源管理培训生"]):
+        return "hr_trainee"
+    if "hrbp" in normalized:
+        return "hrbp"
+    if "人力资源" in normalized:
+        return "plain_hr"
+    return ""
+
+
+def strict_hr_position_match(current_position: str, target_position: str) -> bool | None:
+    current_category = recommend_hr_position_category(current_position)
+    target_category = recommend_hr_position_category(target_position)
+    if not current_category and not target_category:
+        return None
+    return bool(current_category and target_category and current_category == target_category)
+
+
+def proactive_recommend_position_match_score(current_position: str, target_position: str) -> int:
+    strict_match = strict_hr_position_match(current_position, target_position)
+    if strict_match is not None:
+        return 920 if strict_match else 0
+    return recommend_position_match_score(current_position, target_position)
+
+
+def proactive_recommend_position_matches(current_position: str, target_position: str) -> bool:
+    return proactive_recommend_position_match_score(current_position, target_position) > 0
+
+
+def proactive_position_label_matches(label: str, target_position: str) -> bool:
+    label_clean = clean_applied_position(label)
+    target_clean = clean_applied_position(target_position)
+    if not label_clean or not target_clean:
+        return False
+    strict_match = strict_hr_position_match(label_clean, target_clean)
+    if strict_match is not None:
+        return strict_match
+    if target_clean in label_clean or label_clean in target_clean:
+        return True
+    return recommend_position_matches(label_clean, target_clean)
+
+
 RECOMMEND_POSITION_MATCH_RULES = [
     {
         "key": "application_technology",
@@ -243,7 +288,7 @@ def select_recommend_position_if_needed(terminal: BrowserTerminal, frame, target
     page = terminal.current_page()
     try:
         expanded = frame.locator(".job-selecter-wrap.expanding")
-        if current_position and recommend_position_matches(current_position, target_position):
+        if current_position and proactive_recommend_position_matches(current_position, target_position):
             if expanded.count() > 0:
                 page.keyboard.press("Escape")
                 page.wait_for_timeout(random.randint(180, 360))
@@ -253,7 +298,7 @@ def select_recommend_position_if_needed(terminal: BrowserTerminal, frame, target
                 "currentPosition": current_position,
             }
     except Exception:
-        if current_position and recommend_position_matches(current_position, target_position):
+        if current_position and proactive_recommend_position_matches(current_position, target_position):
             return {
                 "changed": False,
                 "reason": "already_target_position",
@@ -291,7 +336,7 @@ def select_recommend_position_if_needed(terminal: BrowserTerminal, frame, target
             if not label:
                 continue
             labels.append(label)
-            score = recommend_position_match_score(label, target_position)
+            score = proactive_recommend_position_match_score(label, target_position)
             if score > best_score:
                 best_index = index
                 best_label = label
@@ -1095,11 +1140,19 @@ def recommend_target_is_bentonite_sales(target_position: str = "") -> bool:
 
 
 def recommend_target_is_hrbp(target_position: str = "") -> bool:
-    target = str(target_position or "")
-    compact = normalize_recommend_position(target)
-    if any(term in compact for term in ["人力资源管培", "人资管培", "人力资源管理培训"]):
-        return True
-    return recommend_position_matches(target, "HRBP") or recommend_position_matches(target, "人力资源")
+    return recommend_hr_position_category(target_position) == "hrbp"
+
+
+def recommend_target_is_hr_trainee(target_position: str = "") -> bool:
+    return recommend_hr_position_category(target_position) == "hr_trainee"
+
+
+def recommend_target_is_plain_hr(target_position: str = "") -> bool:
+    return recommend_hr_position_category(target_position) == "plain_hr"
+
+
+def recommend_target_is_hr_screening_position(target_position: str = "") -> bool:
+    return recommend_hr_position_category(target_position) in {"hrbp", "hr_trainee", "plain_hr"}
 
 
 def recommend_target_is_international_business_trainee(target_position: str = "") -> bool:
@@ -1478,7 +1531,7 @@ def recommend_candidate_education_check(text: str, target_position: str = "") ->
     compact = re.sub(r"\s+", "", str(text or ""))
     if (
         recommend_target_is_application_technology(target_position)
-        or recommend_target_is_hrbp(target_position)
+        or recommend_target_is_hr_screening_position(target_position)
         or recommend_target_is_international_business_trainee(target_position)
         or recommend_target_is_electrical_engineer(target_position)
     ):

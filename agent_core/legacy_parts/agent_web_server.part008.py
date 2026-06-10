@@ -1368,7 +1368,7 @@
         selection = select_recommend_position_if_needed(terminal, frame, target_position)
         summary = read_recommend_frame_summary(frame)
         current_position = str(summary.get("position") or "")
-        if target_position and current_position and not recommend_position_matches(current_position, target_position):
+        if target_position and current_position and not proactive_recommend_position_matches(current_position, target_position):
             result = {
                 "blocked": True,
                 "message": f"当前推荐页岗位是：{safe_text(current_position, 80)}，不是目标岗位：{safe_text(target_position, 80)}。请先在推荐牛人页切到对应岗位后再执行主动联系。",

@@ -484,6 +484,9 @@ def recruiter_label_matches_position(label: str, target_position: str) -> bool |
     target = clean_applied_position(target_position)
     if not target:
         return None
+    strict_match = strict_hr_position_match(label, target)
+    if strict_match is not None:
+        return strict_match
     compact = compact_conversation_label(label)
     target_compact = compact_conversation_label(target)
     if target_compact and target_compact in compact:
