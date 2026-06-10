@@ -1027,6 +1027,10 @@ function buildCdpBrowserArgs(cdpPort, profileDir, startUrl) {
   ];
 }
 
+function quoteWindowsCmdArgument(value = "") {
+  return `"${String(value).replace(/"/g, "")}"`;
+}
+
 function launchCloakBrowserDirectly({ cdpPort, profileDir, startUrl, browserPath }) {
   fsSync.mkdirSync(profileDir, { recursive: true });
   const args = buildCdpBrowserArgs(cdpPort, profileDir, startUrl);
@@ -1034,10 +1038,62 @@ function launchCloakBrowserDirectly({ cdpPort, profileDir, startUrl, browserPath
   return { pid, args };
 }
 
+function automationBrowserVisibleLaunchEnabled() {
+  return !/^(0|false|no)$/i.test(String(process.env.AUTOMATION_BROWSER_VISIBLE ?? "true"));
+}
+
+async function launchCloakBrowserInteractiveTask({ cdpPort, profileDir, startUrl, browserPath }) {
+  fsSync.mkdirSync(profileDir, { recursive: true });
+  const args = buildCdpBrowserArgs(cdpPort, profileDir, startUrl);
+  const logDir = path.join(AUTOMATION_WORKSPACE, "logs");
+  fsSync.mkdirSync(logDir, { recursive: true });
+  const scriptPath = path.join(logDir, `visible-browser-${cdpPort}.cmd`);
+  const taskName = `\\RecruitAgentVisibleBrowser-${cdpPort}`;
+  const taskUser = process.env.AUTOMATION_BROWSER_INTERACTIVE_USER || process.env.USERNAME || "Administrator";
+  const scriptBody = [
+    "@echo off",
+    `cd /d ${quoteWindowsCmdArgument(AUTOMATION_WORKSPACE)}`,
+    `start "" ${quoteWindowsCmdArgument(browserPath)} ${args.map(quoteWindowsCmdArgument).join(" ")}`,
+    "",
+  ].join("\r\n");
+  fsSync.writeFileSync(scriptPath, scriptBody, "utf8");
+  const command = [
+    "$ErrorActionPreference = 'Continue'",
+    `& schtasks.exe /Delete /TN ${powerShellSingleQuoted(taskName)} /F 2>$null | Out-Null`,
+    "$ErrorActionPreference = 'Stop'",
+    [
+      "$CreateOutput = & schtasks.exe /Create",
+      `/TN ${powerShellSingleQuoted(taskName)}`,
+      "/SC ONCE",
+      "/ST 23:59",
+      `/TR ${powerShellSingleQuoted(scriptPath)}`,
+      `/RU ${powerShellSingleQuoted(taskUser)}`,
+      "/RL HIGHEST",
+      "/IT",
+      "/F",
+      "2>&1",
+    ].join(" "),
+    "if ($LASTEXITCODE -ne 0) { throw ('创建可视化浏览器任务失败：' + ($CreateOutput -join ' ')) }",
+    `$RunOutput = & schtasks.exe /Run /TN ${powerShellSingleQuoted(taskName)} 2>&1`,
+    "if ($LASTEXITCODE -ne 0) { throw ('运行可视化浏览器任务失败：' + ($RunOutput -join ' ')) }",
+  ].join("; ");
+  await runPowerShellAutomationCommand(command, { timeoutMs: 12000 });
+  return { pid: null, args, taskName, scriptPath };
+}
+
 async function waitForCdpReady(cdpPort, timeoutMs = 75000) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     if (await isCdpReady(cdpPort)) return true;
+    await sleep(300);
+  }
+  return false;
+}
+
+async function waitForCdpClosed(cdpPort, timeoutMs = 6000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (!(await isCdpReady(cdpPort))) return true;
     await sleep(300);
   }
   return false;
@@ -1052,6 +1108,260 @@ function cleanupBrowserLaunchJobs() {
     if (Number(job.updatedAtMs || job.createdAtMs || 0) < cutoff) {
       browserLaunchJobs.delete(jobId);
     }
+  }
+}
+
+function powerShellSingleQuoted(value = "") {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function encodePowerShellCommand(command) {
+  return Buffer.from(command, "utf16le").toString("base64");
+}
+
+async function runPowerShellAutomationCommand(command, { timeoutMs = 15000 } = {}) {
+  return runProcess(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodePowerShellCommand(command)],
+    {
+      timeoutMs,
+      timeoutMessage: "自动化进程操作超时",
+      failureMessage: "自动化进程操作失败",
+    }
+  );
+}
+
+function automationBrowserPortFromBaseUrl(baseUrl = "") {
+  try {
+    const url = new URL(String(baseUrl || ""));
+    return Number(url.port || (url.protocol === "https:" ? 443 : 80)) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function getAutomationBrowserRuntimeTarget(account, platform) {
+  const normalizedPlatform = normalizeAutomationPlatformId(platform);
+  const platformConfig = BROWSER_PLATFORM_CONFIG[normalizedPlatform] || BROWSER_PLATFORM_CONFIG.boss;
+  const cdpTarget = account.platforms?.[normalizedPlatform] || {};
+  const sourceKey = automationBrowserSourceKey(normalizedPlatform, account.id);
+  const source = AUTOMATION_SUMMARY_SOURCES[sourceKey] || {};
+  return {
+    account,
+    accountId: account.id,
+    accountName: account.name,
+    platform: normalizedPlatform,
+    platformLabel: platformConfig.label,
+    startUrl: platformConfig.startUrl,
+    cdpPort: Number(cdpTarget.cdpPort || 0),
+    profileDir: cdpTarget.profileDir || "",
+    sourceKey,
+    agentPort: automationBrowserPortFromBaseUrl(source.baseUrl),
+  };
+}
+
+function resolveAutomationPythonPath() {
+  const candidates = [
+    process.env.AGENT_PYTHON_PATH,
+    process.env.PYTHON_PATH,
+    process.env.PYTHON,
+    path.join(AUTOMATION_WORKSPACE, ".cloakbrowser-venv", "Scripts", "python.exe"),
+    "C:\\Python314\\python.exe",
+    "C:\\Python313\\python.exe",
+    "C:\\Python312\\python.exe",
+    "C:\\Python311\\python.exe",
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Programs", "Python", "Python314", "python.exe") : "",
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Programs", "Python", "Python313", "python.exe") : "",
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Programs", "Python", "Python312", "python.exe") : "",
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Programs", "Python", "Python311", "python.exe") : "",
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (/\\WindowsApps\\/i.test(candidate)) continue;
+    if (fsSync.existsSync(candidate)) return candidate;
+  }
+  return process.env.AGENT_PYTHON_COMMAND || "python.exe";
+}
+
+function safeAutomationProcessName(value = "") {
+  return String(value || "agent")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "agent";
+}
+
+function automationAgentScriptName(sourceKey, agentPort) {
+  const normalizedSource = String(sourceKey || "").trim();
+  const nameBySource = {
+    boss_a: "boss_a",
+    boss_b: "boss_b",
+    job51_a: "job51_a",
+    job51_b: "job51_b",
+    zhilian_a: "zhilian_a",
+    zhilian_b: "zhilian_b",
+  };
+  const suffix = nameBySource[normalizedSource] || normalizedSource || "agent";
+  return `run-agent-${agentPort}-${suffix}.ps1`;
+}
+
+function buildAutomationAgentFallbackCommand(target, pythonPath, stdoutLog, stderrLog) {
+  const agentAccountName = target.platform === "boss" ? target.accountName : `${target.platformLabel} ${target.accountName}`;
+  return [
+    `$env:AGENT_WEB_PORT = ${powerShellSingleQuoted(String(target.agentPort))}`,
+    `$env:AGENT_ACCOUNT_ID = ${powerShellSingleQuoted(target.sourceKey || target.accountId)}`,
+    `$env:AGENT_ACCOUNT_NAME = ${powerShellSingleQuoted(agentAccountName)}`,
+    `$env:AUTOMATION_PLATFORM = ${powerShellSingleQuoted(target.platform)}`,
+    `$env:AUTOMATION_ACCOUNT_ID = ${powerShellSingleQuoted(target.sourceKey || target.accountId)}`,
+    [
+      `Start-Process -FilePath ${powerShellSingleQuoted(pythonPath)}`,
+      "-ArgumentList @('-u','agent_web_server.py')",
+      `-WorkingDirectory ${powerShellSingleQuoted(AUTOMATION_WORKSPACE)}`,
+      "-WindowStyle Hidden",
+      `-RedirectStandardOutput ${powerShellSingleQuoted(stdoutLog)}`,
+      `-RedirectStandardError ${powerShellSingleQuoted(stderrLog)}`,
+    ].join(" "),
+  ];
+}
+
+async function waitForAutomationAgentReady(sourceKey, timeoutMs = 12000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const { payload } = await fetchAgentJson(sourceKey, "/api/status", { timeoutMs: 1500 });
+      return { ready: true, payload };
+    } catch (error) {
+      lastError = error;
+      await sleep(500);
+    }
+  }
+  return { ready: false, error: lastError?.message || "agent 服务未响应" };
+}
+
+async function inspectAutomationLocalPortOwner(port) {
+  const normalizedPort = Number(port || 0);
+  if (!Number.isInteger(normalizedPort) || normalizedPort <= 0) {
+    return { listening: false, port: normalizedPort };
+  }
+  const command = [
+    "$ErrorActionPreference = 'Stop'",
+    `$Port = ${normalizedPort}`,
+    "$Connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1",
+    "if (-not $Connection) { [PSCustomObject]@{ listening = $false; port = $Port } | ConvertTo-Json -Compress; return }",
+    "$Proc = Get-CimInstance Win32_Process -Filter \"ProcessId=$($Connection.OwningProcess)\"",
+    "$Payload = [PSCustomObject]@{ listening = $true; port = $Port; processId = [int]$Connection.OwningProcess; sessionId = [int]$Proc.SessionId; name = [string]$Proc.Name; commandLine = [string]$Proc.CommandLine }",
+    "$Payload | ConvertTo-Json -Compress -Depth 4",
+  ].join("; ");
+  const output = await runPowerShellAutomationCommand(command, { timeoutMs: 6000 });
+  return JSON.parse(String(output || "{}"));
+}
+
+async function startAutomationAgentProcess(target) {
+  if (!target.agentPort || !target.sourceKey) {
+    throw new Error(`${target.platformLabel} ${target.accountName} agent 端口未配置`);
+  }
+  const pythonPath = resolveAutomationPythonPath();
+  const logDir = path.join(AUTOMATION_WORKSPACE, "logs");
+  const scriptPath = path.join(logDir, automationAgentScriptName(target.sourceKey, target.agentPort));
+  const processName = safeAutomationProcessName(`agent-${target.agentPort}-${target.sourceKey}`);
+  const stdoutLog = path.join(logDir, `${processName}.button.out.log`);
+  const stderrLog = path.join(logDir, `${processName}.button.err.log`);
+  const startCommands = fsSync.existsSync(scriptPath)
+    ? [[
+      "Start-Process -FilePath 'powershell.exe'",
+      "-ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',",
+      `${powerShellSingleQuoted(scriptPath)})`,
+      `-WorkingDirectory ${powerShellSingleQuoted(AUTOMATION_WORKSPACE)}`,
+      "-WindowStyle Hidden",
+    ].join(" ")]
+    : buildAutomationAgentFallbackCommand(target, pythonPath, stdoutLog, stderrLog);
+  const command = [
+    "$ErrorActionPreference = 'Stop'",
+    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+    `New-Item -ItemType Directory -Force -Path ${powerShellSingleQuoted(logDir)} | Out-Null`,
+    ...startCommands,
+  ].join("; ");
+  await runPowerShellAutomationCommand(command, { timeoutMs: 12000 });
+  return { started: true, pythonPath, scriptPath: fsSync.existsSync(scriptPath) ? scriptPath : "", stdoutLog, stderrLog };
+}
+
+async function ensureAutomationBrowserAgentReady(target) {
+  if (!target.sourceKey || !target.agentPort) {
+    return { ready: false, started: false, agentPort: target.agentPort || 0, error: "agent 服务未配置" };
+  }
+  const current = await waitForAutomationAgentReady(target.sourceKey, 1800);
+  if (current.ready) {
+    return { ready: true, started: false, agentPort: target.agentPort, status: current.payload };
+  }
+  const started = await startAutomationAgentProcess(target);
+  const ready = await waitForAutomationAgentReady(target.sourceKey, 15000);
+  if (!ready.ready) {
+    throw new Error(`${target.platformLabel} ${target.accountName} agent 启动后未就绪：${ready.error || "未知错误"}`);
+  }
+  return { ready: true, started: true, agentPort: target.agentPort, status: ready.payload, ...started };
+}
+
+async function inspectCdpPageForStatus(page) {
+  const expression =
+    "(() => ({ href: location.href, title: document.title || '', readyState: document.readyState, text: ((document.body && document.body.innerText) || '').slice(0, 3000) }))()";
+  const result = await callPageCdp(page, "Runtime.evaluate", {
+    expression,
+    returnByValue: true,
+    awaitPromise: true,
+  }, 1800).catch(() => null);
+  return result?.result?.value || {};
+}
+
+async function inspectAutomationBrowserStatusPage(runtimeTarget) {
+  const result = {
+    page: null,
+    needsLogin: false,
+    authenticated: false,
+  };
+  if (!runtimeTarget.cdpPort) return result;
+  const pages = await fetchCdpJson(runtimeTarget.cdpPort, "/json/list", { timeoutMs: 1800 }).catch(() => []);
+  const page = pickPlatformPage(pages, runtimeTarget.startUrl);
+  if (!page) return result;
+  const inspected = await inspectCdpPageForStatus(page);
+  const pageUrl = inspected.href || page.url || "";
+  result.page = {
+    title: inspected.title || page.title || "",
+    url: pageUrl || runtimeTarget.startUrl,
+    readyState: inspected.readyState || "",
+  };
+  result.needsLogin = browserTargetLooksLoggedOut(page, runtimeTarget.platform, inspected);
+  result.authenticated = browserTargetLooksAuthenticated(runtimeTarget.platform, runtimeTarget.account, inspected);
+  return result;
+}
+
+async function stopAutomationLocalPort(port, kind) {
+  const normalizedPort = Number(port || 0);
+  if (!Number.isInteger(normalizedPort) || normalizedPort <= 0) {
+    return { ok: false, kind, port: normalizedPort, listening: false, stoppedPids: [], errors: ["端口无效"] };
+  }
+  const command = [
+    "$ErrorActionPreference = 'Stop'",
+    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+    `$Port = ${normalizedPort}`,
+    "$Connections = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)",
+    "$ProcessIds = @($Connections | Where-Object { $_.OwningProcess -and $_.OwningProcess -ne 0 } | Select-Object -ExpandProperty OwningProcess -Unique)",
+    "$Stopped = @()",
+    "$Errors = @()",
+    "foreach ($TargetProcessId in $ProcessIds) { try { Stop-Process -Id $TargetProcessId -Force -ErrorAction Stop; $Stopped += [int]$TargetProcessId } catch { $Errors += [string]$_.Exception.Message } }",
+    "$Payload = [PSCustomObject]@{ ok = ($Errors.Count -eq 0); port = $Port; listening = ($ProcessIds.Count -gt 0); processIds = @($ProcessIds); stoppedPids = @($Stopped); errors = @($Errors) }",
+    "$Payload | ConvertTo-Json -Compress -Depth 5",
+  ].join("; ");
+  try {
+    const output = await runPowerShellAutomationCommand(command, { timeoutMs: 10000 });
+    const payload = JSON.parse(String(output || "{}"));
+    return { kind, ...payload, ok: Boolean(payload.ok) };
+  } catch (error) {
+    return {
+      ok: false,
+      kind,
+      port: normalizedPort,
+      listening: false,
+      stoppedPids: [],
+      errors: [error.message || "停止端口失败"],
+    };
   }
 }
 
@@ -1120,6 +1430,10 @@ function getPublicBrowserLaunchJob(job) {
     status: target.status,
     attempt: target.attempt,
     maxAttempts: target.maxAttempts,
+    sourceKey: target.sourceKey || "",
+    agentPort: target.agentPort || 0,
+    agentStarted: Boolean(target.agentStarted),
+    agentReady: Boolean(target.agentReady),
     started: Boolean(target.started),
     needsLogin: Boolean(target.needsLogin),
     authenticated: Boolean(target.authenticated),
@@ -1128,6 +1442,7 @@ function getPublicBrowserLaunchJob(job) {
     launchMethod: target.launchMethod || "",
     browserPath: target.browserPath || "",
     page: target.page || null,
+    agentError: target.agentError || "",
     error: target.error || "",
   }));
   return {
@@ -1143,21 +1458,24 @@ function getPublicBrowserLaunchJob(job) {
 }
 
 function makeBrowserLaunchTarget(account, platform, maxAttempts) {
-  const normalizedPlatform = normalizeAutomationPlatformId(platform);
-  const platformConfig = BROWSER_PLATFORM_CONFIG[normalizedPlatform] || BROWSER_PLATFORM_CONFIG.boss;
-  const cdpTarget = account.platforms?.[normalizedPlatform] || {};
+  const runtimeTarget = getAutomationBrowserRuntimeTarget(account, platform);
   return {
     account,
-    platform: normalizedPlatform,
+    platform: runtimeTarget.platform,
     accountId: account.id,
     accountName: account.name,
-    platformLabel: platformConfig.label,
-    cdpPort: cdpTarget.cdpPort || 0,
-    profileDir: cdpTarget.profileDir || "",
-    startUrl: platformConfig.startUrl,
+    platformLabel: runtimeTarget.platformLabel,
+    cdpPort: runtimeTarget.cdpPort,
+    profileDir: runtimeTarget.profileDir,
+    startUrl: runtimeTarget.startUrl,
+    sourceKey: runtimeTarget.sourceKey,
+    agentPort: runtimeTarget.agentPort,
     status: "pending",
     attempt: 0,
     maxAttempts,
+    agentStarted: false,
+    agentReady: false,
+    agentError: "",
     started: false,
     needsLogin: false,
     authenticated: false,
@@ -1179,6 +1497,14 @@ async function runBrowserLaunchTarget(job, target, waitTimeoutMs) {
     });
     updateBrowserLaunchJob(job);
     try {
+      const agentResult = await ensureAutomationBrowserAgentReady(target);
+      Object.assign(target, {
+        agentPort: agentResult.agentPort || target.agentPort,
+        agentStarted: Boolean(agentResult.started),
+        agentReady: Boolean(agentResult.ready),
+        agentError: "",
+      });
+      updateBrowserLaunchJob(job);
       const result = await startBrowserTarget(target.account, target.platform, { waitTimeoutMs });
       Object.assign(target, result, {
         status: result.needsLogin ? "needs_login" : "ready",
@@ -1190,6 +1516,7 @@ async function runBrowserLaunchTarget(job, target, waitTimeoutMs) {
       if (error.launchPid) target.pid = error.launchPid;
       if (error.launchMethod) target.launchMethod = error.launchMethod;
       if (error.browserPath) target.browserPath = error.browserPath;
+      if (!target.agentReady) target.agentError = error.message || "agent 启动失败";
       target.error = error.message || "启动失败";
       updateBrowserLaunchJob(job);
       if (attempt < target.maxAttempts) {
@@ -1456,10 +1783,33 @@ async function startBrowserTarget(account, platform, { waitTimeoutMs = 30000 } =
     throw error;
   }
 
-  const wasRunning = await isCdpReady(target.cdpPort);
+  const visibleLaunch = automationBrowserVisibleLaunchEnabled();
+  let wasRunning = await isCdpReady(target.cdpPort);
   let pid = null;
-  let launchMethod = wasRunning ? "reuse-cdp" : "direct-cloakbrowser";
+  let launchMethod = wasRunning ? "reuse-cdp" : (visibleLaunch ? "interactive-task-cloakbrowser" : "direct-cloakbrowser");
   let browserPath = "";
+  if (wasRunning && visibleLaunch) {
+    const owner = await inspectAutomationLocalPortOwner(target.cdpPort).catch(() => null);
+    if (Number(owner?.sessionId) === 0) {
+      logBrowserLaunch("replace-hidden-session0-browser", {
+        accountId: account.id,
+        accountName: account.name,
+        platform: normalizedPlatform,
+        cdpPort: target.cdpPort,
+        processId: owner.processId,
+      });
+      await stopAutomationLocalPort(target.cdpPort, "browser");
+      const closed = await waitForCdpClosed(target.cdpPort, 8000);
+      if (!closed) {
+        const error = new Error(`${account.name} ${platformConfig.label} 后台浏览器仍占用 ${target.cdpPort}，无法切换为桌面可视化窗口`);
+        error.statusCode = 500;
+        error.launchMethod = "replace-hidden-session0-browser";
+        throw error;
+      }
+      wasRunning = false;
+      launchMethod = "interactive-task-cloakbrowser";
+    }
+  }
   if (!wasRunning) {
     const cloakBrowserPath = findCloakBrowserExecutable();
     if (!cloakBrowserPath) {
@@ -1469,12 +1819,19 @@ async function startBrowserTarget(account, platform, { waitTimeoutMs = 30000 } =
     }
     browserPath = cloakBrowserPath;
     try {
-      const launch = launchCloakBrowserDirectly({
-        cdpPort: target.cdpPort,
-        profileDir: target.profileDir,
-        startUrl: platformConfig.startUrl,
-        browserPath: cloakBrowserPath,
-      });
+      const launch = visibleLaunch
+        ? await launchCloakBrowserInteractiveTask({
+          cdpPort: target.cdpPort,
+          profileDir: target.profileDir,
+          startUrl: platformConfig.startUrl,
+          browserPath: cloakBrowserPath,
+        })
+        : launchCloakBrowserDirectly({
+          cdpPort: target.cdpPort,
+          profileDir: target.profileDir,
+          startUrl: platformConfig.startUrl,
+          browserPath: cloakBrowserPath,
+        });
       pid = launch.pid;
       logBrowserLaunch("started", {
         accountId: account.id,
@@ -1485,6 +1842,7 @@ async function startBrowserTarget(account, platform, { waitTimeoutMs = 30000 } =
         profileDir: target.profileDir,
         browserPath: cloakBrowserPath,
         method: launchMethod,
+        taskName: launch.taskName || "",
       });
     } catch (spawnError) {
       const error = new Error(`${account.name} ${platformConfig.label} CloakBrowser 进程启动失败：${spawnError.message || spawnError}`);
@@ -1502,8 +1860,20 @@ async function startBrowserTarget(account, platform, { waitTimeoutMs = 30000 } =
       error.launchPid = pid;
       error.launchMethod = launchMethod;
       error.browserPath = cloakBrowserPath;
-      throw error;
-    }
+        throw error;
+      }
+      if (visibleLaunch) {
+        const owner = await inspectAutomationLocalPortOwner(target.cdpPort).catch(() => null);
+        if (owner?.processId) pid = owner.processId;
+        if (Number(owner?.sessionId) === 0) {
+          const error = new Error(`${account.name} ${platformConfig.label} 浏览器已启动，但仍在后台 Session 0；请保持 Administrator 的 RDP 桌面登录后重试`);
+          error.statusCode = 500;
+          error.launchPid = pid;
+          error.launchMethod = launchMethod;
+          error.browserPath = cloakBrowserPath;
+          throw error;
+        }
+      }
     logBrowserLaunch("ready", {
       accountId: account.id,
       accountName: account.name,
@@ -1582,7 +1952,7 @@ async function handleStartAutomationBrowser(request, response) {
     const body = await readJsonBody(request).catch(() => ({}));
     const plan = getBrowserLaunchPlan(body);
     if (!plan.length) {
-      sendJson(response, 400, { error: "?????????" });
+      sendJson(response, 400, { error: "未找到要启动的浏览器账号" });
       return;
     }
 
@@ -1610,7 +1980,7 @@ async function handleStartAutomationBrowser(request, response) {
       const current = browserLaunchJobs.get(job.id);
       if (!current) return;
       current.status = "failed";
-      current.message = error.message || "?????????";
+      current.message = error.message || "浏览器启动失败";
       updateBrowserLaunchJob(current);
     });
 
@@ -1618,10 +1988,10 @@ async function handleStartAutomationBrowser(request, response) {
       ok: true,
       jobId: job.id,
       job: getPublicBrowserLaunchJob(job),
-      message: "???????????",
+      message: "已创建浏览器和 agent 启动任务",
     });
   } catch (error) {
-    sendJson(response, error.statusCode || 500, { error: error.message || "???????" });
+    sendJson(response, error.statusCode || 500, { error: error.message || "启动浏览器失败" });
   }
 }
 
@@ -1629,7 +1999,7 @@ function handleGetAutomationBrowserJob(jobId, response) {
   cleanupBrowserLaunchJobs();
   const job = browserLaunchJobs.get(jobId);
   if (!job) {
-    sendJson(response, 404, { ok: false, error: "??????????????" });
+    sendJson(response, 404, { ok: false, error: "启动任务不存在或已过期" });
     return;
   }
   sendJson(response, 200, {
@@ -1637,6 +2007,50 @@ function handleGetAutomationBrowserJob(jobId, response) {
     jobId: job.id,
     job: getPublicBrowserLaunchJob(job),
   });
+}
+
+async function handleStopAutomationBrowser(request, response) {
+  try {
+    const body = await readJsonBody(request).catch(() => ({}));
+    const plan = getBrowserLaunchPlan(body);
+    if (!plan.length) {
+      sendJson(response, 400, { ok: false, error: "未找到要关闭的浏览器账号" });
+      return;
+    }
+    const results = [];
+    for (const item of plan) {
+      const target = getAutomationBrowserRuntimeTarget(item.account, item.platform);
+      const [browserResult, agentResult] = await Promise.all([
+        stopAutomationLocalPort(target.cdpPort, "browser"),
+        stopAutomationLocalPort(target.agentPort, "agent"),
+      ]);
+      const ok = Boolean(browserResult.ok && agentResult.ok);
+      results.push({
+        ok,
+        accountId: target.accountId,
+        accountName: target.accountName,
+        platform: target.platform,
+        platformLabel: target.platformLabel,
+        sourceKey: target.sourceKey,
+        cdpPort: target.cdpPort,
+        agentPort: target.agentPort,
+        browser: browserResult,
+        agent: agentResult,
+        error: ok
+          ? ""
+          : [browserResult.errors, agentResult.errors].flat().filter(Boolean).join("；") || "关闭失败",
+      });
+    }
+    const failed = results.filter((item) => !item.ok);
+    sendJson(response, failed.length ? 500 : 200, {
+      ok: failed.length === 0,
+      message: failed.length ? `关闭完成，但 ${failed.length} 个目标有异常` : "已关闭对应浏览器和 agent 进程",
+      results,
+      failures: failed,
+    });
+  } catch (error) {
+    sendJson(response, error.statusCode || 500, { ok: false, error: error.message || "关闭自动化进程失败" });
+  }
 }
 
 function automationBrowserSourceKey(platform, accountId) {
@@ -1649,32 +2063,29 @@ function automationBrowserSourceKey(platform, accountId) {
 }
 
 async function inspectAutomationBrowserStatusTarget(account, platform) {
-  const normalizedPlatform = normalizeAutomationPlatformId(platform);
-  const platformConfig = BROWSER_PLATFORM_CONFIG[normalizedPlatform] || BROWSER_PLATFORM_CONFIG.boss;
-  const cdpTarget = account.platforms?.[normalizedPlatform] || {};
-  const cdpPort = Number(cdpTarget.cdpPort || 0);
-  const sourceKey = automationBrowserSourceKey(normalizedPlatform, account.id);
-  const source = AUTOMATION_SUMMARY_SOURCES[sourceKey] || {};
-  const baseUrl = String(source.baseUrl || "").replace(/\/+$/, "");
+  const runtimeTarget = getAutomationBrowserRuntimeTarget(account, platform);
   const target = {
-    platform: normalizedPlatform,
+    platform: runtimeTarget.platform,
     accountId: account.id,
     accountName: account.name,
-    platformLabel: platformConfig.label,
-    sourceKey,
-    agentPort: baseUrl ? Number(new URL(baseUrl).port || 0) : 0,
-    cdpPort,
+    platformLabel: runtimeTarget.platformLabel,
+    sourceKey: runtimeTarget.sourceKey,
+    agentPort: runtimeTarget.agentPort,
+    cdpPort: runtimeTarget.cdpPort,
     cdpReady: false,
     agentReady: false,
     agentBusy: false,
+    needsLogin: false,
+    authenticated: false,
+    page: null,
     status: "closed",
     error: "",
   };
 
   const [cdpReady, agentStatus] = await Promise.all([
-    cdpPort ? isCdpReady(cdpPort).catch(() => false) : Promise.resolve(false),
-    sourceKey
-      ? fetchAgentJson(sourceKey, "/api/status", { timeoutMs: 1200 })
+    runtimeTarget.cdpPort ? isCdpReady(runtimeTarget.cdpPort).catch(() => false) : Promise.resolve(false),
+    runtimeTarget.sourceKey
+      ? fetchAgentJson(runtimeTarget.sourceKey, "/api/status", { timeoutMs: 1200 })
           .then(({ payload }) => ({ ok: true, payload }))
           .catch((error) => ({ ok: false, error: error.message || "账号服务未响应" }))
       : Promise.resolve({ ok: false, error: "账号服务未配置" }),
@@ -1683,7 +2094,28 @@ async function inspectAutomationBrowserStatusTarget(account, platform) {
   target.cdpReady = Boolean(cdpReady);
   target.agentReady = Boolean(agentStatus.ok);
   target.agentBusy = Boolean(agentStatus.payload?.busy);
-  target.status = target.cdpReady ? "ready" : "closed";
+  if (target.cdpReady) {
+    const pageState = await inspectAutomationBrowserStatusPage(runtimeTarget).catch((error) => ({
+      page: null,
+      needsLogin: false,
+      authenticated: false,
+      error: error.message || "页面状态读取失败",
+    }));
+    target.page = pageState.page || null;
+    target.needsLogin = Boolean(pageState.needsLogin);
+    target.authenticated = Boolean(pageState.authenticated);
+    if (pageState.error) target.pageError = pageState.error;
+  }
+  if (!target.cdpReady && !target.agentReady) {
+    target.status = "closed";
+  } else if (!target.cdpReady || !target.agentReady) {
+    target.status = "failed";
+    target.error = target.cdpReady ? agentStatus.error || "agent 服务未响应" : "浏览器 CDP 未响应";
+  } else if (target.needsLogin) {
+    target.status = "needs_login";
+  } else {
+    target.status = "ready";
+  }
   if (!target.agentReady && agentStatus.error) target.agentError = agentStatus.error;
   return target;
 }
@@ -1708,10 +2140,13 @@ async function handleAutomationBrowserStatus(request, response) {
       (acc, target) => {
         if (target.cdpReady) acc.cdpReady += 1;
         if (target.agentReady) acc.agentReady += 1;
+        if (target.status === "needs_login") acc.needsLogin += 1;
+        if (target.status === "failed") acc.failed += 1;
+        if (target.status === "ready") acc.ready += 1;
         if (!target.cdpReady) acc.closed += 1;
         return acc;
       },
-      { cdpReady: 0, agentReady: 0, closed: 0 }
+      { cdpReady: 0, agentReady: 0, ready: 0, needsLogin: 0, failed: 0, closed: 0 }
     );
     sendJson(response, 200, {
       ok: true,

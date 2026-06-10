@@ -392,7 +392,7 @@ h2 {
   border: 1px solid var(--line);
   border-radius: 8px;
   color: var(--primary-dark);
-  background: #f0f5f7;
+  background: #fff;
   cursor: pointer;
   font-weight: 700;
   line-height: 1.25;
@@ -414,15 +414,21 @@ h2 {
   background: var(--primary);
 }
 
+.launch-browser-btn.is-login {
+  color: #fff;
+  border-color: transparent;
+  background: #f59e0b;
+}
+
 .launch-browser-btn.is-error {
-  color: #8c2f2f;
-  border-color: #efb4b4;
-  background: #fff2f2;
+  color: #fff;
+  border-color: transparent;
+  background: #dc2626;
 }
 
 .launch-browser-btn:disabled {
   cursor: wait;
-  opacity: 0.82;
+  opacity: 1;
 }
 
 .launch-title,

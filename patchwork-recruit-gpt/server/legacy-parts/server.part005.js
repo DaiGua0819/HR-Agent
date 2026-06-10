@@ -7,13 +7,19 @@
 
 function runProcess(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { windowsHide: true, ...options });
+    const {
+      timeoutMs = 12000,
+      timeoutMessage = "复制超时",
+      failureMessage = "复制失败",
+      ...spawnOptions
+    } = options || {};
+    const child = spawn(command, args, { windowsHide: true, ...spawnOptions });
     let stdout = "";
     let stderr = "";
     const timeout = setTimeout(() => {
       child.kill();
-      reject(new Error("复制超时"));
-    }, 12000);
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
     child.stdout?.on("data", (chunk) => {
       stdout += chunk.toString();
     });
@@ -29,7 +35,7 @@ function runProcess(command, args, options = {}) {
       if (code === 0) {
         resolve(stdout.trim());
       } else {
-        reject(new Error(stderr.trim() || stdout.trim() || "复制失败"));
+        reject(new Error(stderr.trim() || stdout.trim() || failureMessage));
       }
     });
   });
@@ -160,6 +166,11 @@ const server = http.createServer((request, response) => {
 
   if (request.method === "POST" && url.pathname === "/api/automation-browser/start") {
     handleStartAutomationBrowser(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/automation-browser/stop") {
+    handleStopAutomationBrowser(request, response);
     return;
   }
 

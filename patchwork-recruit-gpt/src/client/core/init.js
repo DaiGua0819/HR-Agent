@@ -274,22 +274,34 @@ function renderBrowserLaunchButton(button, status = "idle") {
   if (!button) return;
   const target = getBrowserLaunchButtonTarget(button);
   const statusNode = button.querySelector(".launch-status");
-  const label = status === "running" ? "运行中" : status === "starting" ? "启动中" : status === "failed" ? "失败" : "启动";
+  const label = {
+    running: "运行中",
+    starting: "启动中",
+    stopping: "关闭中",
+    needs_login: "需登录",
+    failed: "异常",
+    idle: "启动",
+  }[status] || "启动";
+  button.dataset.launchStatus = status;
   button.classList.toggle("is-running", status === "running");
-  button.classList.toggle("is-starting", status === "starting");
+  button.classList.toggle("is-starting", status === "starting" || status === "stopping");
+  button.classList.toggle("is-login", status === "needs_login");
   button.classList.toggle("is-error", status === "failed");
-  button.disabled = status === "starting";
+  button.disabled = status === "starting" || status === "stopping";
   if (statusNode) statusNode.textContent = `${label} ${target.ports}`;
   button.title = `${target.label} ${label} ${target.ports}`;
   button.setAttribute("aria-label", button.title);
 }
 
 function getBrowserLaunchButtonStatus(target = {}) {
-  if (target.status === "closed" || target.status === "offline" || target.cdpReady === false) return "idle";
-  if (target.status === "ready" || target.status === "needs_login") return "running";
   if (target.status === "failed") return "failed";
+  if (target.cdpReady === false && target.agentReady) return "failed";
+  if (target.cdpReady && target.agentReady === false) return "failed";
+  if (target.status === "closed" || target.status === "offline" || target.cdpReady === false) return "idle";
+  if (target.status === "needs_login" || target.needsLogin) return "needs_login";
+  if (target.status === "ready") return "running";
   if (target.status === "running" || target.status === "pending") return "starting";
-  if (target.cdpReady || target.started || target.authenticated || target.needsLogin) return "running";
+  if (target.cdpReady || target.started || target.authenticated) return "running";
   return "idle";
 }
 
@@ -322,6 +334,8 @@ function syncBrowserLaunchButtonsFromStatus(payload = {}) {
     renderBrowserLaunchButton(button, status);
     button.dataset.agentReady = target.agentReady ? "1" : "0";
     button.dataset.cdpReady = target.cdpReady ? "1" : "0";
+    button.dataset.needsLogin = target.needsLogin ? "1" : "0";
+    button.dataset.lastError = target.error || target.agentError || target.pageError || "";
   }
 }
 
@@ -407,6 +421,61 @@ async function launchAutomationBrowserTarget(button) {
     setBrowserLaunchButtonsDisabled(false, button);
     refreshAutomationBrowserStatuses({ silent: true }).catch(() => {});
   }
+}
+
+function isBrowserLaunchButtonActive(button) {
+  const status = button?.dataset?.launchStatus || "idle";
+  if (status === "running" || status === "needs_login") return true;
+  if (status === "failed") {
+    return button?.dataset?.cdpReady === "1" || button?.dataset?.agentReady === "1";
+  }
+  return false;
+}
+
+async function stopAutomationBrowserTarget(button) {
+  const target = getBrowserLaunchButtonTarget(button);
+  const confirmed = window.confirm(
+    `确认关闭 ${target.label} 当前程序吗？\n将关闭浏览器 CDP ${target.cdpPort || "-"} 和 agent ${target.agentPort || "-"}。`
+  );
+  if (!confirmed) return;
+
+  renderBrowserLaunchButton(button, "stopping");
+  if (elements.bossBrowserSummary) elements.bossBrowserSummary.textContent = `正在关闭 ${target.label} 浏览器和 agent...`;
+  setStatus(`${target.label} 正在关闭`, "is-working");
+
+  try {
+    const payload = await requestJson("/api/automation-browser/stop", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        targets: [{ platform: target.platformParam, accountId: target.accountId }],
+      }),
+    });
+    const message = payload.message || `${target.label} 已关闭`;
+    if (elements.bossBrowserSummary) elements.bossBrowserSummary.textContent = message;
+    if (elements.batchSummary) elements.batchSummary.textContent = message;
+    renderBrowserLaunchButton(button, "idle");
+    setStatus(message, "is-done");
+  } catch (error) {
+    console.error(error);
+    const message = error.message || `${target.label} 关闭失败`;
+    renderBrowserLaunchButton(button, "failed");
+    button.dataset.lastError = message;
+    if (elements.bossBrowserSummary) elements.bossBrowserSummary.textContent = message;
+    setStatus(message);
+  } finally {
+    refreshAutomationBrowserStatuses({ silent: true }).catch(() => {});
+  }
+}
+
+async function handleBrowserLaunchButtonClick(button) {
+  if (isBrowserLaunchButtonActive(button)) {
+    await stopAutomationBrowserTarget(button);
+    return;
+  }
+  await launchAutomationBrowserTarget(button);
 }
 
 async function oneClickLaunchAutomationBrowserJobMode() {
@@ -1222,7 +1291,7 @@ elements.startProactiveContactBtn?.addEventListener("click", handleStartProactiv
 elements.job51QuickAutomationBtn?.addEventListener("click", () => openQuickAutomationPlatform("job51"));
 elements.zhilianQuickAutomationBtn?.addEventListener("click", () => openQuickAutomationPlatform("zhilian"));
 elements.browserLaunchButtons?.forEach((button) => {
-  button.addEventListener("click", () => launchAutomationBrowserTarget(button));
+  button.addEventListener("click", () => handleBrowserLaunchButtonClick(button));
 });
 elements.oneClickLaunchBrowserBtn?.addEventListener("click", oneClickLaunchAutomationBrowserJobMode);
 elements.job51ProcessMessagesBtn?.addEventListener("click", async () => {
