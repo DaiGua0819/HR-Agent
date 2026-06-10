@@ -1497,4 +1497,12 @@ async function processBatchJob(jobId) {
   const finalStatus = getBatchJobStatus(jobId);
   if (finalStatus === "paused" || finalStatus === "cancelled") return;
 
+  const running = getDb()
+    .prepare("SELECT COUNT(*) AS count FROM batch_items WHERE job_id = ? AND status IN ('pending', 'parsing')")
+    .get(jobId).count;
+  if (running > 0) {
+    updateBatchJobStatus(jobId, "running");
+    return;
+  }
+
   const failed = getDb()

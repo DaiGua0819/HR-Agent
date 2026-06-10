@@ -209,6 +209,10 @@ let databaseInitialized = false;
 const batchWorkers = new Map();
 const BOSS_IMPORT_DONE_STATUSES = new Set(["saved", "duplicate"]);
 const BOSS_IMPORT_SKIP_STATUSES = new Set(["pending", "parsing", "saved", "duplicate"]);
+const FOLDER_IMPORT_STALE_RUNNING_MS = Math.max(
+  600000,
+  Number(process.env.FOLDER_IMPORT_STALE_RUNNING_MS || 15 * 60 * 1000)
+);
 const FOLDER_IMPORT_SOURCES = {
   boss: {
     id: "boss-resumes",

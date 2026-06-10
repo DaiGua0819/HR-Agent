@@ -284,6 +284,59 @@ function getCompletedFolderImportHashes(source, manifest) {
   return hashes;
 }
 
+async function resumeInterruptedFolderImportJobs(source) {
+  await ensureDatabase();
+  const db = getDb();
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const activeItems = db
+    .prepare(
+      "SELECT id, job_id, filename, file_path, status, payload, updated_at FROM batch_items WHERE status IN ('pending', 'parsing')"
+    )
+    .all();
+  const jobIds = new Set();
+  const resetItem = db.prepare(
+    "UPDATE batch_items SET status = 'pending', message = ?, updated_at = ? WHERE id = ? AND status = 'parsing'"
+  );
+  const failMissingFileItem = db.prepare(
+    "UPDATE batch_items SET status = 'failed', message = ?, updated_at = ? WHERE id = ? AND status IN ('pending', 'parsing')"
+  );
+  const updateJob = db.prepare(
+    "UPDATE batch_jobs SET status = 'pending', updated_at = ? WHERE id = ? AND status NOT IN ('paused', 'cancelled')"
+  );
+
+  for (const item of activeItems) {
+    const payload = parsePayload(item.payload, {});
+    if (payload.source !== source.id || !payload.sourceHash) continue;
+    if (item.file_path && !fsSync.existsSync(item.file_path)) {
+      failMissingFileItem.run("原始批量文件不存在，等待文件夹扫描重新入队", nowIso, item.id);
+      console.warn(
+        `[${nowIso}] [${source.id}] 跳过缺失原始文件的简历入库项：${item.filename || item.id}，job=${item.job_id}`
+      );
+      continue;
+    }
+    if (item.status === "pending") {
+      jobIds.add(item.job_id);
+      continue;
+    }
+    const updatedAt = Date.parse(item.updated_at || "");
+    const elapsedMs = Number.isFinite(updatedAt) ? now.getTime() - updatedAt : FOLDER_IMPORT_STALE_RUNNING_MS + 1;
+    if (elapsedMs < FOLDER_IMPORT_STALE_RUNNING_MS) continue;
+    resetItem.run("检测到解析任务卡住，已自动重新入队", nowIso, item.id);
+    jobIds.add(item.job_id);
+    console.warn(
+      `[${nowIso}] [${source.id}] 恢复卡住的简历入库项：${item.filename || item.id}，job=${item.job_id}`
+    );
+  }
+
+  for (const jobId of jobIds) {
+    updateJob.run(nowIso, jobId);
+    startBatchWorker(jobId);
+  }
+
+  return jobIds.size;
+}
+
 function getCompletedBossImportHashes(manifest) {
   return getCompletedFolderImportHashes(FOLDER_IMPORT_SOURCES.boss, manifest);
 }
@@ -441,6 +494,7 @@ function publicBossImportCandidate(candidate) {
 async function handleScanResumeFolderImport(source, request, response) {
   try {
     await ensureDatabase();
+    await resumeInterruptedFolderImportJobs(source);
     const requestUrl = new URL(request.url, `http://${HOST}:${PORT}`);
     const limit = Math.max(1, Math.min(Number(requestUrl.searchParams.get("limit") || 30), 100));
     const scan = await collectFolderResumeImportCandidates(source, { limit, stopAtLimit: false });
@@ -792,6 +846,7 @@ async function createFolderImportBatchJob(
   { limit = 30, parseMode = "direct", trigger = "manual", minFileAgeMs = 0 } = {}
 ) {
   await ensureDatabase();
+  await resumeInterruptedFolderImportJobs(source);
   const normalizedLimit = Math.max(1, Math.min(Number(limit || 30), 100));
   const normalizedParseMode = parseMode === "fast" ? "fast" : "direct";
   const scan = await collectFolderResumeImportCandidates(source, {
