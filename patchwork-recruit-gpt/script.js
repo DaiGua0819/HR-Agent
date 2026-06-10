@@ -8,7 +8,7 @@
     "./src/client/batch/imports.js",
     "./src/client/core/init.js",
   ];
-  const VERSION = "20260606-client-loader";
+  const VERSION = "20260610-launch-grid";
   const statusNode = document.querySelector("#statusPill");
 
   async function loadClient() {

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>招聘智能体 - 简历信息解析</title>
-    <link rel="stylesheet" href="./styles.css?v=20260605-decouple2" />
+    <link rel="stylesheet" href="./styles.css?v=20260610-launch-grid" />
   </head>
   <body>
     <main class="app-shell">
@@ -74,10 +74,37 @@
                 <small id="bossBrowserSummary">选择平台执行招聘自动化</small>
               </div>
               <div class="folder-import-actions automation-launch-actions">
-                <button class="primary-btn" type="button" id="bossAutomationBtn">BOSS</button>
-                <button class="primary-btn" type="button" id="job51QuickAutomationBtn">51</button>
-                <button class="primary-btn" type="button" id="zhilianQuickAutomationBtn">智联</button>
-                <button class="ghost-btn" type="button" id="oneClickLaunchBrowserBtn">一键启动</button>
+                <div class="automation-platform-picks">
+                  <button class="primary-btn" type="button" id="bossAutomationBtn">BOSS</button>
+                  <button class="primary-btn" type="button" id="job51QuickAutomationBtn">51</button>
+                  <button class="primary-btn" type="button" id="zhilianQuickAutomationBtn">智联</button>
+                </div>
+                <div class="launch-browser-grid">
+                  <button class="launch-browser-btn" type="button" data-browser-launch-platform="boss" data-browser-launch-account="boss_a" data-agent-port="8787" data-cdp-port="9222">
+                    <span class="launch-title">BOSS 宋峰峰</span>
+                    <span class="launch-status">启动 8787 / 9222</span>
+                  </button>
+                  <button class="launch-browser-btn" type="button" data-browser-launch-platform="boss" data-browser-launch-account="boss_b" data-agent-port="8788" data-cdp-port="9230">
+                    <span class="launch-title">BOSS 和新红</span>
+                    <span class="launch-status">启动 8788 / 9230</span>
+                  </button>
+                  <button class="launch-browser-btn" type="button" data-browser-launch-platform="51job" data-browser-launch-account="boss_a" data-agent-port="8789" data-cdp-port="9224">
+                    <span class="launch-title">51 宋峰峰</span>
+                    <span class="launch-status">启动 8789 / 9224</span>
+                  </button>
+                  <button class="launch-browser-btn" type="button" data-browser-launch-platform="51job" data-browser-launch-account="boss_b" data-agent-port="8791" data-cdp-port="9225">
+                    <span class="launch-title">51 和新红</span>
+                    <span class="launch-status">启动 8791 / 9225</span>
+                  </button>
+                  <button class="launch-browser-btn" type="button" data-browser-launch-platform="zhilian" data-browser-launch-account="boss_a" data-agent-port="8790" data-cdp-port="9226">
+                    <span class="launch-title">智联 宋峰峰</span>
+                    <span class="launch-status">启动 8790 / 9226</span>
+                  </button>
+                  <button class="launch-browser-btn" type="button" data-browser-launch-platform="zhilian" data-browser-launch-account="boss_b" data-agent-port="8792" data-cdp-port="9231">
+                    <span class="launch-title">智联 和新红</span>
+                    <span class="launch-status">启动 8792 / 9231</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -807,7 +834,7 @@
       };
     </script>
     <script src="./src/config/frontend-config.js?v=20260605-hr-trainee-proactive"></script>
-    <script src="./script.js?v=20260606-client-loader"></script>
+    <script src="./script.js?v=20260610-launch-grid"></script>
   </body>
 </html>
 

@@ -85,6 +85,7 @@ const elements = {
   bossAutomationBtn: document.querySelector("#bossAutomationBtn"),
   job51QuickAutomationBtn: document.querySelector("#job51QuickAutomationBtn"),
   zhilianQuickAutomationBtn: document.querySelector("#zhilianQuickAutomationBtn"),
+  browserLaunchButtons: [...document.querySelectorAll("[data-browser-launch-platform][data-browser-launch-account]")],
   oneClickLaunchBrowserBtn: document.querySelector("#oneClickLaunchBrowserBtn"),
   bossBrowserSummary: document.querySelector("#bossBrowserSummary"),
   clearBtn: document.querySelector("#clearBtn"),

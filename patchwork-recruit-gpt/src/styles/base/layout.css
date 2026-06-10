@@ -363,14 +363,76 @@ h2 {
 }
 
 .automation-launch-actions {
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(300px, 1fr);
+  gap: 8px;
 }
 
-.automation-launch-actions .primary-btn,
-.automation-launch-actions .ghost-btn {
+.automation-platform-picks {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.automation-platform-picks .primary-btn {
   min-width: 64px;
   padding-inline: 14px;
   font-weight: 700;
+}
+
+.launch-browser-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(104px, 1fr));
+  gap: 6px;
+}
+
+.launch-browser-btn {
+  min-height: 46px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--primary-dark);
+  background: #f0f5f7;
+  cursor: pointer;
+  font-weight: 700;
+  line-height: 1.25;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.launch-browser-btn:hover {
+  border-color: var(--primary);
+  background: #e7f1f4;
+}
+
+.launch-browser-btn.is-running,
+.launch-browser-btn.is-starting {
+  color: #fff;
+  border-color: transparent;
+  background: var(--primary);
+}
+
+.launch-browser-btn.is-error {
+  color: #8c2f2f;
+  border-color: #efb4b4;
+  background: #fff2f2;
+}
+
+.launch-browser-btn:disabled {
+  cursor: wait;
+  opacity: 0.82;
+}
+
+.launch-title,
+.launch-status {
+  display: block;
+  text-align: center;
+}
+
+.launch-status {
+  font-size: 12px;
 }
 
 .mode-switch {

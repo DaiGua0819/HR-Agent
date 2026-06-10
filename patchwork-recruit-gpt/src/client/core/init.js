@@ -200,7 +200,7 @@ function getBrowserLaunchJob(payload) {
   return payload?.job && typeof payload.job === "object" ? payload.job : payload;
 }
 
-function formatBrowserLaunchJobSummary(payload) {
+function formatBrowserLaunchJobSummary(payload, statusPrefix = "浏览器启动") {
   const job = getBrowserLaunchJob(payload) || {};
   const targets = Array.isArray(job.targets) ? job.targets : [];
   const summary = job.summary || targets.reduce(
@@ -212,7 +212,9 @@ function formatBrowserLaunchJobSummary(payload) {
     },
     { ready: 0, needsLogin: 0, failed: 0 }
   );
-  const header = job.message || `六浏览器启动：成功 ${summary.ready || 0} 个，需要登录 ${summary.needsLogin || 0} 个，失败 ${summary.failed || 0} 个`;
+  const fallbackHeader = `${statusPrefix}：就绪 ${summary.ready || 0}，需登录 ${summary.needsLogin || 0}，失败 ${summary.failed || 0}`;
+  const message = String(job.message || "").trim();
+  const header = message && !/^\?+$/.test(message) ? message : fallbackHeader;
   const detail = targets.map((target) => {
     const platformName = target.platformLabel || automationPlatformLabel(target.platform);
     const accountName = target.accountName || bossAutomationAccountLabel(target.accountId);
@@ -227,8 +229,8 @@ function isBrowserLaunchJobDone(job = {}) {
   return ["completed", "completed_with_errors", "failed"].includes(job.status);
 }
 
-function updateBrowserLaunchProgress(payload) {
-  const summary = formatBrowserLaunchJobSummary(payload);
+function updateBrowserLaunchProgress(payload, statusPrefix = "一键启动") {
+  const summary = formatBrowserLaunchJobSummary(payload, statusPrefix);
   if (elements.bossBrowserSummary) elements.bossBrowserSummary.textContent = summary;
   if (elements.batchSummary) elements.batchSummary.textContent = summary;
   const job = getBrowserLaunchJob(payload) || {};
@@ -236,25 +238,140 @@ function updateBrowserLaunchProgress(payload) {
   const failed = Number(counts.failed || 0);
   const needsLogin = Number(counts.needsLogin || 0);
   const ready = Number(counts.ready || 0);
-  const statusText = `一键启动：就绪 ${ready}，需登录 ${needsLogin}，失败 ${failed}`;
+  const statusText = `${statusPrefix}：就绪 ${ready}，需登录 ${needsLogin}，失败 ${failed}`;
   setStatus(statusText, failed ? "" : "is-working");
 }
 
-async function pollAutomationBrowserLaunchJob(jobId) {
+async function pollAutomationBrowserLaunchJob(jobId, statusPrefix = "一键启动") {
   let latest = null;
   for (let index = 0; index < 120; index += 1) {
     const payload = await requestJson(`/api/automation-browser/jobs/${encodeURIComponent(jobId)}`);
     latest = payload;
-    updateBrowserLaunchProgress(payload);
+    updateBrowserLaunchProgress(payload, statusPrefix);
     if (isBrowserLaunchJobDone(payload.job)) return payload;
     await new Promise((resolve) => window.setTimeout(resolve, 1000));
   }
   return latest;
 }
 
+function getBrowserLaunchButtonTarget(button) {
+  const platform = normalizeAutomationPlatform(button?.dataset?.browserLaunchPlatform || "boss");
+  const accountId = normalizeBossAutomationAccountId(button?.dataset?.browserLaunchAccount || "all");
+  const agentPort = button?.dataset?.agentPort || "";
+  const cdpPort = button?.dataset?.cdpPort || "";
+  return {
+    platform,
+    accountId,
+    platformParam: automationPlatformParam(platform),
+    agentPort,
+    cdpPort,
+    ports: [agentPort, cdpPort].filter(Boolean).join(" / "),
+    label: `${automationPlatformLabel(platform)} ${bossAutomationAccountLabel(accountId)}`,
+  };
+}
+
+function renderBrowserLaunchButton(button, status = "idle") {
+  if (!button) return;
+  const target = getBrowserLaunchButtonTarget(button);
+  const statusNode = button.querySelector(".launch-status");
+  const label = status === "running" ? "运行中" : status === "starting" ? "启动中" : status === "failed" ? "失败" : "启动";
+  button.classList.toggle("is-running", status === "running");
+  button.classList.toggle("is-starting", status === "starting");
+  button.classList.toggle("is-error", status === "failed");
+  button.disabled = status === "starting";
+  if (statusNode) statusNode.textContent = `${label} ${target.ports}`;
+  button.title = `${target.label} ${label} ${target.ports}`;
+  button.setAttribute("aria-label", button.title);
+}
+
+function getBrowserLaunchButtonStatus(target = {}) {
+  if (target.status === "ready" || target.status === "needs_login") return "running";
+  if (target.status === "failed") return "failed";
+  if (target.status === "running" || target.status === "pending") return "starting";
+  if (target.started || target.authenticated || target.needsLogin) return "running";
+  return "idle";
+}
+
+function syncBrowserLaunchButtonsFromJob(payload) {
+  const job = getBrowserLaunchJob(payload) || {};
+  const targets = Array.isArray(job.targets) ? job.targets : [];
+  for (const target of targets) {
+    const platform = normalizeAutomationPlatform(target.platform);
+    const accountId = normalizeBossAutomationAccountId(target.accountId);
+    const button = elements.browserLaunchButtons?.find((candidate) => (
+      normalizeAutomationPlatform(candidate.dataset.browserLaunchPlatform) === platform &&
+      normalizeBossAutomationAccountId(candidate.dataset.browserLaunchAccount) === accountId
+    ));
+    renderBrowserLaunchButton(button, getBrowserLaunchButtonStatus(target));
+  }
+}
+
+function setBrowserLaunchButtonsDisabled(disabled, exceptButton = null) {
+  elements.browserLaunchButtons?.forEach((button) => {
+    if (button === exceptButton) return;
+    button.disabled = Boolean(disabled);
+  });
+  if (elements.oneClickLaunchBrowserBtn && elements.oneClickLaunchBrowserBtn !== exceptButton) {
+    elements.oneClickLaunchBrowserBtn.disabled = Boolean(disabled);
+  }
+}
+
+async function launchAutomationBrowserTarget(button) {
+  const target = getBrowserLaunchButtonTarget(button);
+  renderBrowserLaunchButton(button, "starting");
+  setBrowserLaunchButtonsDisabled(true, button);
+  selectAutomationPlatform(target.platform, `${target.label} 正在启动`);
+  setBossAutomationAccount(target.accountId);
+  if (elements.bossBrowserSummary) elements.bossBrowserSummary.textContent = `正在启动 ${target.label} CloakBrowser...`;
+  setStatus(`${target.label} 启动中`, "is-working");
+
+  try {
+    const payload = await requestJson("/api/automation-browser/start", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        targets: [{ platform: target.platformParam, accountId: target.accountId }],
+        retryFailed: true,
+        maxAttempts: 2,
+        waitTimeoutMs: 45000,
+      }),
+    });
+    updateBrowserLaunchProgress(payload, target.label);
+    syncBrowserLaunchButtonsFromJob(payload);
+    const finalPayload = payload.jobId ? await pollAutomationBrowserLaunchJob(payload.jobId, target.label) : payload;
+    updateBrowserLaunchProgress(finalPayload, target.label);
+    syncBrowserLaunchButtonsFromJob(finalPayload);
+    const finalJob = getBrowserLaunchJob(finalPayload) || {};
+    const counts = finalJob.summary || {};
+    const failed = Number(counts.failed || 0);
+    const needsLogin = Number(counts.needsLogin || 0);
+    const ready = Number(counts.ready || 0);
+    showAutomationActions(`${target.label} 启动检测完成，可以继续处理消息或主动联系`);
+    await refreshBossAutomationSummary();
+    if (!isBrowserLaunchJobDone(finalJob)) {
+      setStatus(`${target.label} 仍在启动：就绪 ${ready}，需登录 ${needsLogin}，失败 ${failed}`, "is-working");
+    } else if (failed) {
+      setStatus(`${target.label} 启动完成：就绪 ${ready}，需登录 ${needsLogin}，失败 ${failed}`, "");
+    } else {
+      setStatus(`${target.label} 启动完成：就绪 ${ready}，需登录 ${needsLogin}，失败 0`, "is-done");
+    }
+  } catch (error) {
+    console.error(error);
+    const message = error.message || `${target.label} 启动失败`;
+    renderBrowserLaunchButton(button, "failed");
+    if (elements.bossBrowserSummary) elements.bossBrowserSummary.textContent = message;
+    setStatus(message);
+  } finally {
+    setBrowserLaunchButtonsDisabled(false, button);
+  }
+}
+
 async function oneClickLaunchAutomationBrowserJobMode() {
   const button = elements.oneClickLaunchBrowserBtn;
   if (button) button.disabled = true;
+  setBrowserLaunchButtonsDisabled(true, button);
   if (elements.bossBrowserSummary) {
     elements.bossBrowserSummary.textContent = "正在创建六个 CloakBrowser 后台启动任务...";
   }
@@ -274,8 +391,10 @@ async function oneClickLaunchAutomationBrowserJobMode() {
       }),
     });
     updateBrowserLaunchProgress(payload);
+    syncBrowserLaunchButtonsFromJob(payload);
     const finalPayload = payload.jobId ? await pollAutomationBrowserLaunchJob(payload.jobId) : payload;
     updateBrowserLaunchProgress(finalPayload);
+    syncBrowserLaunchButtonsFromJob(finalPayload);
     const finalJob = getBrowserLaunchJob(finalPayload) || {};
     const counts = finalJob.summary || {};
     const failed = Number(counts.failed || 0);
@@ -297,6 +416,7 @@ async function oneClickLaunchAutomationBrowserJobMode() {
     setStatus(message);
   } finally {
     if (button) button.disabled = false;
+    setBrowserLaunchButtonsDisabled(false, button);
   }
 }
 
@@ -1059,6 +1179,9 @@ elements.proactiveBossContactBtn?.addEventListener("click", handleProactiveAutom
 elements.startProactiveContactBtn?.addEventListener("click", handleStartProactiveAutomation);
 elements.job51QuickAutomationBtn?.addEventListener("click", () => openQuickAutomationPlatform("job51"));
 elements.zhilianQuickAutomationBtn?.addEventListener("click", () => openQuickAutomationPlatform("zhilian"));
+elements.browserLaunchButtons?.forEach((button) => {
+  button.addEventListener("click", () => launchAutomationBrowserTarget(button));
+});
 elements.oneClickLaunchBrowserBtn?.addEventListener("click", oneClickLaunchAutomationBrowserJobMode);
 elements.job51ProcessMessagesBtn?.addEventListener("click", async () => {
   selectAutomationPlatform("job51", "51 已选中，可以处理消息或主动联系");
