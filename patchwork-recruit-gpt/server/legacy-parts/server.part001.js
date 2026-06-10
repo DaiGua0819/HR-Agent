@@ -1315,6 +1315,9 @@ async function inspectAutomationBrowserStatusPage(runtimeTarget) {
     page: null,
     needsLogin: false,
     authenticated: false,
+    accountAbnormal: false,
+    captcha: false,
+    blockReason: "",
   };
   if (!runtimeTarget.cdpPort) return result;
   const pages = await fetchCdpJson(runtimeTarget.cdpPort, "/json/list", { timeoutMs: 1800 }).catch(() => []);
@@ -1327,6 +1330,9 @@ async function inspectAutomationBrowserStatusPage(runtimeTarget) {
     url: pageUrl || runtimeTarget.startUrl,
     readyState: inspected.readyState || "",
   };
+  result.captcha = browserTargetLooksCaptcha(page, inspected);
+  result.accountAbnormal = browserTargetLooksAccountAbnormal(page, inspected);
+  result.blockReason = result.captcha ? "captcha" : result.accountAbnormal ? "account_abnormal" : "";
   result.needsLogin = browserTargetLooksLoggedOut(page, runtimeTarget.platform, inspected);
   result.authenticated = browserTargetLooksAuthenticated(runtimeTarget.platform, runtimeTarget.account, inspected);
   return result;
@@ -1375,12 +1381,14 @@ function buildBrowserLaunchSummary(job) {
     (acc, target) => {
       if (target.status === "ready") acc.ready += 1;
       if (target.status === "needs_login") acc.needsLogin += 1;
+      if (target.status === "account_abnormal") acc.accountAbnormal += 1;
+      if (target.status === "captcha") acc.captcha += 1;
       if (target.status === "failed") acc.failed += 1;
       if (target.status === "running") acc.running += 1;
       if (target.status === "pending") acc.pending += 1;
       return acc;
     },
-    { ready: 0, needsLogin: 0, failed: 0, running: 0, pending: 0 }
+    { ready: 0, needsLogin: 0, accountAbnormal: 0, captcha: 0, failed: 0, running: 0, pending: 0 }
   );
   summary.total = targets.length;
   return summary;
@@ -1392,11 +1400,12 @@ function updateBrowserLaunchJob(job, patch = {}) {
     updatedAtMs: Date.now(),
   });
   job.summary = buildBrowserLaunchSummary(job);
-  const doneCount = job.summary.ready + job.summary.needsLogin + job.summary.failed;
+  const doneCount = job.summary.ready + job.summary.needsLogin + job.summary.accountAbnormal + job.summary.captcha + job.summary.failed;
+  const issueCount = job.summary.accountAbnormal + job.summary.captcha + job.summary.failed;
   if (doneCount >= job.summary.total && job.summary.total) {
-    if (job.summary.failed >= job.summary.total) {
+    if (issueCount >= job.summary.total) {
       job.status = "failed";
-    } else if (job.summary.failed > 0) {
+    } else if (issueCount > 0) {
       job.status = "completed_with_errors";
     } else {
       job.status = "completed";
@@ -1407,8 +1416,8 @@ function updateBrowserLaunchJob(job, patch = {}) {
 
 function formatBrowserLaunchJobMessage(job) {
   const summary = job.summary || buildBrowserLaunchSummary(job);
-  const failedTargets = (job.targets || []).filter((target) => target.status === "failed");
-  const base = `浏览器启动：成功 ${summary.ready} 个，需要登录 ${summary.needsLogin} 个，失败 ${summary.failed} 个`;
+  const failedTargets = (job.targets || []).filter((target) => ["failed", "account_abnormal", "captcha"].includes(target.status));
+  const base = `浏览器启动：成功 ${summary.ready} 个，需要登录 ${summary.needsLogin} 个，账号异常 ${summary.accountAbnormal || 0} 个，人机验证 ${summary.captcha || 0} 个，失败 ${summary.failed} 个`;
   if (!failedTargets.length) return base;
   const failedText = failedTargets
     .map((target) => `${browserLaunchTargetLabel(target)} 启动失败：${target.error || "未知错误"}`)
@@ -1451,7 +1460,7 @@ function getPublicBrowserLaunchJob(job) {
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     targets,
-    failures: targets.filter((target) => target.status === "failed"),
+    failures: targets.filter((target) => ["failed", "account_abnormal", "captcha"].includes(target.status)),
     summary: job.summary || buildBrowserLaunchSummary(job),
     message: job.message || formatBrowserLaunchJobMessage(job),
   };
@@ -1479,6 +1488,9 @@ function makeBrowserLaunchTarget(account, platform, maxAttempts) {
     started: false,
     needsLogin: false,
     authenticated: false,
+    accountAbnormal: false,
+    captcha: false,
+    blockReason: "",
     openedNewTab: false,
     pid: null,
     launchMethod: "",
@@ -1507,7 +1519,7 @@ async function runBrowserLaunchTarget(job, target, waitTimeoutMs) {
       updateBrowserLaunchJob(job);
       const result = await startBrowserTarget(target.account, target.platform, { waitTimeoutMs });
       Object.assign(target, result, {
-        status: result.needsLogin ? "needs_login" : "ready",
+        status: result.captcha ? "captcha" : result.accountAbnormal ? "account_abnormal" : result.needsLogin ? "needs_login" : "ready",
         error: "",
       });
       updateBrowserLaunchJob(job);
@@ -1583,14 +1595,28 @@ function pickBlankPage(pages) {
   return pageList.find((page) => isBlankBrowserPage(page)) || null;
 }
 
+function browserTargetStatusText(page = {}, inspected = {}) {
+  return `${page.url || ""} ${page.title || ""} ${inspected.href || ""} ${inspected.title || ""} ${inspected.text || ""}`.toLowerCase();
+}
+
 function browserTargetLooksLoggedOut(page = {}, platform = "", inspected = {}) {
-  const text = `${page.url || ""} ${page.title || ""} ${inspected.href || ""} ${inspected.title || ""} ${inspected.text || ""}`.toLowerCase();
+  const text = browserTargetStatusText(page, inspected);
   if (/login|passport|signin|sso|auth/.test(text)) return true;
   if (/请登录|未登录|重新登录|登录后|扫码登录|账号登录|密码登录|验证码|安全验证|企业登录/.test(text)) return true;
   if (platform === "boss" && /登录boss|boss直聘登录/.test(text)) return true;
   if (platform === "51job" && /前程无忧.*登录|51job.*登录/.test(text)) return true;
   if (platform === "zhilian" && /智联.*登录|zhaopin.*登录/.test(text)) return true;
   return false;
+}
+
+function browserTargetLooksCaptcha(page = {}, inspected = {}) {
+  const text = browserTargetStatusText(page, inspected);
+  return /captcha|geetest|安全验证|人机验证|机器人验证|滑块|拖动滑块|行为验证|请完成验证|图形验证码|图片验证码/.test(text);
+}
+
+function browserTargetLooksAccountAbnormal(page = {}, inspected = {}) {
+  const text = browserTargetStatusText(page, inspected);
+  return /账号异常|账户异常|账号受限|账户受限|访问受限|异常访问|操作频繁|账号存在风险|账户存在风险|账号被限制|账户被限制|账号冻结|账户冻结|封禁|申诉/.test(text);
 }
 
 function browserTargetLooksAuthenticated(platform = "", account = {}, inspected = {}) {
@@ -1729,13 +1755,18 @@ async function waitForPlatformPageReady(cdpPort, startUrl, platform, account, ti
         readyState,
       };
       if (pageMatchesStartUrl({ url: pageUrl || page.url }, startUrl) && readyState !== "loading") {
+        const captcha = browserTargetLooksCaptcha(page, inspected);
+        const accountAbnormal = browserTargetLooksAccountAbnormal(page, inspected);
         const needsLogin = browserTargetLooksLoggedOut(page, platform, inspected);
         const authenticated = browserTargetLooksAuthenticated(platform, account, inspected);
-        if (needsLogin || authenticated) {
+        if (captcha || accountAbnormal || needsLogin || authenticated) {
           return {
             page: resultPage,
             needsLogin,
             authenticated,
+            accountAbnormal,
+            captcha,
+            blockReason: captcha ? "captcha" : accountAbnormal ? "account_abnormal" : "",
           };
         }
       }
@@ -2077,6 +2108,9 @@ async function inspectAutomationBrowserStatusTarget(account, platform) {
     agentBusy: false,
     needsLogin: false,
     authenticated: false,
+    accountAbnormal: false,
+    captcha: false,
+    blockReason: "",
     page: null,
     status: "closed",
     error: "",
@@ -2099,11 +2133,17 @@ async function inspectAutomationBrowserStatusTarget(account, platform) {
       page: null,
       needsLogin: false,
       authenticated: false,
+      accountAbnormal: false,
+      captcha: false,
+      blockReason: "",
       error: error.message || "页面状态读取失败",
     }));
     target.page = pageState.page || null;
     target.needsLogin = Boolean(pageState.needsLogin);
     target.authenticated = Boolean(pageState.authenticated);
+    target.accountAbnormal = Boolean(pageState.accountAbnormal);
+    target.captcha = Boolean(pageState.captcha);
+    target.blockReason = pageState.blockReason || "";
     if (pageState.error) target.pageError = pageState.error;
   }
   if (!target.cdpReady && !target.agentReady) {
@@ -2111,6 +2151,10 @@ async function inspectAutomationBrowserStatusTarget(account, platform) {
   } else if (!target.cdpReady || !target.agentReady) {
     target.status = "failed";
     target.error = target.cdpReady ? agentStatus.error || "agent 服务未响应" : "浏览器 CDP 未响应";
+  } else if (target.captcha) {
+    target.status = "captcha";
+  } else if (target.accountAbnormal) {
+    target.status = "account_abnormal";
   } else if (target.needsLogin) {
     target.status = "needs_login";
   } else {
@@ -2141,12 +2185,14 @@ async function handleAutomationBrowserStatus(request, response) {
         if (target.cdpReady) acc.cdpReady += 1;
         if (target.agentReady) acc.agentReady += 1;
         if (target.status === "needs_login") acc.needsLogin += 1;
+        if (target.status === "account_abnormal") acc.accountAbnormal += 1;
+        if (target.status === "captcha") acc.captcha += 1;
         if (target.status === "failed") acc.failed += 1;
         if (target.status === "ready") acc.ready += 1;
         if (!target.cdpReady) acc.closed += 1;
         return acc;
       },
-      { cdpReady: 0, agentReady: 0, ready: 0, needsLogin: 0, failed: 0, closed: 0 }
+      { cdpReady: 0, agentReady: 0, ready: 0, needsLogin: 0, accountAbnormal: 0, captcha: 0, failed: 0, closed: 0 }
     );
     sendJson(response, 200, {
       ok: true,

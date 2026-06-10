@@ -192,6 +192,8 @@ function browserLaunchStatusLabel(status) {
     running: "启动中",
     ready: "已就绪",
     needs_login: "需要登录",
+    account_abnormal: "账号异常",
+    captcha: "人机验证",
     failed: "启动失败",
   }[status] || status || "未知";
 }
@@ -207,19 +209,21 @@ function formatBrowserLaunchJobSummary(payload, statusPrefix = "浏览器启动"
     (acc, target) => {
       if (target.status === "ready") acc.ready += 1;
       if (target.status === "needs_login") acc.needsLogin += 1;
+      if (target.status === "account_abnormal") acc.accountAbnormal += 1;
+      if (target.status === "captcha") acc.captcha += 1;
       if (target.status === "failed") acc.failed += 1;
       return acc;
     },
-    { ready: 0, needsLogin: 0, failed: 0 }
+    { ready: 0, needsLogin: 0, accountAbnormal: 0, captcha: 0, failed: 0 }
   );
-  const fallbackHeader = `${statusPrefix}：就绪 ${summary.ready || 0}，需登录 ${summary.needsLogin || 0}，失败 ${summary.failed || 0}`;
+  const fallbackHeader = `${statusPrefix}：就绪 ${summary.ready || 0}，需登录 ${summary.needsLogin || 0}，账号异常 ${summary.accountAbnormal || 0}，人机验证 ${summary.captcha || 0}，失败 ${summary.failed || 0}`;
   const message = String(job.message || "").trim();
   const header = message && !/^\?+$/.test(message) ? message : fallbackHeader;
   const detail = targets.map((target) => {
     const platformName = target.platformLabel || automationPlatformLabel(target.platform);
     const accountName = target.accountName || bossAutomationAccountLabel(target.accountId);
     const attempt = `${target.attempt || 0}/${target.maxAttempts || 2}`;
-    const error = target.status === "failed" && target.error ? `，${target.error}` : "";
+    const error = ["failed", "account_abnormal", "captcha"].includes(target.status) && target.error ? `，${target.error}` : "";
     return `${platformName} ${accountName} ${target.cdpPort || "-"} ${browserLaunchStatusLabel(target.status)} ${attempt}${error}`;
   }).join("；");
   return [header, detail].filter(Boolean).join("；");
@@ -237,9 +241,11 @@ function updateBrowserLaunchProgress(payload, statusPrefix = "一键启动") {
   const counts = job.summary || {};
   const failed = Number(counts.failed || 0);
   const needsLogin = Number(counts.needsLogin || 0);
+  const accountAbnormal = Number(counts.accountAbnormal || 0);
+  const captcha = Number(counts.captcha || 0);
   const ready = Number(counts.ready || 0);
-  const statusText = `${statusPrefix}：就绪 ${ready}，需登录 ${needsLogin}，失败 ${failed}`;
-  setStatus(statusText, failed ? "" : "is-working");
+  const statusText = `${statusPrefix}：就绪 ${ready}，需登录 ${needsLogin}，账号异常 ${accountAbnormal}，人机验证 ${captcha}，失败 ${failed}`;
+  setStatus(statusText, failed || accountAbnormal || captcha ? "" : "is-working");
 }
 
 async function pollAutomationBrowserLaunchJob(jobId, statusPrefix = "一键启动") {
@@ -275,18 +281,23 @@ function renderBrowserLaunchButton(button, status = "idle") {
   const target = getBrowserLaunchButtonTarget(button);
   const statusNode = button.querySelector(".launch-status");
   const label = {
-    running: "运行中",
+    running: "已登录",
+    processing: "处理中",
     starting: "启动中",
     stopping: "关闭中",
     needs_login: "需登录",
+    account_abnormal: "账号异常",
+    captcha: "人机验证",
     failed: "异常",
     idle: "启动",
   }[status] || "启动";
   button.dataset.launchStatus = status;
   button.classList.toggle("is-running", status === "running");
+  button.classList.toggle("is-processing", status === "processing");
   button.classList.toggle("is-starting", status === "starting" || status === "stopping");
   button.classList.toggle("is-login", status === "needs_login");
-  button.classList.toggle("is-error", status === "failed");
+  button.classList.toggle("is-error", status === "failed" || status === "account_abnormal" || status === "captcha");
+  button.classList.toggle("is-captcha", status === "captcha");
   button.disabled = status === "starting" || status === "stopping";
   if (statusNode) statusNode.textContent = `${label} ${target.ports}`;
   button.title = `${target.label} ${label} ${target.ports}`;
@@ -294,11 +305,14 @@ function renderBrowserLaunchButton(button, status = "idle") {
 }
 
 function getBrowserLaunchButtonStatus(target = {}) {
+  if (target.status === "captcha" || target.captcha) return "captcha";
+  if (target.status === "account_abnormal" || target.accountAbnormal) return "account_abnormal";
   if (target.status === "failed") return "failed";
   if (target.cdpReady === false && target.agentReady) return "failed";
   if (target.cdpReady && target.agentReady === false) return "failed";
   if (target.status === "closed" || target.status === "offline" || target.cdpReady === false) return "idle";
   if (target.status === "needs_login" || target.needsLogin) return "needs_login";
+  if (target.agentBusy && target.cdpReady && target.agentReady) return "processing";
   if (target.status === "ready") return "running";
   if (target.status === "running" || target.status === "pending") return "starting";
   if (target.cdpReady || target.started || target.authenticated) return "running";
@@ -406,7 +420,14 @@ function applyProcessAutomationBusyStatus(platform, accountId, busy) {
 }
 
 function targetIsProcessBusy(target = {}) {
-  return Boolean(target.agentBusy && target.cdpReady && target.agentReady && target.status !== "failed" && target.status !== "needs_login");
+  return Boolean(
+    target.agentBusy &&
+    target.cdpReady &&
+    target.agentReady &&
+    !["failed", "needs_login", "account_abnormal", "captcha"].includes(target.status) &&
+    !target.accountAbnormal &&
+    !target.captcha
+  );
 }
 
 function syncProcessAutomationButtonsFromStatus(targets = []) {
@@ -438,6 +459,8 @@ function syncBrowserLaunchButtonsFromStatus(payload = {}) {
     button.dataset.agentReady = target.agentReady ? "1" : "0";
     button.dataset.cdpReady = target.cdpReady ? "1" : "0";
     button.dataset.needsLogin = target.needsLogin ? "1" : "0";
+    button.dataset.accountAbnormal = target.accountAbnormal ? "1" : "0";
+    button.dataset.captcha = target.captcha ? "1" : "0";
     button.dataset.lastError = target.error || target.agentError || target.pageError || "";
   }
   syncProcessAutomationButtonsFromStatus(targets);
@@ -504,13 +527,16 @@ async function launchAutomationBrowserTarget(button) {
     const counts = finalJob.summary || {};
     const failed = Number(counts.failed || 0);
     const needsLogin = Number(counts.needsLogin || 0);
+    const accountAbnormal = Number(counts.accountAbnormal || 0);
+    const captcha = Number(counts.captcha || 0);
+    const issues = failed + accountAbnormal + captcha;
     const ready = Number(counts.ready || 0);
     showAutomationActions(`${target.label} 启动检测完成，可以继续处理消息或主动联系`);
     await refreshBossAutomationSummary();
     if (!isBrowserLaunchJobDone(finalJob)) {
-      setStatus(`${target.label} 仍在启动：就绪 ${ready}，需登录 ${needsLogin}，失败 ${failed}`, "is-working");
-    } else if (failed) {
-      setStatus(`${target.label} 启动完成：就绪 ${ready}，需登录 ${needsLogin}，失败 ${failed}`, "");
+      setStatus(`${target.label} 仍在启动：就绪 ${ready}，需登录 ${needsLogin}，账号异常 ${accountAbnormal}，人机验证 ${captcha}，失败 ${failed}`, "is-working");
+    } else if (issues) {
+      setStatus(`${target.label} 启动完成：就绪 ${ready}，需登录 ${needsLogin}，账号异常 ${accountAbnormal}，人机验证 ${captcha}，失败 ${failed}`, "");
     } else {
       setStatus(`${target.label} 启动完成：就绪 ${ready}，需登录 ${needsLogin}，失败 0`, "is-done");
     }
@@ -529,7 +555,7 @@ async function launchAutomationBrowserTarget(button) {
 
 function isBrowserLaunchButtonActive(button) {
   const status = button?.dataset?.launchStatus || "idle";
-  if (status === "running" || status === "needs_login") return true;
+  if (["running", "processing", "needs_login", "account_abnormal", "captcha"].includes(status)) return true;
   if (status === "failed") {
     return button?.dataset?.cdpReady === "1" || button?.dataset?.agentReady === "1";
   }
@@ -613,13 +639,16 @@ async function oneClickLaunchAutomationBrowserJobMode() {
     const counts = finalJob.summary || {};
     const failed = Number(counts.failed || 0);
     const needsLogin = Number(counts.needsLogin || 0);
+    const accountAbnormal = Number(counts.accountAbnormal || 0);
+    const captcha = Number(counts.captcha || 0);
+    const issues = failed + accountAbnormal + captcha;
     const ready = Number(counts.ready || 0);
     showAutomationActions("六个浏览器启动检测完成，可以继续处理消息或主动联系");
     await refreshBossAutomationSummary();
     if (!isBrowserLaunchJobDone(finalJob)) {
-      setStatus(`一键启动仍在进行：就绪 ${ready}，需登录 ${needsLogin}，失败 ${failed}`, "is-working");
-    } else if (failed) {
-      setStatus(`一键启动完成：就绪 ${ready}，需登录 ${needsLogin}，失败 ${failed}`, "");
+      setStatus(`一键启动仍在进行：就绪 ${ready}，需登录 ${needsLogin}，账号异常 ${accountAbnormal}，人机验证 ${captcha}，失败 ${failed}`, "is-working");
+    } else if (issues) {
+      setStatus(`一键启动完成：就绪 ${ready}，需登录 ${needsLogin}，账号异常 ${accountAbnormal}，人机验证 ${captcha}，失败 ${failed}`, "");
     } else {
       setStatus(`一键启动完成：就绪 ${ready}，需登录 ${needsLogin}，失败 0`, "is-done");
     }
