@@ -323,6 +323,109 @@ function syncBrowserLaunchButtonsFromJob(payload) {
   }
 }
 
+function getProcessAutomationState(platform, accountId) {
+  const normalizedPlatform = normalizeAutomationPlatform(platform);
+  const normalizedAccount = normalizeBossAutomationAccountId(accountId);
+  return normalizedPlatform === "boss"
+    ? getProcessMessagesState(normalizedAccount)
+    : getPlatformAutomationTaskState(normalizedPlatform, "process", normalizedAccount);
+}
+
+function isCurrentProcessAutomationTarget(platform, accountId) {
+  return (
+    normalizeAutomationPlatform(platform) === activeAutomationPlatform &&
+    normalizeBossAutomationAccountId(accountId) === normalizeBossAutomationAccountId(bossAutomationAccountId) &&
+    bossAutomationSummaryMode === "process"
+  );
+}
+
+function stopProcessAutomationStatusTimers(platform, accountId) {
+  const normalizedPlatform = normalizeAutomationPlatform(platform);
+  const normalizedAccount = normalizeBossAutomationAccountId(accountId);
+  if (normalizedPlatform === "boss") {
+    stopProcessMessagesLiveTimers(normalizedAccount);
+  } else {
+    stopPlatformAutomationLiveTimers(normalizedPlatform, "process", normalizedAccount);
+  }
+}
+
+function startProcessAutomationStatusTimers(platform, accountId) {
+  const normalizedPlatform = normalizeAutomationPlatform(platform);
+  const normalizedAccount = normalizeBossAutomationAccountId(accountId);
+  const state = getProcessAutomationState(normalizedPlatform, normalizedAccount);
+  if (state.dotsTimer) return;
+  if (normalizedPlatform === "boss") {
+    startProcessMessagesLiveTimers(normalizedAccount);
+  } else {
+    startPlatformAutomationLiveTimers(normalizedPlatform, "process", normalizedAccount);
+  }
+}
+
+function renderProcessAutomationStatus(platform, accountId) {
+  const normalizedPlatform = normalizeAutomationPlatform(platform);
+  const normalizedAccount = normalizeBossAutomationAccountId(accountId);
+  if (!isCurrentProcessAutomationTarget(normalizedPlatform, normalizedAccount)) return;
+  const state = getProcessAutomationState(normalizedPlatform, normalizedAccount);
+  if (state.running && !state.paused) {
+    setProcessMessagesStatus(`处理中${"。".repeat(state.dotCount || 1)}`);
+  } else if (state.paused) {
+    setProcessMessagesStatus("已暂停");
+  } else {
+    setProcessMessagesStatus("等待开始");
+  }
+  if (normalizedPlatform === "boss") {
+    updateProcessMessagesButton();
+  } else {
+    syncPlatformAutomationStartControls();
+  }
+}
+
+function applyProcessAutomationBusyStatus(platform, accountId, busy) {
+  const normalizedPlatform = normalizeAutomationPlatform(platform);
+  const normalizedAccount = normalizeBossAutomationAccountId(accountId);
+  const state = getProcessAutomationState(normalizedPlatform, normalizedAccount);
+  const isBusy = Boolean(busy);
+  state.lastBusySyncAt = Date.now();
+  if (isBusy) {
+    state.running = true;
+    state.paused = false;
+    state.externalBusy = true;
+    if (isCurrentProcessAutomationTarget(normalizedPlatform, normalizedAccount)) {
+      startProcessAutomationStatusTimers(normalizedPlatform, normalizedAccount);
+    }
+    renderProcessAutomationStatus(normalizedPlatform, normalizedAccount);
+    return;
+  }
+  if (state.localRunPending) return;
+  if (!state.running && !state.paused && !state.externalBusy && !state.dotsTimer && !state.summaryTimer) return;
+  state.running = false;
+  state.paused = false;
+  state.externalBusy = false;
+  stopProcessAutomationStatusTimers(normalizedPlatform, normalizedAccount);
+  renderProcessAutomationStatus(normalizedPlatform, normalizedAccount);
+}
+
+function targetIsProcessBusy(target = {}) {
+  return Boolean(target.agentBusy && target.cdpReady && target.agentReady && target.status !== "failed" && target.status !== "needs_login");
+}
+
+function syncProcessAutomationButtonsFromStatus(targets = []) {
+  const aggregate = new Map();
+  for (const target of targets) {
+    const platform = normalizeAutomationPlatform(target.platform);
+    const accountId = normalizeBossAutomationAccountId(target.accountId);
+    const busy = targetIsProcessBusy(target);
+    applyProcessAutomationBusyStatus(platform, accountId, busy);
+    const aggregateKey = `${platform}|all`;
+    const current = aggregate.get(aggregateKey) || { platform, busy: false };
+    current.busy = current.busy || busy;
+    aggregate.set(aggregateKey, current);
+  }
+  for (const item of aggregate.values()) {
+    applyProcessAutomationBusyStatus(item.platform, "all", item.busy);
+  }
+}
+
 function syncBrowserLaunchButtonsFromStatus(payload = {}) {
   const targets = Array.isArray(payload.targets) ? payload.targets : [];
   for (const target of targets) {
@@ -337,6 +440,7 @@ function syncBrowserLaunchButtonsFromStatus(payload = {}) {
     button.dataset.needsLogin = target.needsLogin ? "1" : "0";
     button.dataset.lastError = target.error || target.agentError || target.pageError || "";
   }
+  syncProcessAutomationButtonsFromStatus(targets);
 }
 
 async function refreshAutomationBrowserStatuses({ silent = false } = {}) {
@@ -605,6 +709,8 @@ async function startOrPauseProcessMessages() {
     state.runId += 1;
     state.paused = true;
     state.running = false;
+    state.localRunPending = false;
+    state.externalBusy = false;
     stopProcessMessagesLiveTimers(accountId);
     if (isCurrentBossAutomationAccount(accountId)) {
       setProcessMessagesStatus("已暂停");
@@ -630,6 +736,8 @@ async function startOrPauseProcessMessages() {
 
   state.running = true;
   state.paused = false;
+  state.localRunPending = true;
+  state.externalBusy = false;
   const runId = ++state.runId;
   updateProcessMessagesButton();
   startProcessMessagesLiveTimers(accountId);
@@ -658,6 +766,7 @@ async function startOrPauseProcessMessages() {
       }),
     });
     if (runId !== state.runId) return;
+    state.localRunPending = false;
     if (state.paused) {
       stopProcessMessagesLiveTimers(accountId);
       if (isCurrentBossAutomationAccount(accountId)) {
@@ -671,6 +780,7 @@ async function startOrPauseProcessMessages() {
     const text = result.reply || result.message || payload.message || "处理消息任务已完成";
     state.running = false;
     state.paused = false;
+    state.externalBusy = false;
     stopProcessMessagesLiveTimers(accountId);
     if (isCurrentBossAutomationAccount(accountId)) {
       if (elements.batchSummary) elements.batchSummary.textContent = text;
@@ -685,6 +795,8 @@ async function startOrPauseProcessMessages() {
     console.error(error);
     const text = error.message || "处理消息失败";
     state.running = false;
+    state.localRunPending = false;
+    state.externalBusy = false;
     stopProcessMessagesLiveTimers(accountId);
     if (isCurrentBossAutomationAccount(accountId)) {
       if (elements.batchSummary) elements.batchSummary.textContent = text;
@@ -1007,6 +1119,8 @@ async function pausePlatformAutomation(platform, mode) {
     state.runId += 1;
     state.running = false;
     state.paused = true;
+    state.localRunPending = false;
+    state.externalBusy = false;
     stopPlatformAutomationLiveTimers(normalized, actionMode, accountId);
     if (isCurrentPlatformAutomationTask(normalized, actionMode, accountId)) {
       setPlatformInlineStatus(normalized, actionMode, accountId, "已暂停");
@@ -1079,6 +1193,8 @@ async function runPlatformAutomation(platform, mode) {
 
   state.running = true;
   state.paused = false;
+  state.localRunPending = true;
+  state.externalBusy = false;
   const runId = ++state.runId;
   activeAutomationPlatform = normalizedPlatform;
   setBossAutomationMode(isProactive ? "proactive" : "process");
@@ -1111,9 +1227,11 @@ async function runPlatformAutomation(platform, mode) {
       body: JSON.stringify(body),
     });
     if (runId !== state.runId) return;
+    state.localRunPending = false;
     const text = platformResultText(payload, `${config.label}${actionText}完成`);
     state.running = false;
     state.paused = false;
+    state.externalBusy = false;
     stopPlatformAutomationLiveTimers(normalizedPlatform, actionMode, accountId);
     setPlatformAutomationStatus(normalizedPlatform, "已完成", "done");
     if (isProactive) {
@@ -1128,6 +1246,8 @@ async function runPlatformAutomation(platform, mode) {
     console.error(error);
     const text = error.message || `${config.label}${actionText}失败`;
     state.running = false;
+    state.localRunPending = false;
+    state.externalBusy = false;
     stopPlatformAutomationLiveTimers(normalizedPlatform, actionMode, accountId);
     setPlatformAutomationStatus(normalizedPlatform, "失败", "error");
     if (isProactive) {
@@ -1140,6 +1260,8 @@ async function runPlatformAutomation(platform, mode) {
   } finally {
     if (runId === state.runId) {
       state.running = false;
+      state.localRunPending = false;
+      state.externalBusy = false;
       stopPlatformAutomationLiveTimers(normalizedPlatform, actionMode, accountId);
       if (normalizedPlatform === activeAutomationPlatform) syncPlatformAutomationStartControls();
       await refreshBossAutomationSummary(bossAutomationSummaryDate, { force: true });

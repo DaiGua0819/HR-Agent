@@ -8,7 +8,7 @@
     "./src/client/batch/imports.js",
     "./src/client/core/init.js",
   ];
-  const VERSION = "20260610-six-button-control";
+  const VERSION = "20260610-process-busy-sync";
   const statusNode = document.querySelector("#statusPill");
 
   async function loadClient() {

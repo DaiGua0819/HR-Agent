@@ -337,6 +337,9 @@ function createBossAutomationTaskState() {
     dotCount: 0,
     runId: 0,
     lastToggleAt: 0,
+    localRunPending: false,
+    externalBusy: false,
+    lastBusySyncAt: 0,
   };
 }
 
