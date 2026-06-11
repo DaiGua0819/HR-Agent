@@ -664,6 +664,222 @@ async function oneClickLaunchAutomationBrowserJobMode() {
   }
 }
 
+function automation24hIsActive(payload = automation24hLastStatus) {
+  if (!payload) return false;
+  return Boolean(payload.active || payload.stopping || ["running", "waiting", "stopping"].includes(payload.status));
+}
+
+function automation24hStatusLabel(status) {
+  const labels = {
+    waiting: "等待",
+    running: "处理中",
+    stopping: "停止中",
+    stopped: "已停止",
+    completed: "已完成",
+    failed: "异常",
+    interrupted: "中断",
+    captcha: "人机验证",
+    needs_login: "需登录",
+    account_abnormal: "账号异常",
+  };
+  return labels[status] || status || "等待";
+}
+
+function renderAutomation24hStatus(payload = automation24hLastStatus) {
+  if (!elements.automation24hToggleBtn || !elements.automation24hSummary || !elements.automation24hTargets) return;
+  const active = automation24hIsActive(payload);
+  const stopping = Boolean(payload?.stopping || payload?.status === "stopping");
+  elements.automation24hToggleBtn.textContent = stopping ? "停止中，当前候选人处理完后停止" : active ? "自动处理中。。。" : "24小时自动运转";
+  elements.automation24hToggleBtn.classList.toggle("is-running", active && !stopping);
+  elements.automation24hToggleBtn.classList.toggle("is-stopping", stopping);
+
+  const summary = payload?.summary || {};
+  const runningLabels = (payload?.currentBatch || []).map((item) => item.label).filter(Boolean);
+  const runningText = runningLabels.length ? `当前处理：${runningLabels.join("、")}` : "当前处理：无";
+  const remainingText = `未读红点 ${Number(summary.remainingUnread || 0)}，本轮剩余 ${Number(summary.remainingActionable || 0)}`;
+  elements.automation24hSummary.textContent = payload
+    ? `${payload.message || automation24hStatusLabel(payload.status)}；${runningText}；${remainingText}`
+    : "未启动";
+
+  const targets = Array.isArray(payload?.targets) ? payload.targets : [];
+  const fragment = document.createDocumentFragment();
+  targets.forEach((target) => {
+    const row = document.createElement("div");
+    row.className = `automation-24h-target is-${target.status || "waiting"}`;
+    const head = document.createElement("div");
+    head.className = "automation-24h-target-head";
+    const title = document.createElement("strong");
+    title.textContent = target.label || `${target.platformLabel || ""} ${target.accountName || ""}`.trim() || "-";
+    const badge = document.createElement("span");
+    badge.className = "automation-24h-badge";
+    badge.textContent = automation24hStatusLabel(target.status);
+    head.append(title, badge);
+
+    const detail = document.createElement("small");
+    const round = Number(target.round || 0) ? `第${target.round}轮` : "未开始";
+    const unread = target.remainingUnread == null ? "-" : target.remainingUnread;
+    const actionable = target.remainingActionable == null ? "-" : target.remainingActionable;
+    detail.textContent = `${round} · 红点 ${unread} · 剩余 ${actionable} · 处理 ${Number(target.processed || 0)} · 简历 ${Number(target.downloadedResume || 0)}/${Number(target.requestedResume || 0)}`;
+
+    const message = document.createElement("small");
+    message.textContent = target.error || target.lastMessage || "等待调度";
+    row.append(head, detail, message);
+    fragment.append(row);
+  });
+  if (!targets.length) {
+    const empty = document.createElement("div");
+    empty.className = "automation-24h-target";
+    empty.textContent = "等待状态";
+    fragment.append(empty);
+  }
+  elements.automation24hTargets.replaceChildren(fragment);
+}
+
+function renderAutomation24hLogs(logs = []) {
+  if (!elements.automation24hLogs) return;
+  if (!logs.length) {
+    elements.automation24hLogs.textContent = "暂无日志";
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  logs.slice(-80).reverse().forEach((entry) => {
+    const line = document.createElement("div");
+    line.className = "automation-24h-log-line";
+    line.textContent = entry.message || `${entry.timeText || ""} ${entry.event || ""}`.trim();
+    fragment.append(line);
+  });
+  elements.automation24hLogs.replaceChildren(fragment);
+}
+
+async function refreshAutomation24hStatus({ silent = false } = {}) {
+  if (automation24hStatusBusy) return automation24hLastStatus;
+  automation24hStatusBusy = true;
+  try {
+    const payload = await requestJson("/api/automation-24h/status");
+    automation24hLastStatus = payload;
+    renderAutomation24hStatus(payload);
+    return payload;
+  } catch (error) {
+    if (!silent) {
+      console.error(error);
+      if (elements.automation24hSummary) elements.automation24hSummary.textContent = error.message || "24小时自动运转状态读取失败";
+    }
+    return automation24hLastStatus;
+  } finally {
+    automation24hStatusBusy = false;
+  }
+}
+
+async function refreshAutomation24hLogs() {
+  if (automation24hLogsBusy) return;
+  automation24hLogsBusy = true;
+  try {
+    const date = elements.automation24hLogDateInput?.value || getChinaDateKey();
+    const payload = await requestJson(`/api/automation-24h/logs?date=${encodeURIComponent(date)}`);
+    renderAutomation24hLogs(payload.logs || []);
+  } catch (error) {
+    console.error(error);
+    if (elements.automation24hLogs) elements.automation24hLogs.textContent = error.message || "日志读取失败";
+  } finally {
+    automation24hLogsBusy = false;
+  }
+}
+
+function startAutomation24hMonitor() {
+  if (elements.automation24hLogDateInput && !elements.automation24hLogDateInput.value) {
+    elements.automation24hLogDateInput.value = getChinaDateKey();
+  }
+  window.clearInterval(automation24hStatusTimer);
+  window.clearInterval(automation24hLogsTimer);
+  refreshAutomation24hStatus({ silent: true }).catch(() => {});
+  refreshAutomation24hLogs().catch(() => {});
+  automation24hStatusTimer = window.setInterval(() => {
+    refreshAutomation24hStatus({ silent: true }).catch(() => {});
+  }, 3000);
+  automation24hLogsTimer = window.setInterval(() => {
+    if (automation24hIsActive() || elements.automation24hLogDateInput?.value === getChinaDateKey()) {
+      refreshAutomation24hLogs().catch(() => {});
+    }
+  }, 5000);
+}
+
+async function toggleAutomation24h() {
+  const button = elements.automation24hToggleBtn;
+  if (!button) return;
+  const current = await refreshAutomation24hStatus({ silent: true });
+  if (automation24hIsActive(current)) {
+    const confirmed = window.confirm("确认中断24小时自动运转？当前候选人处理完后会停止，不会关闭浏览器和agent。");
+    if (!confirmed) return;
+    button.disabled = true;
+    try {
+      const payload = await requestJson("/api/automation-24h/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "用户在前端点击24小时自动运转停止" }),
+      });
+      automation24hLastStatus = payload;
+      renderAutomation24hStatus(payload);
+      await refreshAutomation24hLogs();
+      setStatus("24小时自动运转停止中", "is-working");
+    } catch (error) {
+      console.error(error);
+      setStatus(error.message || "停止24小时自动运转失败");
+    } finally {
+      button.disabled = false;
+    }
+    return;
+  }
+
+  button.disabled = true;
+  try {
+    const payload = await requestJson("/api/automation-24h/start", { method: "POST" });
+    automation24hLastStatus = payload;
+    renderAutomation24hStatus(payload);
+    await refreshAutomation24hLogs();
+    setStatus("24小时自动运转已启动", "is-working");
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message || "启动24小时自动运转失败");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function waitAutomation24hStopped(timeoutMs = 180000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const payload = await refreshAutomation24hStatus({ silent: true });
+    if (!automation24hIsActive(payload)) return true;
+    await new Promise((resolve) => window.setTimeout(resolve, 3000));
+  }
+  return false;
+}
+
+async function ensureAutomation24hStoppedBeforeManualAction() {
+  const current = await refreshAutomation24hStatus({ silent: true });
+  if (!automation24hIsActive(current)) return true;
+  if (current?.stopping || current?.status === "stopping") {
+    setStatus("24小时自动运转停止中，当前候选人处理完后再启动手动任务", "is-working");
+    return false;
+  }
+  const confirmed = window.confirm("24小时自动运转正在运行。确认中断后，当前候选人处理完再启动手动任务？");
+  if (!confirmed) return false;
+  await requestJson("/api/automation-24h/stop", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason: "用户启动手动任务前中断24小时自动运转" }),
+  });
+  renderAutomation24hStatus(await refreshAutomation24hStatus({ silent: true }));
+  setStatus("等待24小时自动运转停止", "is-working");
+  const stopped = await waitAutomation24hStopped();
+  if (!stopped) {
+    setStatus("24小时自动运转仍在停止中，当前候选人处理完后再启动手动任务", "is-working");
+    return false;
+  }
+  setStatus("24小时自动运转已停止，可以启动手动任务", "is-done");
+  return true;
+}
+
 async function runBossAutomationTask({
   button,
   taskLabel,
@@ -1327,6 +1543,7 @@ async function startOrPausePlatformAutomation(platform, mode) {
     await pausePlatformAutomation(normalized, actionMode);
     return;
   }
+  if (!(await ensureAutomation24hStoppedBeforeManualAction())) return;
   await runPlatformAutomation(normalized, actionMode);
 }
 
@@ -1381,6 +1598,7 @@ async function handleProactiveAutomationAction() {
 
 async function handleStartProcessAutomation() {
   if (activeAutomationPlatform === "boss") {
+    if (!(await ensureAutomation24hStoppedBeforeManualAction())) return;
     await startOrPauseProcessMessages();
     return;
   }
@@ -1389,6 +1607,7 @@ async function handleStartProcessAutomation() {
 
 async function handleStartProactiveAutomation() {
   if (activeAutomationPlatform === "boss") {
+    if (!(await ensureAutomation24hStoppedBeforeManualAction())) return;
     await startOrPauseProactiveBossContact();
     return;
   }
@@ -1465,6 +1684,10 @@ elements.browserLaunchButtons?.forEach((button) => {
   button.addEventListener("click", () => handleBrowserLaunchButtonClick(button));
 });
 elements.oneClickLaunchBrowserBtn?.addEventListener("click", oneClickLaunchAutomationBrowserJobMode);
+elements.automation24hToggleBtn?.addEventListener("click", toggleAutomation24h);
+elements.automation24hLogDateInput?.addEventListener("change", () => {
+  refreshAutomation24hLogs().catch((error) => console.warn(error));
+});
 elements.job51ProcessMessagesBtn?.addEventListener("click", async () => {
   selectAutomationPlatform("job51", "51 已选中，可以处理消息或主动联系");
   await showPlatformProcessControls();
@@ -1690,6 +1913,7 @@ window.addEventListener("popstate", refreshResumeView);
 
 refreshAutomationStats().catch((error) => console.warn(error));
 startAutomationBrowserStatusMonitor();
+startAutomation24hMonitor();
 refreshEmailAutoStatus().catch((error) => console.warn(error));
 emailAutoStatusTimer = window.setInterval(() => {
   refreshEmailAutoStatus().catch((error) => console.warn(error));

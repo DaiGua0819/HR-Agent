@@ -117,6 +117,69 @@ async function serveStatic(request, response) {
   }
 }
 
+const automation24hScheduler = createAutomation24hScheduler({
+  dataDir: DATA_DIR,
+  targets: DEFAULT_BROWSER_LAUNCH_TARGETS,
+  concurrency: 2,
+  maxRoundsPerTarget: 2,
+  cycleDelayMs: Math.max(60000, Number(process.env.AUTOMATION_24H_CYCLE_DELAY_MS || 15 * 60 * 1000)),
+  maxTotalPerRound: Math.max(1, Math.min(Number(process.env.AUTOMATION_24H_MAX_TOTAL || 40), 120)),
+  sleep,
+  fetchAgentJson,
+  resolveTarget(spec = {}) {
+    const accountId = normalizeBossAutomationAccountId(spec.accountId || spec.account || "boss_a");
+    const platform = normalizeAutomationPlatformId(spec.platform || spec.source || "boss");
+    const account = getBrowserAutomationAccounts(accountId)[0];
+    if (!account) throw new Error(`未找到自动化账号：${accountId}`);
+    return getAutomationBrowserRuntimeTarget(account, platform);
+  },
+  async ensureTargetReady(target) {
+    const browser = await startBrowserTarget(target.account, target.platform, { waitTimeoutMs: 45000 });
+    const agent = await ensureAutomationBrowserAgentReady(target);
+    return {
+      ...browser,
+      agent,
+      captcha: Boolean(browser.captcha),
+      needsLogin: Boolean(browser.needsLogin),
+      accountAbnormal: Boolean(browser.accountAbnormal),
+    };
+  },
+  async cleanupTarget(target) {
+    if (!target.agentPort) return { ok: true, skipped: true, reason: "agent_port_missing" };
+    return stopAutomationLocalPort(target.agentPort, "agent");
+  },
+});
+
+async function handleAutomation24hStart(request, response) {
+  try {
+    sendJson(response, 200, await automation24hScheduler.start());
+  } catch (error) {
+    sendJson(response, error.statusCode || 500, { ok: false, error: error.message || "启动24小时自动运转失败" });
+  }
+}
+
+async function handleAutomation24hStop(request, response) {
+  try {
+    const body = await readJsonBody(request).catch(() => ({}));
+    sendJson(response, 200, await automation24hScheduler.stop(body.reason || "用户确认中断24小时自动运转"));
+  } catch (error) {
+    sendJson(response, error.statusCode || 500, { ok: false, error: error.message || "停止24小时自动运转失败" });
+  }
+}
+
+function handleAutomation24hStatus(request, response) {
+  sendJson(response, 200, automation24hScheduler.status());
+}
+
+async function handleAutomation24hLogs(request, response) {
+  try {
+    const url = new URL(request.url, `http://${request.headers.host}`);
+    sendJson(response, 200, await automation24hScheduler.readLogs(url.searchParams.get("date") || ""));
+  } catch (error) {
+    sendJson(response, 500, { ok: false, error: error.message || "读取24小时自动运转日志失败" });
+  }
+}
+
 const server = http.createServer((request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
   const resumeMatch = url.pathname.match(/^\/api\/resumes\/([^/]+)$/);
@@ -176,6 +239,26 @@ const server = http.createServer((request, response) => {
 
   if (request.method === "GET" && url.pathname === "/api/automation-browser/status") {
     handleAutomationBrowserStatus(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/automation-24h/start") {
+    handleAutomation24hStart(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/automation-24h/stop") {
+    handleAutomation24hStop(request, response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/automation-24h/status") {
+    handleAutomation24hStatus(request, response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/automation-24h/logs") {
+    handleAutomation24hLogs(request, response);
     return;
   }
 

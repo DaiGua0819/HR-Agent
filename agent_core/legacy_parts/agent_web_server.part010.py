@@ -7,6 +7,35 @@
                 self.send_json({"ok": True, "pause": SERVICE.set_pause(paused, reason)})
             elif path == "/api/options":
                 self.send_json(SERVICE.set_options(self.read_json()))
+            elif path == "/api/recruiter/process-messages":
+                payload = self.read_json()
+                options = payload.get("options")
+                if isinstance(options, dict):
+                    SERVICE.set_options(options)
+                SERVICE.set_pause(False, "开始 BOSS 消息处理前自动解除暂停")
+                timing = SERVICE.start_operation_timing("chat", "BOSS处理全部未读消息")
+                raw_max_total = payload.get("maxTotal", payload.get("count", 40))
+                max_total = int(raw_max_total if raw_max_total is not None else 40)
+                try:
+                    with SERVICE.lock:
+                        terminal = SERVICE.get_terminal()
+                        result = SERVICE.screen_all_recruiter_unread_basic_conditions(
+                            terminal,
+                            max_total=max_total,
+                            target_position=str(payload.get("targetPosition") or ""),
+                        )
+                    finished_timing = SERVICE.finish_operation_timing(timing, "success")
+                    if isinstance(result, dict) and finished_timing:
+                        result["timings"] = finished_timing
+                except PauseRequested as error:
+                    finished_timing = SERVICE.finish_operation_timing(timing, "paused", str(error))
+                    self.send_json({"reply": str(error), "paused": True, "pause": SERVICE.pause_state(), "timings": finished_timing})
+                    return
+                except Exception as error:
+                    finished_timing = SERVICE.finish_operation_timing(timing, "failed", str(error))
+                    self.send_json({"error": str(error), "timings": finished_timing}, status=500)
+                    return
+                self.send_json(result)
             elif path == "/api/recruiter/proactive-contact":
                 payload = self.read_json()
                 options = payload.get("options")

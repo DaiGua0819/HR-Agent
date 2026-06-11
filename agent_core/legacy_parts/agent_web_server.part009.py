@@ -1463,6 +1463,8 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 self.send_json(load_recruiter_automation_summary(platform))
             elif path == "/api/observe":
                 self.send_json(SERVICE.observe())
+            elif path == "/api/automation-observe":
+                self.send_json(SERVICE.automation_message_observe())
             elif path == "/api/files":
                 self.send_json({"files": SERVICE.files[-50:]})
             elif path == "/api/pause":

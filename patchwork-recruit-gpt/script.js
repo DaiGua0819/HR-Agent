@@ -8,7 +8,7 @@
     "./src/client/batch/imports.js",
     "./src/client/core/init.js",
   ];
-  const VERSION = "20260610-process-busy-sync";
+  const VERSION = "20260611-automation-24h";
   const statusNode = document.querySelector("#statusPill");
 
   async function loadClient() {

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>招聘智能体 - 简历信息解析</title>
-    <link rel="stylesheet" href="./styles.css?v=20260610-launch-button-font-small" />
+    <link rel="stylesheet" href="./styles.css?v=20260611-automation-24h" />
   </head>
   <body>
     <main class="app-shell">
@@ -105,6 +105,16 @@
                     <span class="launch-status">启动 8792 / 9231</span>
                   </button>
                 </div>
+                <section class="automation-24h-panel" id="automation24hPanel">
+                  <button class="automation-24h-button" type="button" id="automation24hToggleBtn">24小时自动运转</button>
+                  <div class="automation-24h-summary" id="automation24hSummary">未启动</div>
+                  <div class="automation-24h-targets" id="automation24hTargets" aria-live="polite"></div>
+                  <div class="automation-24h-log-head">
+                    <strong>自动运转日志</strong>
+                    <input id="automation24hLogDateInput" type="date" aria-label="选择自动运转日志日期" />
+                  </div>
+                  <div class="automation-24h-logs" id="automation24hLogs">暂无日志</div>
+                </section>
               </div>
             </div>
 
@@ -834,7 +844,7 @@
       };
     </script>
     <script src="./src/config/frontend-config.js?v=20260605-hr-trainee-proactive"></script>
-    <script src="./script.js?v=20260610-process-busy-sync"></script>
+    <script src="./script.js?v=20260611-automation-24h"></script>
   </body>
 </html>
 

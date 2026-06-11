@@ -88,6 +88,12 @@ const elements = {
   browserLaunchButtons: [...document.querySelectorAll("[data-browser-launch-platform][data-browser-launch-account]")],
   oneClickLaunchBrowserBtn: document.querySelector("#oneClickLaunchBrowserBtn"),
   bossBrowserSummary: document.querySelector("#bossBrowserSummary"),
+  automation24hPanel: document.querySelector("#automation24hPanel"),
+  automation24hToggleBtn: document.querySelector("#automation24hToggleBtn"),
+  automation24hSummary: document.querySelector("#automation24hSummary"),
+  automation24hTargets: document.querySelector("#automation24hTargets"),
+  automation24hLogDateInput: document.querySelector("#automation24hLogDateInput"),
+  automation24hLogs: document.querySelector("#automation24hLogs"),
   clearBtn: document.querySelector("#clearBtn"),
   dropZone: document.querySelector("#dropZone"),
   fileCard: document.querySelector("#fileCard"),
@@ -252,6 +258,11 @@ let currentBatchJobId = "";
 let currentBatchStatus = "";
 let batchPollTimer = 0;
 let automationBrowserStatusTimer = 0;
+let automation24hStatusTimer = 0;
+let automation24hLogsTimer = 0;
+let automation24hLastStatus = null;
+let automation24hStatusBusy = false;
+let automation24hLogsBusy = false;
 let batchPage = 1;
 let recordsPage = 1;
 let resumeCache = [];

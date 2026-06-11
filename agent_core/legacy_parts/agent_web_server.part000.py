@@ -1074,6 +1074,58 @@ class WebAgentService:
             context["fileInputs"] = self.collect_file_inputs(terminal)
             return context
 
+    def automation_message_observe(self) -> dict:
+        operation_timing = self.refresh_operation_timing_runtime(self.current_operation_timing or self.last_operation_timing)
+        if self.current_operation_timing:
+            return {
+                "ok": True,
+                "busy": True,
+                "accountId": AGENT_ACCOUNT_ID,
+                "accountName": AGENT_ACCOUNT_NAME,
+                "operationTiming": operation_timing,
+                "remaining": {"unreadBadgeCount": None, "actionableCount": None},
+            }
+        with self.lock:
+            terminal = self.get_terminal()
+            page = terminal.current_page()
+            platform = "boss"
+            if AGENT_ACCOUNT_ID.startswith("job51"):
+                platform = "51job"
+            elif AGENT_ACCOUNT_ID.startswith("zhilian"):
+                platform = "zhilian"
+            unread = read_unread_badge_state(terminal)
+            unread_count = int(unread.get("count") or 0)
+            remaining = {
+                "unreadBadgeCount": unread_count,
+                "actionableCount": unread_count,
+                "source": "unread_badge",
+            }
+            extra: dict = {}
+            if platform == "51job":
+                try:
+                    summary = self.job51_visible_thread_summary(terminal, exclude_labels=[], allowed_positions=())
+                    actionable = int(summary.get("actionableCount") or 0)
+                    remaining["actionableCount"] = actionable
+                    remaining["source"] = "job51_visible_thread_summary"
+                    extra["visibleThreadSummary"] = summary
+                except Exception as error:
+                    extra["visibleThreadSummaryError"] = safe_text(str(error), 180)
+            return {
+                "ok": True,
+                "busy": False,
+                "platform": platform,
+                "accountId": AGENT_ACCOUNT_ID,
+                "accountName": AGENT_ACCOUNT_NAME,
+                "page": {
+                    "title": safe_text(page.title() if page else "", 120),
+                    "url": safe_text(str(getattr(page, "url", "")), 240),
+                },
+                "unread": unread,
+                "remaining": remaining,
+                "operationTiming": operation_timing,
+                **extra,
+            }
+
     def collect_file_inputs(self, terminal: BrowserTerminal) -> list[dict]:
         page = terminal.current_page()
         try:

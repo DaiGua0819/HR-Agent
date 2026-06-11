@@ -16,6 +16,7 @@ const { sendJson, readRequestBuffer, readJsonBody, fetchLocalJson, sleep } = req
 const { normalizeBoolean, normalizeScoreValue, normalizeBoundedScore, normalizeStringArray } = require("./server/utils/normalizers");
 const { safeFilePart, compactSafeFilePart, clipText, normalizeConversationName } = require("./server/utils/text");
 const { createAutomationProxyService } = require("./server/services/automationProxy");
+const { createAutomation24hScheduler } = require("./server/services/automation24h");
 const {
   normalizeAutomationPlatformId,
   automationPlatformLabel,
