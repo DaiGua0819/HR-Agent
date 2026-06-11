@@ -1097,6 +1097,26 @@ function platformResultText(payload, fallback) {
   return fallback;
 }
 
+function platformResultFinalState(payload, fallback, { proactive = false } = {}) {
+  const result = payload?.result || payload || {};
+  const state = result.state || payload?.state || {};
+  const text = platformResultText(payload, fallback);
+  const processed = Number(state.processedPeople ?? state.processed ?? -1);
+  const paused = Boolean(result.paused || payload?.paused || result.pause?.paused || payload?.pause?.paused);
+  const failed = Boolean(result.error || payload?.error || /失败|异常/.test(text));
+  const noWork = !proactive && Number.isFinite(processed) && processed === 0;
+  if (paused) return { text, platformStatus: "已暂停", inlineStatus: "已暂停", globalStatus: text, state: "done" };
+  if (failed) return { text, platformStatus: "失败", inlineStatus: text, globalStatus: text, state: "error" };
+  if (noWork) return { text, platformStatus: "无未读", inlineStatus: "无未读消息", globalStatus: text, state: "done" };
+  return {
+    text,
+    platformStatus: "已完成",
+    inlineStatus: proactive ? "主动联系完成" : "处理完成",
+    globalStatus: fallback,
+    state: "done",
+  };
+}
+
 function stopPlatformAutomationLiveTimers(platform, mode, accountId = bossAutomationAccountId) {
   const state = getPlatformAutomationTaskState(platform, mode, accountId);
   window.clearInterval(state.dotsTimer);
@@ -1257,19 +1277,19 @@ async function runPlatformAutomation(platform, mode) {
     });
     if (runId !== state.runId) return;
     state.localRunPending = false;
-    const text = platformResultText(payload, `${config.label}${actionText}完成`);
+    const finalState = platformResultFinalState(payload, `${config.label}${actionText}完成`, { proactive: isProactive });
     state.running = false;
     state.paused = false;
     state.externalBusy = false;
     stopPlatformAutomationLiveTimers(normalizedPlatform, actionMode, accountId);
-    setPlatformAutomationStatus(normalizedPlatform, "已完成", "done");
+    setPlatformAutomationStatus(normalizedPlatform, finalState.platformStatus, finalState.state);
     if (isProactive) {
-      setProactiveContactStatus("主动联系完成");
+      setProactiveContactStatus(finalState.inlineStatus);
     } else {
-      setProcessMessagesStatus("处理完成");
+      setProcessMessagesStatus(finalState.inlineStatus);
     }
-    if (elements.batchSummary) elements.batchSummary.textContent = text;
-    setStatus(`${config.label}${actionText}完成`, "is-done");
+    if (elements.batchSummary) elements.batchSummary.textContent = finalState.text;
+    setStatus(finalState.globalStatus, finalState.state === "error" ? "" : "is-done");
   } catch (error) {
     if (runId !== state.runId) return;
     console.error(error);

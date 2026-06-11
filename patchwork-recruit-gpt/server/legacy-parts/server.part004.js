@@ -104,7 +104,7 @@ async function handleRetryBatchJob(jobId, response) {
     const now = new Date().toISOString();
     const result = getDb()
       .prepare(
-        "UPDATE batch_items SET status = 'pending', message = ?, resume_id = NULL, payload = '{}', updated_at = ? WHERE job_id = ? AND status = 'failed'"
+        "UPDATE batch_items SET status = 'pending', message = ?, resume_id = NULL, updated_at = ? WHERE job_id = ? AND status = 'failed'"
       )
       .run("等待重试", now, jobId);
 
@@ -190,6 +190,85 @@ async function handleCancelBatchJob(jobId, response) {
 
 function getFolderImportSourceById(sourceId) {
   return Object.values(FOLDER_IMPORT_SOURCES).find((source) => source.id === sourceId) || null;
+}
+
+function listFolderResumePdfFilesSync(source) {
+  if (!source?.folder || !fsSync.existsSync(source.folder)) return [];
+  const files = [];
+  const walk = (folder, depth = 0) => {
+    let entries = [];
+    try {
+      entries = fsSync.readdirSync(folder, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const filePath = path.join(folder, entry.name);
+      if (entry.isDirectory() && source.recursive && depth < 4) {
+        walk(filePath, depth + 1);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".pdf")) continue;
+      if (source.includeFilePath && !source.includeFilePath(filePath)) continue;
+      files.push(filePath);
+    }
+  };
+  walk(source.folder);
+  return files.sort((a, b) => path.basename(a).localeCompare(path.basename(b), "zh-Hans-CN"));
+}
+
+function fileHashMatches(filePath, expectedHash = "") {
+  if (!filePath || !fsSync.existsSync(filePath)) return false;
+  if (!expectedHash) return true;
+  try {
+    const hash = crypto.createHash("sha256").update(fsSync.readFileSync(filePath)).digest("hex");
+    return hash === expectedHash;
+  } catch {
+    return false;
+  }
+}
+
+function resolveBatchItemFileReference(item = {}, payload = {}) {
+  const source = getFolderImportSourceById(payload.source || "");
+  const expectedHash = String(payload.sourceHash || "").trim();
+  const candidatePaths = [
+    item.file_path,
+    payload.filePath,
+    payload.sourcePath,
+    payload.pdfPath,
+    payload.path,
+    payload.originalPath,
+    payload.targetPath,
+  ].filter(Boolean);
+
+  for (const filePath of candidatePaths) {
+    if (fileHashMatches(filePath, expectedHash)) {
+      return {
+        filePath,
+        sourcePath: source ? filePath : payload.sourcePath || filePath,
+      };
+    }
+  }
+
+  if (!source) return { filePath: "", sourcePath: payload.sourcePath || "" };
+
+  const filename = path.basename(item.filename || payload.filename || payload.fileName || payload.sourcePath || "");
+  const files = listFolderResumePdfFilesSync(source);
+  const sameNameFiles = filename ? files.filter((filePath) => path.basename(filePath) === filename) : [];
+  const searchGroups = [sameNameFiles, files];
+  for (const group of searchGroups) {
+    for (const filePath of group) {
+      if (fileHashMatches(filePath, expectedHash)) {
+        return { filePath, sourcePath: filePath };
+      }
+    }
+  }
+
+  if (!expectedHash && sameNameFiles.length) {
+    return { filePath: sameNameFiles[0], sourcePath: sameNameFiles[0] };
+  }
+
+  return { filePath: "", sourcePath: payload.sourcePath || "" };
 }
 
 async function readFolderImportManifest(source) {
@@ -308,12 +387,19 @@ async function resumeInterruptedFolderImportJobs(source) {
   for (const item of activeItems) {
     const payload = parsePayload(item.payload, {});
     if (payload.source !== source.id || !payload.sourceHash) continue;
-    if (item.file_path && !fsSync.existsSync(item.file_path)) {
+    const fileResolution = resolveBatchItemFileReference(item, payload);
+    if (!fileResolution.filePath) {
       failMissingFileItem.run("原始批量文件不存在，等待文件夹扫描重新入队", nowIso, item.id);
       console.warn(
         `[${nowIso}] [${source.id}] 跳过缺失原始文件的简历入库项：${item.filename || item.id}，job=${item.job_id}`
       );
       continue;
+    }
+    if (
+      fileResolution.filePath !== item.file_path ||
+      (payload.source && fileResolution.sourcePath && payload.sourcePath !== fileResolution.sourcePath)
+    ) {
+      updateBatchItemFileReference(item, payload, fileResolution, "已从当前下载目录找回原始文件，继续解析");
     }
     if (item.status === "pending") {
       jobIds.add(item.job_id);
@@ -345,6 +431,8 @@ async function markFolderImportCompleted(item, result = {}) {
   const payload = parsePayload(item.payload, {});
   const source = getFolderImportSourceById(payload.source || "");
   if (!source || !payload.sourceHash) return;
+  const fileResolution = resolveBatchItemFileReference(item, payload);
+  const sourcePath = fileResolution.sourcePath || payload.sourcePath || item.file_path || "";
 
   const manifest = await readFolderImportManifest(source);
   const hash = payload.sourceHash;
@@ -359,7 +447,7 @@ async function markFolderImportCompleted(item, result = {}) {
   manifest.files.push({
     hash,
     filename: item.filename,
-    sourcePath: payload.sourcePath || "",
+    sourcePath,
     size: payload.size || 0,
     importedAt: new Date().toISOString(),
     jobId: item.job_id,

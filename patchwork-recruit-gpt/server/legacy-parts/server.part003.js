@@ -1395,6 +1395,28 @@ function updateBatchItem(itemId, updates) {
     .run(...values);
 }
 
+function updateBatchItemFileReference(item, payload, resolution, message = "") {
+  if (!item?.id || !resolution?.filePath) return;
+  const nextPayload = {
+    ...(payload || {}),
+  };
+  if (nextPayload.source && resolution.sourcePath) {
+    nextPayload.sourcePath = resolution.sourcePath;
+  }
+  const updateFields = ["file_path = ?", "payload = ?", "updated_at = ?"];
+  const values = [resolution.filePath, JSON.stringify(nextPayload), new Date().toISOString()];
+  if (message) {
+    updateFields.splice(1, 0, "message = ?");
+    values.splice(1, 0, message);
+  }
+  values.push(item.id);
+  getDb()
+    .prepare(`UPDATE batch_items SET ${updateFields.join(", ")} WHERE id = ?`)
+    .run(...values);
+  item.file_path = resolution.filePath;
+  item.payload = JSON.stringify(nextPayload);
+}
+
 async function processBatchJob(jobId) {
   await ensureDatabase();
   if (getBatchJobStatus(jobId) === "cancelled") return;
@@ -1423,8 +1445,19 @@ async function processBatchJob(jobId) {
 
     try {
       const itemPayload = parsePayload(item.payload, {});
+      const fileResolution = resolveBatchItemFileReference(item, itemPayload);
+      if (!fileResolution.filePath) {
+        throw new Error("原始批量文件不存在，等待文件夹扫描重新入队");
+      }
+      if (
+        fileResolution.filePath !== item.file_path ||
+        (itemPayload.source && fileResolution.sourcePath && itemPayload.sourcePath !== fileResolution.sourcePath)
+      ) {
+        updateBatchItemFileReference(item, itemPayload, fileResolution, "已从当前下载目录找回原始文件，继续解析");
+      }
+      const resolvedPayload = parsePayload(item.payload, itemPayload);
       const sourceMeta = buildResumeSourceMetadata({
-        ...itemPayload,
+        ...resolvedPayload,
         filename: item.filename,
         fileName: item.filename,
         filePath: item.file_path,
@@ -1448,23 +1481,23 @@ async function processBatchJob(jobId) {
       const record = saveResult.record || {};
       const importStatus = saveResult.duplicate ? "duplicate" : "saved";
       const payload = {
-        ...itemPayload,
+        ...resolvedPayload,
         ...result,
         ...sourceMeta,
-        source: itemPayload.source || sourceMeta.importSource || "",
-        sourcePath: itemPayload.sourcePath || "",
-        sourceHash: itemPayload.sourceHash || "",
-        size: itemPayload.size || "",
-        trigger: itemPayload.trigger || "",
-        importSource: itemPayload.source || sourceMeta.importSource || "",
-        accountId: sourceMeta.accountId || itemPayload.accountId || "",
-        accountLabel: itemPayload.accountLabel || sourceMeta.accountName || "",
-        accountName: sourceMeta.accountName || itemPayload.accountName || "",
-        email: itemPayload.email || "",
-        imapHost: itemPayload.imapHost || "",
-        emailSourceKind: itemPayload.emailSourceKind || sourceMeta.emailSourceKind || "",
-        sourceLabel: sourceMeta.sourceLabel || itemPayload.sourceLabel || "",
-        sourcePlatform: sourceMeta.sourcePlatform || itemPayload.sourcePlatform || "",
+        source: resolvedPayload.source || sourceMeta.importSource || "",
+        sourcePath: resolvedPayload.sourcePath || fileResolution.sourcePath || "",
+        sourceHash: resolvedPayload.sourceHash || "",
+        size: resolvedPayload.size || "",
+        trigger: resolvedPayload.trigger || "",
+        importSource: resolvedPayload.source || sourceMeta.importSource || "",
+        accountId: sourceMeta.accountId || resolvedPayload.accountId || "",
+        accountLabel: resolvedPayload.accountLabel || sourceMeta.accountName || "",
+        accountName: sourceMeta.accountName || resolvedPayload.accountName || "",
+        email: resolvedPayload.email || "",
+        imapHost: resolvedPayload.imapHost || "",
+        emailSourceKind: resolvedPayload.emailSourceKind || sourceMeta.emailSourceKind || "",
+        sourceLabel: sourceMeta.sourceLabel || resolvedPayload.sourceLabel || "",
+        sourcePlatform: sourceMeta.sourcePlatform || resolvedPayload.sourcePlatform || "",
         resumeId: record.id || "",
         name: record.name || result.name || "",
         phone: record.phone || result.phone || "",

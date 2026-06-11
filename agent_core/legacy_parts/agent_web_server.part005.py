@@ -223,6 +223,253 @@
             "screening": screening,
         }
 
+    def job51_click_like_boss(self, terminal: BrowserTerminal, locator, label: str = "51job 目标", wait_ms: int = 900) -> dict:
+        page = terminal.current_page()
+        target_label = safe_text(str(label or "51job 目标"), 80)
+        box_info: dict = {}
+        try:
+            if terminal.humanize:
+                terminal.pause_like_person("pre_action")
+            try:
+                highlight_target(locator)
+            except Exception:
+                pass
+            try:
+                box = locator.bounding_box(timeout=2500)
+            except Exception:
+                box = None
+            if box:
+                x = float(box["x"]) + float(box["width"]) * random.uniform(0.42, 0.58)
+                y = float(box["y"]) + float(box["height"]) * random.uniform(0.42, 0.58)
+                box_info = {
+                    "x": round(float(box["x"])),
+                    "y": round(float(box["y"])),
+                    "width": round(float(box["width"])),
+                    "height": round(float(box["height"])),
+                    "clickX": round(x),
+                    "clickY": round(y),
+                }
+                try:
+                    humanized_point_click(terminal, x, y, target_box=box)
+                    method = "humanized_point_click"
+                except Exception as point_error:
+                    humanized_locator_click(terminal, locator, force=True)
+                    method = "humanized_locator_click_after_point_error"
+                    box_info["pointError"] = safe_text(str(point_error), 160)
+            else:
+                humanized_locator_click(terminal, locator, force=True)
+                method = "humanized_locator_click_no_box"
+            if terminal.humanize:
+                terminal.pause_like_person("post_action")
+            if wait_ms:
+                try:
+                    page.wait_for_timeout(max(0, int(wait_ms)))
+                except Exception:
+                    pass
+            return {"clicked": True, "method": method, "label": target_label, "box": box_info}
+        except Exception as error:
+            try:
+                locator.click(timeout=8000, force=True)
+                if wait_ms:
+                    page.wait_for_timeout(max(0, int(wait_ms)))
+                return {
+                    "clicked": True,
+                    "method": "locator_click_fallback",
+                    "label": target_label,
+                    "mouseError": safe_text(str(error), 160),
+                    "box": box_info,
+                }
+            except Exception as fallback_error:
+                return {
+                    "clicked": False,
+                    "method": "click_failed",
+                    "label": target_label,
+                    "reason": safe_text(str(fallback_error), 180),
+                    "mouseError": safe_text(str(error), 180),
+                    "box": box_info,
+                }
+
+    def job51_verify_opened_candidate(self, terminal: BrowserTerminal, target: dict | None = None, chat_ready: bool = False) -> dict:
+        target = target if isinstance(target, dict) else {}
+        label = safe_text(str(target.get("label") or ""), 220)
+        target_name = safe_text(str(recruiter_candidate_name_from_label(label)), 80)
+        target_job = clean_applied_position(str(target.get("job") or ""))
+        try:
+            target_index = int(target.get("index"))
+        except Exception:
+            target_index = -1
+        state = safe_eval(terminal.current_page(), """() => {
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const input = document.querySelector('#drop-area.input-textarea_self, #drop-area');
+          const headerNode = document.querySelector('div.im_userName span.username-text, div.im_userName, span.username-text');
+          const rows = Array.from(document.querySelectorAll('#conversation-list .list-item'));
+          const selectedIndex = rows.findIndex(row => /active|current|selected|checked/i.test(String(row.className || '')));
+          const selected = selectedIndex >= 0 ? rows[selectedIndex] : null;
+          const selectedJobNode = selected ? selected.querySelector('.jobname') : null;
+          return {
+            inputReady: !!input,
+            headerName: normalize(headerNode ? (headerNode.innerText || headerNode.textContent || '') : ''),
+            selectedIndex,
+            selectedLabel: normalize(selected ? (selected.innerText || selected.textContent || '') : ''),
+            selectedJob: normalize(selectedJobNode ? (selectedJobNode.innerText || selectedJobNode.textContent || '') : ''),
+            url: location.href,
+            title: document.title
+          };
+        }""")
+        if not isinstance(state, dict):
+            return {"opened": False, "reason": "candidate_verify_state_unavailable", "targetLabel": label}
+        input_ready = bool(chat_ready or state.get("inputReady"))
+        if not input_ready:
+            return {"opened": False, "reason": "chat_input_not_ready", "targetLabel": label, "state": state}
+        target_key = compact_conversation_label(label)
+        selected_label = safe_text(str(state.get("selectedLabel") or ""), 220)
+        selected_key = compact_conversation_label(selected_label)
+        header_name = safe_text(str(state.get("headerName") or ""), 80)
+        selected_name = safe_text(str(recruiter_candidate_name_from_label(selected_label)), 80)
+        selected_job = clean_applied_position(str(state.get("selectedJob") or ""))
+        label_match = bool(target_key and selected_key and (target_key in selected_key or selected_key in target_key))
+        header_name_match = bool(target_name and header_name and recruiter_candidate_names_match(target_name, header_name))
+        selected_name_match = bool(target_name and selected_name and recruiter_candidate_names_match(target_name, selected_name))
+        job_match = bool(
+            target_job
+            and selected_job
+            and (
+                target_job in selected_job
+                or selected_job in target_job
+                or job51_position_label_matches(target_job, selected_job)
+            )
+        )
+        index_match = bool(target_index >= 0 and state.get("selectedIndex") == target_index)
+        opened = bool(label_match or header_name_match or index_match or (selected_name_match and (not target_job or job_match)))
+        reason = ""
+        if not opened:
+            if not target_key and not target_name:
+                reason = "target_identity_missing"
+            elif not selected_key and not header_name:
+                reason = "selected_identity_missing"
+            else:
+                reason = "candidate_identity_mismatch"
+        return {
+            "opened": opened,
+            "reason": reason,
+            "targetLabel": safe_text(label, 120),
+            "targetName": target_name,
+            "targetJob": safe_text(target_job, 80),
+            "headerName": header_name,
+            "selectedName": selected_name,
+            "selectedLabel": safe_text(selected_label, 160),
+            "selectedJob": safe_text(selected_job, 80),
+            "matches": {
+                "label": label_match,
+                "headerName": header_name_match,
+                "selectedName": selected_name_match,
+                "job": job_match,
+                "index": index_match,
+                "inputReady": input_ready,
+            },
+            "state": state,
+        }
+
+    def job51_open_candidate_with_retries(
+        self,
+        terminal: BrowserTerminal,
+        target: dict,
+        *,
+        max_attempts: int = 3,
+    ) -> dict:
+        target = target if isinstance(target, dict) else {}
+        label = safe_text(str(target.get("label") or ""), 180)
+        try:
+            attempts_count = max(1, min(5, int(max_attempts)))
+        except Exception:
+            attempts_count = 3
+        attempts: list[dict] = []
+        last_reason = "not_attempted"
+        for attempt_index in range(attempts_count):
+            self.check_pause()
+            attempt_no = attempt_index + 1
+            suffix = "" if attempt_index == 0 else f"_retry_{attempt_index}"
+            close_result = self.measure_current_timing_stage(
+                f"job51_open_candidate_close_resume_surfaces{suffix}",
+                "51job 打开候选人前关闭简历界面" if attempt_index == 0 else "51job 重试前关闭简历界面",
+                lambda: self.job51_close_resume_download_surfaces(terminal),
+            )
+            locator = target.get("locator")
+            if locator is None:
+                last_reason = "candidate_locator_missing"
+                attempts.append({
+                    "attempt": attempt_no,
+                    "closeResult": close_result,
+                    "clicked": False,
+                    "reason": last_reason,
+                })
+                break
+            click_result = self.measure_current_timing_stage(
+                f"job51_open_candidate_click{suffix}",
+                "51job 拟人化点击候选人" if attempt_index == 0 else "51job 重试拟人化点击候选人",
+                lambda: self.job51_click_like_boss(
+                    terminal,
+                    locator,
+                    "51job 未读联系人" if attempt_index == 0 else f"51job 未读联系人重试{attempt_no}",
+                    wait_ms=random.randint(900, 1450) if attempt_index == 0 else random.randint(1200, 1800),
+                ),
+            )
+            ready = False
+            verify: dict = {}
+            if click_result.get("clicked"):
+                ready = self.measure_current_timing_stage(
+                    f"job51_wait_chat_ready{suffix}",
+                    "51job 等待聊天输入框" if attempt_index == 0 else "51job 重试等待聊天输入框",
+                    lambda: self.job51_wait_chat_ready(terminal, timeout_ms=4500),
+                )
+                verify = self.measure_current_timing_stage(
+                    f"job51_verify_opened_candidate{suffix}",
+                    "51job 校验已进入目标联系人" if attempt_index == 0 else "51job 重试校验目标联系人",
+                    lambda: self.job51_verify_opened_candidate(terminal, target, chat_ready=bool(ready)),
+                )
+            else:
+                last_reason = click_result.get("reason") or "candidate_click_not_performed"
+            if click_result.get("clicked") and ready and verify.get("opened"):
+                attempts.append({
+                    "attempt": attempt_no,
+                    "closeResult": close_result,
+                    "click": click_result,
+                    "ready": bool(ready),
+                    "verify": verify,
+                    "opened": True,
+                })
+                return {
+                    "opened": True,
+                    "attempt": attempt_no,
+                    "attempts": attempts,
+                    "click": click_result,
+                    "verify": verify,
+                    "closeResult": close_result,
+                }
+            if click_result.get("clicked"):
+                last_reason = str(verify.get("reason") or ("chat_input_not_ready" if not ready else "candidate_open_not_verified"))
+            attempts.append({
+                "attempt": attempt_no,
+                "closeResult": close_result,
+                "click": click_result,
+                "ready": bool(ready),
+                "verify": verify,
+                "opened": False,
+                "reason": last_reason,
+            })
+            try:
+                terminal.current_page().wait_for_timeout(random.randint(420, 760))
+            except Exception:
+                pass
+        return {
+            "opened": False,
+            "blocked": True,
+            "skipped": True,
+            "reason": last_reason,
+            "attempts": attempts,
+            "message": f"51job 连续 {len(attempts)} 次点击候选人后仍未进入目标联系人，已跳过当前联系人并继续处理下一位：{safe_text(label, 100)}",
+        }
+
     @timed_agent_stage("job51_process_all_unread_messages", "51job 处理全部未读消息")
     def job51_process_unread_all_positions(
         self,
@@ -241,6 +488,8 @@
         results: list[dict] = []
         filtered: list[dict] = []
         counts: dict[str, int] = {}
+        fatal_error = ""
+        scan_trace: list[dict] = []
         unread_filter = self.measure_current_timing_stage("job51_prepare_unread_filter", "51job 切换未读筛选", lambda: self.job51_prepare_unread_filter(terminal))
         if not unread_filter.get("found"):
             filtered.append({"reason": "unread_filter_not_found", "state": unread_filter})
@@ -248,6 +497,11 @@
         if not all_position_filter.get("selected"):
             filtered.append({"reason": all_position_filter.get("reason") or "all_positions_not_selected", "state": all_position_filter})
         if unread_filter.get("found") and all_position_filter.get("selected"):
+            self.measure_current_timing_stage(
+                "job51_scroll_conversation_list_to_top",
+                "51job 联系人列表回到顶部",
+                lambda: self.job51_scroll_conversation_list_to_top(terminal),
+            )
             excluded: list[str] = []
             no_target = 0
             while len(results) < target_limit and no_target < 12:
@@ -258,16 +512,88 @@
                     lambda: self.job51_find_next_thread(terminal, exclude_labels=excluded, allowed_positions=()),
                 )
                 if not target:
+                    before_summary = self.job51_visible_thread_summary(terminal, exclude_labels=excluded, allowed_positions=())
+                    if int(before_summary.get("actionableCount") or 0) <= 0 and int(before_summary.get("platformCount") or 0) > 0:
+                        scan_trace.append({
+                            "step": len(scan_trace) + 1,
+                            "event": "no_target_stop_platform_recommendations",
+                            "processed": len(results),
+                            "excludedCount": len(excluded),
+                            "beforeSummary": {
+                                "visibleRows": before_summary.get("visibleRows"),
+                                "actionableCount": before_summary.get("actionableCount"),
+                                "platformCount": before_summary.get("platformCount"),
+                                "readOrSentCount": before_summary.get("readOrSentCount"),
+                                "excludedCount": before_summary.get("excludedCount"),
+                                "labels": before_summary.get("labels", [])[:5],
+                                "actionableLabels": before_summary.get("actionableLabels", [])[:5],
+                            },
+                        })
+                        break
                     scrolled = self.measure_current_timing_stage(
                         "job51_scroll_conversation_list",
                         "51job 滚动联系人列表",
                         lambda: self.job51_scroll_conversation_list(terminal),
                     )
+                    after_summary = self.job51_visible_thread_summary(terminal, exclude_labels=excluded, allowed_positions=())
+                    scan_trace.append({
+                        "step": len(scan_trace) + 1,
+                        "event": "no_target_scroll",
+                        "processed": len(results),
+                        "excludedCount": len(excluded),
+                        "noTargetBefore": no_target,
+                        "scrolled": bool(scrolled.get("scrolled")),
+                        "mode": safe_text(str(scrolled.get("mode") or ""), 40),
+                        "reason": safe_text(str(scrolled.get("reason") or ""), 80),
+                        "before": scrolled.get("before"),
+                        "after": scrolled.get("after"),
+                        "maxTop": scrolled.get("maxTop"),
+                        "atEnd": bool(scrolled.get("atEnd")),
+                        "signatureChanged": bool(scrolled.get("signatureChanged")),
+                        "beforeSignature": safe_text(str(scrolled.get("beforeSignature") or ""), 220),
+                        "afterSignature": safe_text(str(scrolled.get("afterSignature") or ""), 220),
+                        "beforeSummary": {
+                            "visibleRows": before_summary.get("visibleRows"),
+                            "actionableCount": before_summary.get("actionableCount"),
+                            "platformCount": before_summary.get("platformCount"),
+                            "readOrSentCount": before_summary.get("readOrSentCount"),
+                            "excludedCount": before_summary.get("excludedCount"),
+                            "labels": before_summary.get("labels", [])[:5],
+                            "actionableLabels": before_summary.get("actionableLabels", [])[:5],
+                        },
+                        "afterSummary": {
+                            "visibleRows": after_summary.get("visibleRows"),
+                            "actionableCount": after_summary.get("actionableCount"),
+                            "platformCount": after_summary.get("platformCount"),
+                            "readOrSentCount": after_summary.get("readOrSentCount"),
+                            "excludedCount": after_summary.get("excludedCount"),
+                            "labels": after_summary.get("labels", [])[:5],
+                            "actionableLabels": after_summary.get("actionableLabels", [])[:5],
+                        },
+                    })
                     no_target += 1
-                    if scrolled.get("scrolled"):
+                    if scrolled.get("scrolled") and int(after_summary.get("actionableCount") or 0) > 0:
+                        continue
+                    if (
+                        scrolled.get("scrolled")
+                        and not scrolled.get("atEnd")
+                        and no_target < 2
+                        and int(after_summary.get("platformCount") or 0) <= 0
+                    ):
                         continue
                     break
                 label = str(target.get("label") or "")
+                scan_trace.append({
+                    "step": len(scan_trace) + 1,
+                    "event": "target_found",
+                    "processed": len(results),
+                    "excludedCount": len(excluded),
+                    "index": target.get("index"),
+                    "x": target.get("x"),
+                    "y": target.get("y"),
+                    "label": safe_text(label, 220),
+                    "job": safe_text(str(target.get("job") or ""), 80),
+                })
                 label_key = compact_conversation_label(label)
                 if label_key:
                     excluded.append(label_key)
@@ -280,38 +606,29 @@
                     continue
                 opened_position = clean_applied_position(str(target.get("job") or "")) or clean_applied_position(target_position) or ""
                 try:
-                    if terminal.humanize:
-                        self.measure_current_timing_stage("job51_open_candidate_pre_pause", "51job 打开候选人前停顿", lambda: terminal.pause_like_person("pre_action"))
-                        highlight_target(locator)
-                    self.measure_current_timing_stage("job51_open_candidate_click", "51job 点击候选人", lambda: locator.click(timeout=8000, force=True))
-                    if terminal.humanize:
-                        self.measure_current_timing_stage("job51_open_candidate_post_pause", "51job 打开候选人后停顿", lambda: terminal.pause_like_person("post_action"))
-                    terminal.current_page().wait_for_timeout(random.randint(900, 1450))
-                    ready = self.measure_current_timing_stage("job51_wait_chat_ready", "51job 等待聊天输入框", lambda: self.job51_wait_chat_ready(terminal, timeout_ms=4500))
-                    if not ready:
-                        try:
-                            locator.click(timeout=5000, force=True)
-                            terminal.current_page().wait_for_timeout(random.randint(1200, 1800))
-                            ready = self.measure_current_timing_stage("job51_wait_chat_ready_retry", "51job 重试等待聊天输入框", lambda: self.job51_wait_chat_ready(terminal, timeout_ms=4500))
-                        except Exception:
-                            ready = False
-                    if not ready:
+                    open_result = self.job51_open_candidate_with_retries(terminal, target, max_attempts=3)
+                    if not open_result.get("opened"):
+                        action = "open_candidate_failed_skipped"
+                        counts[action] = counts.get(action, 0) + 1
                         results.append({
                             "index": len(results) + 1,
                             "label": safe_text(label, 140),
                             "appliedPosition": safe_text(opened_position, 80),
-                            "action": "blocked",
-                            "message": "51job 打开候选人后没有出现聊天输入框，已跳过避免误填",
+                            "action": action,
+                            "message": safe_text(str(open_result.get("message") or "51job 打开候选人连续重试失败，已跳过当前人"), 260),
+                            "openResult": open_result,
                         })
                         continue
                     maybe_human_reading_pause(terminal, reason="job51_candidate_open", text_hint=label)
                 except Exception as error:
+                    action = "open_candidate_failed_skipped"
+                    counts[action] = counts.get(action, 0) + 1
                     results.append({
                         "index": len(results) + 1,
                         "label": safe_text(label, 140),
                         "appliedPosition": safe_text(opened_position, 80),
-                        "action": "blocked",
-                        "message": f"51job 打开候选人失败：{safe_text(str(error), 120)}",
+                        "action": action,
+                        "message": f"51job 打开候选人异常，已跳过当前人继续处理：{safe_text(str(error), 120)}",
                     })
                     continue
                 try:
@@ -320,15 +637,16 @@
                 except Exception as error:
                     action = "blocked"
                     counts[action] = counts.get(action, 0) + 1
+                    fatal_error = f"51job 处理候选人时异常，已停止避免状态串人：{safe_text(str(error), 180)}"
                     results.append({
                         "index": len(results) + 1,
                         "label": safe_text(label, 140),
                         "candidateName": safe_text(str(recruiter_candidate_name_from_label(label)), 80),
                         "appliedPosition": safe_text(opened_position, 80),
                         "action": action,
-                        "message": f"51job 处理候选人时异常，已跳过：{safe_text(str(error), 180)}",
+                        "message": fatal_error,
                     })
-                    continue
+                    break
                 action = classify_recruiter_screen_result_action(result)
                 counts[action] = counts.get(action, 0) + 1
                 screening = result.get("screening") if isinstance(result.get("screening"), dict) else {}
@@ -364,8 +682,14 @@
                     "knowledgeAnswer": result.get("knowledgeAnswer") if isinstance(result.get("knowledgeAnswer"), dict) else {},
                     "resume": compact_recruiter_resume_result(result.get("resume") if isinstance(result.get("resume"), dict) else {}),
                 })
+                if action == "blocked":
+                    fatal_error = str(result.get("message") or "51job 当前候选人处理被安全逻辑阻断")
+                    break
                 maybe_human_batch_pause(terminal, len(results))
-        message = f"51job 未读处理完成：处理 {len(results)} 人。"
+        if fatal_error:
+            message = f"51job 未读处理失败：{safe_text(fatal_error, 260)}。已处理 {len(results)} 人。"
+        else:
+            message = f"51job 未读处理完成：处理 {len(results)} 人。"
         if counts:
             message += " 动作统计：" + "；".join(f"{key} {value}" for key, value in sorted(counts.items()))
         if filtered:
@@ -379,9 +703,11 @@
                 "targetPosition": clean_applied_position(target_position),
                 "counts": counts,
                 "filteredOut": len(filtered),
+                "scanTraceCount": len(scan_trace),
             },
             "results": results,
             "filteredOut": filtered[:120],
+            "scanTrace": scan_trace[-160:],
         })
         self.add_event("chat", message)
         return {
@@ -393,7 +719,9 @@
                 "processedPeople": len(results),
                 "counts": counts,
                 "filteredOut": len(filtered),
+                "scanTraceCount": len(scan_trace),
             },
+            "scanTrace": scan_trace[-80:],
             "batchReportId": batch_report.get("runId"),
         }
 

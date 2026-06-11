@@ -13,6 +13,9 @@
         allowed_positions: tuple[str, ...] | list[str] = JOB51_CONFIGURED_POSITIONS,
     ) -> dict | None:
         exclude_labels = exclude_labels or []
+        excluded_keys = [compact_conversation_label(item) for item in exclude_labels if compact_conversation_label(item)]
+        excluded_names = [recruiter_candidate_name_from_label(item) for item in exclude_labels if recruiter_candidate_name_from_label(item)]
+        excluded_prefixes = [item[:32] for item in excluded_keys if len(item) >= 6]
         allowed_clean = [clean_applied_position(item) for item in allowed_positions if clean_applied_position(item)]
         page = terminal.current_page()
         rows = page.locator("#conversation-list .list-item")
@@ -20,6 +23,9 @@
             count = rows.count()
         except Exception:
             count = 0
+        viewport = page.viewport_size or {"width": 1280, "height": 720}
+        viewport_height = int(viewport.get("height") or 720)
+        viewport_width = int(viewport.get("width") or 1280)
         for index in range(count):
             row = rows.nth(index)
             try:
@@ -27,7 +33,15 @@
             except Exception:
                 continue
             label_key = compact_conversation_label(label)
-            if not label or any(compact_conversation_label(item) and compact_conversation_label(item) in label_key for item in exclude_labels):
+            label_name = recruiter_candidate_name_from_label(label)
+            label_prefix = label_key[:32]
+            if not label:
+                continue
+            if any(item and (item in label_key or label_key[:80] in item) for item in excluded_keys):
+                continue
+            if label_name and label_name in excluded_names:
+                continue
+            if label_prefix and any(prefix and label_prefix.startswith(prefix[:18]) for prefix in excluded_prefixes):
                 continue
             if "平台推荐" in label or "为你推荐的人才" in label:
                 continue
@@ -55,6 +69,17 @@
                 box = row.bounding_box(timeout=1000)
             except Exception:
                 box = None
+            if not box:
+                continue
+            if (
+                float(box.get("width") or 0) < 120
+                or float(box.get("height") or 0) < 35
+                or float(box.get("x") or 0) > min(760, viewport_width * 0.58)
+                or float(box.get("y") or 0) < 80
+                or float(box.get("y") or 0) > viewport_height - 24
+                or float(box.get("y") or 0) + float(box.get("height") or 0) < 120
+            ):
+                continue
             return {
                 "index": index,
                 "label": label,
@@ -65,17 +90,443 @@
             }
         return None
 
-    def job51_scroll_conversation_list(self, terminal: BrowserTerminal) -> dict:
+    def job51_visible_thread_summary(
+        self,
+        terminal: BrowserTerminal,
+        exclude_labels: list[str] | None = None,
+        allowed_positions: tuple[str, ...] | list[str] = JOB51_CONFIGURED_POSITIONS,
+    ) -> dict:
+        exclude_labels = exclude_labels or []
+        excluded_keys = [compact_conversation_label(item) for item in exclude_labels if compact_conversation_label(item)]
+        excluded_names = [recruiter_candidate_name_from_label(item) for item in exclude_labels if recruiter_candidate_name_from_label(item)]
+        excluded_prefixes = [item[:32] for item in excluded_keys if len(item) >= 6]
+        allowed_clean = [clean_applied_position(item) for item in allowed_positions if clean_applied_position(item)]
         page = terminal.current_page()
-        result = safe_eval(page, """() => {
-          const el = document.querySelector('#conversation-list');
-          if (!el) return { scrolled: false, reason: 'missing_list' };
-          const before = el.scrollTop || 0;
-          el.scrollTop = before + Math.max(260, Math.floor((el.clientHeight || 500) * 0.85));
-          el.dispatchEvent(new Event('scroll', { bubbles: true }));
-          return { scrolled: Math.abs((el.scrollTop || 0) - before) > 2, before, after: el.scrollTop || 0 };
-        }""")
-        page.wait_for_timeout(random.randint(520, 860))
+        rows = page.locator("#conversation-list .list-item")
+        try:
+            count = rows.count()
+        except Exception:
+            count = 0
+        viewport = page.viewport_size or {"width": 1280, "height": 720}
+        viewport_height = int(viewport.get("height") or 720)
+        viewport_width = int(viewport.get("width") or 1280)
+        summary = {
+            "visibleRows": 0,
+            "actionableCount": 0,
+            "excludedCount": 0,
+            "platformCount": 0,
+            "readOrSentCount": 0,
+            "filteredPositionCount": 0,
+            "labels": [],
+            "actionableLabels": [],
+        }
+        for index in range(count):
+            row = rows.nth(index)
+            try:
+                box = row.bounding_box(timeout=500)
+            except Exception:
+                box = None
+            if not box:
+                continue
+            if (
+                float(box.get("width") or 0) < 120
+                or float(box.get("height") or 0) < 35
+                or float(box.get("x") or 0) > min(760, viewport_width * 0.58)
+                or float(box.get("y") or 0) < 80
+                or float(box.get("y") or 0) > viewport_height - 24
+                or float(box.get("y") or 0) + float(box.get("height") or 0) < 120
+            ):
+                continue
+            try:
+                label = safe_text(row.inner_text(timeout=500), 300)
+            except Exception:
+                continue
+            if not label:
+                continue
+            summary["visibleRows"] += 1
+            if len(summary["labels"]) < 12:
+                summary["labels"].append(safe_text(label, 120))
+            if "平台推荐" in label or "为你推荐的人才" in label:
+                summary["platformCount"] += 1
+                continue
+            if re.search(r"\[(送达|已读)\]", label):
+                summary["readOrSentCount"] += 1
+                continue
+            label_key = compact_conversation_label(label)
+            label_name = recruiter_candidate_name_from_label(label)
+            label_prefix = label_key[:32]
+            if any(item and (item in label_key or label_key[:80] in item) for item in excluded_keys):
+                summary["excludedCount"] += 1
+                continue
+            if label_name and label_name in excluded_names:
+                summary["excludedCount"] += 1
+                continue
+            if label_prefix and any(prefix and label_prefix.startswith(prefix[:18]) for prefix in excluded_prefixes):
+                summary["excludedCount"] += 1
+                continue
+            job = safe_text(safe_eval(page, f"""() => {{
+              const row = document.querySelectorAll('#conversation-list .list-item')[{index}];
+              const node = row ? row.querySelector('.jobname') : null;
+              return node ? String(node.innerText || node.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+            }}""") or "", 100)
+            if not job and re.search(r"\[(平台推荐|推荐)\]", label):
+                summary["platformCount"] += 1
+                continue
+            clean_job = clean_applied_position(job or label)
+            clean_label = clean_applied_position(label)
+            if allowed_clean and not any(
+                pos in clean_job
+                or clean_job in pos
+                or pos in clean_label
+                or job51_position_label_matches(clean_job, pos)
+                or job51_position_label_matches(clean_label, pos)
+                for pos in allowed_clean
+            ):
+                summary["filteredPositionCount"] += 1
+                continue
+            summary["actionableCount"] += 1
+            if len(summary["actionableLabels"]) < 8:
+                summary["actionableLabels"].append(safe_text(label, 120))
+        return summary
+
+    def job51_scroll_conversation_list(self, terminal: BrowserTerminal, direction: int = 1) -> dict:
+        page = terminal.current_page()
+        token = f"codex_job51_scroll_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+        try:
+            result = page.evaluate(
+                r"""({ direction, token }) => {
+                  const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+                  const visible = el => {
+                    if (!el || !el.isConnected) return false;
+                    const box = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return box.width > 80 && box.height > 35 && box.bottom > 0 && box.right > 0
+                      && box.top < window.innerHeight && box.left < window.innerWidth
+                      && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') > 0.02;
+                  };
+                  const canScroll = el => {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    const overflow = style.overflowY || '';
+                    const cls = String(el.className || '');
+                    const id = String(el.id || '');
+                    return el.scrollHeight > el.clientHeight + 30
+                      && (/(auto|scroll|hidden)/.test(overflow)
+                        || /conversation|session|contact|chat|list|scroll|el-scrollbar/i.test(cls + ' ' + id));
+                  };
+                  const rect = el => {
+                    const box = el.getBoundingClientRect();
+                    return { x: Math.round(box.x), y: Math.round(box.y), width: Math.round(box.width), height: Math.round(box.height) };
+                  };
+                  const rowSignature = () => Array.from(document.querySelectorAll('#conversation-list .list-item'))
+                    .filter(visible)
+                    .slice(0, 14)
+                    .map(row => normalize(row.innerText || row.textContent || '').slice(0, 90))
+                    .join('|');
+                  const rows = Array.from(document.querySelectorAll('#conversation-list .list-item')).filter(row => {
+                    if (!visible(row)) return false;
+                    const box = row.getBoundingClientRect();
+                    return box.x < Math.min(720, window.innerWidth * 0.55) && box.bottom > 40 && box.top < window.innerHeight - 10;
+                  });
+                  const findScrollableParent = start => {
+                    let cur = start || null;
+                    while (cur && cur !== document.body) {
+                      const box = cur.getBoundingClientRect();
+                      if (canScroll(cur) && box.width >= 160 && box.x < Math.min(760, window.innerWidth * 0.58)) return cur;
+                      cur = cur.parentElement;
+                    }
+                    return null;
+                  };
+                  let container = rows.length ? findScrollableParent(rows[0]) : null;
+                  if (!container) {
+                    const preferred = Array.from(document.querySelectorAll([
+                      '#conversation-list',
+                      '#conversation-list .el-scrollbar__wrap',
+                      '#conversation-list .el-scrollbar__view',
+                      '.el-scrollbar__wrap',
+                      '.conversation-list',
+                      '[class*="conversation" i]',
+                      '[class*="session" i]',
+                      '[class*="contact" i]',
+                      '[class*="chat-list" i]',
+                      '[class*="list" i]'
+                    ].join(','))).filter(el => {
+                      if (!visible(el) || !canScroll(el)) return false;
+                      const box = el.getBoundingClientRect();
+                      return box.width >= 160 && box.height >= 120 && box.x < Math.min(760, window.innerWidth * 0.58);
+                    });
+                    container = preferred[0] || null;
+                  }
+                  if (!container) {
+                    const fallbackBox = rows.length ? rect(rows[rows.length - 1]) : null;
+                    return {
+                      scrolled: false,
+                      prepared: false,
+                      reason: 'no_scroll_container',
+                      beforeSignature: rowSignature(),
+                      box: fallbackBox
+                    };
+                  }
+                  const before = container.scrollTop || 0;
+                  const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+                  const stepAbs = Math.max(260, Math.floor((container.clientHeight || 500) * (0.72 + Math.random() * 0.18)));
+                  const step = stepAbs * (direction >= 0 ? 1 : -1);
+                  const next = Math.max(0, Math.min(maxTop, before + step));
+                  container.setAttribute('data-codex-job51-scroll', token);
+                  container.setAttribute('data-codex-before-scroll-top', String(Math.round(before)));
+                  return {
+                    scrolled: false,
+                    prepared: true,
+                    before: Math.round(before),
+                    after: Math.round(before),
+                    plannedAfter: Math.round(next),
+                    amount: Math.round(step),
+                    maxTop: Math.round(maxTop),
+                    atEnd: before >= maxTop - 4,
+                    atTop: before <= 4,
+                    beforeSignature: rowSignature(),
+                    box: rect(container),
+                    token
+                  };
+                }""",
+                {"direction": direction, "token": token},
+            )
+        except Exception as error:
+            return {"scrolled": False, "error": safe_text(str(error), 160)}
+        if not isinstance(result, dict):
+            result = {"scrolled": False}
+        box = result.get("box") if isinstance(result.get("box"), dict) else None
+        if box and result.get("prepared"):
+            try:
+                amount = int(result.get("amount") or (direction * random.randint(320, 560)))
+                if terminal.humanize:
+                    humanized_scroll(terminal, amount, box=box, corrective=random.random() < 0.72)
+                else:
+                    page.evaluate(
+                        r"""({ token, amount }) => {
+                          const container = document.querySelector(`[data-codex-job51-scroll="${token}"]`);
+                          if (!container) return;
+                          const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+                          const next = Math.max(0, Math.min(maxTop, (container.scrollTop || 0) + amount));
+                          if (container.scrollTo) container.scrollTo({ top: next, behavior: 'smooth' });
+                          else container.scrollTop = next;
+                          container.dispatchEvent(new Event('scroll', { bubbles: true }));
+                        }""",
+                        {"token": token, "amount": amount},
+                    )
+                page.wait_for_timeout(random.randint(220, 420))
+                after = page.evaluate(
+                    r"""({ token, beforeSignature, plannedAfter }) => {
+                      const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+                      const visible = el => {
+                        if (!el || !el.isConnected) return false;
+                        const box = el.getBoundingClientRect();
+                        const style = window.getComputedStyle(el);
+                        return box.width > 80 && box.height > 35 && box.bottom > 0 && box.right > 0
+                          && box.top < window.innerHeight && box.left < window.innerWidth
+                          && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') > 0.02;
+                      };
+                      const signature = () => Array.from(document.querySelectorAll('#conversation-list .list-item'))
+                        .filter(visible)
+                        .slice(0, 14)
+                        .map(row => normalize(row.innerText || row.textContent || '').slice(0, 90))
+                        .join('|');
+                      const container = document.querySelector(`[data-codex-job51-scroll="${token}"]`);
+                      if (!container) return { found: false, afterSignature: signature() };
+                      const top = container.scrollTop || 0;
+                      const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+                      const afterSignature = signature();
+                      return {
+                        found: true,
+                        after: Math.round(top),
+                        maxTop: Math.round(maxTop),
+                        atEnd: top >= maxTop - 4,
+                        atTop: top <= 4,
+                        plannedAfter: Math.round(plannedAfter || top),
+                        afterSignature,
+                        signatureChanged: !!beforeSignature && beforeSignature !== afterSignature
+                      };
+                    }""",
+                    {
+                        "token": token,
+                        "beforeSignature": result.get("beforeSignature"),
+                        "plannedAfter": result.get("plannedAfter"),
+                    },
+                )
+                if isinstance(after, dict) and after.get("found"):
+                    before = int(result.get("before") or 0)
+                    actual_after = int(after.get("after") or before)
+                    result.update({
+                        "after": actual_after,
+                        "maxTop": after.get("maxTop", result.get("maxTop")),
+                        "atEnd": bool(after.get("atEnd")),
+                        "atTop": bool(after.get("atTop")),
+                        "afterSignature": after.get("afterSignature"),
+                        "signatureChanged": bool(after.get("signatureChanged")),
+                        "scrolled": abs(actual_after - before) > 4 or bool(after.get("signatureChanged")),
+                        "mode": "human_wheel" if terminal.humanize else "direct_scroll",
+                    })
+                if not result.get("scrolled"):
+                    fallback = page.evaluate(
+                        r"""({ token, plannedAfter, beforeSignature }) => {
+                          const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+                          const visible = el => {
+                            if (!el || !el.isConnected) return false;
+                            const box = el.getBoundingClientRect();
+                            const style = window.getComputedStyle(el);
+                            return box.width > 80 && box.height > 35 && box.bottom > 0 && box.right > 0
+                              && box.top < window.innerHeight && box.left < window.innerWidth
+                              && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') > 0.02;
+                          };
+                          const signature = () => Array.from(document.querySelectorAll('#conversation-list .list-item'))
+                            .filter(visible)
+                            .slice(0, 14)
+                            .map(row => normalize(row.innerText || row.textContent || '').slice(0, 90))
+                            .join('|');
+                          const container = document.querySelector(`[data-codex-job51-scroll="${token}"]`);
+                          if (!container) return { scrolled: false, reason: 'missing_container', afterSignature: signature() };
+                          const before = container.scrollTop || 0;
+                          const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+                          const next = Math.max(0, Math.min(maxTop, Number(plannedAfter || before)));
+                          if (container.scrollTo) container.scrollTo({ top: next, behavior: 'smooth' });
+                          else container.scrollTop = next;
+                          container.dispatchEvent(new Event('scroll', { bubbles: true }));
+                          const afterSignature = signature();
+                          return {
+                            scrolled: Math.abs(next - before) > 4 || (!!beforeSignature && beforeSignature !== afterSignature),
+                            before: Math.round(before),
+                            after: Math.round(next),
+                            maxTop: Math.round(maxTop),
+                            atEnd: next >= maxTop - 4,
+                            atTop: next <= 4,
+                            afterSignature,
+                            signatureChanged: !!beforeSignature && beforeSignature !== afterSignature,
+                            mode: 'dom_fallback'
+                          };
+                        }""",
+                        {
+                            "token": token,
+                            "plannedAfter": result.get("plannedAfter"),
+                            "beforeSignature": result.get("beforeSignature"),
+                        },
+                    )
+                    if isinstance(fallback, dict):
+                        result.update(fallback)
+            except Exception as error:
+                result["scrollError"] = safe_text(str(error), 160)
+        elif box:
+            try:
+                before_signature = str(result.get("beforeSignature") or "")
+                humanized_scroll(terminal, direction * random.randint(320, 560), box=box, corrective=random.random() < 0.6)
+                page.wait_for_timeout(random.randint(220, 420))
+                after_signature = safe_eval(page, r"""() => {
+                  const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+                  const visible = el => {
+                    const box = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return box.width > 80 && box.height > 35 && box.bottom > 0 && box.right > 0
+                      && box.top < window.innerHeight && box.left < window.innerWidth
+                      && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') > 0.02;
+                  };
+                  return Array.from(document.querySelectorAll('#conversation-list .list-item'))
+                    .filter(visible)
+                    .slice(0, 14)
+                    .map(row => normalize(row.innerText || row.textContent || '').slice(0, 90))
+                    .join('|');
+                }""")
+                result.update({
+                    "afterSignature": after_signature,
+                    "signatureChanged": bool(before_signature and after_signature and before_signature != after_signature),
+                    "scrolled": bool(before_signature and after_signature and before_signature != after_signature),
+                    "mode": "wheel_without_container",
+                })
+            except Exception as error:
+                result["scrollError"] = safe_text(str(error), 160)
+        try:
+            page.locator("[data-codex-job51-scroll]").evaluate_all("els => els.forEach(el => { el.removeAttribute('data-codex-job51-scroll'); el.removeAttribute('data-codex-before-scroll-top'); })")
+        except Exception:
+            pass
+        try:
+            page.wait_for_timeout(random.randint(620, 1050) if result.get("scrolled") else random.randint(420, 760))
+        except Exception:
+            pass
+        return result
+
+    def job51_scroll_conversation_list_to_top(self, terminal: BrowserTerminal) -> dict:
+        page = terminal.current_page()
+        token = f"codex_job51_scroll_top_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+        try:
+            result = page.evaluate(
+                r"""({ token }) => {
+                  const visible = el => {
+                    if (!el || !el.isConnected) return false;
+                    const box = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return box.width > 80 && box.height > 35 && box.bottom > 0 && box.right > 0
+                      && box.top < window.innerHeight && box.left < window.innerWidth
+                      && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') > 0.02;
+                  };
+                  const canScroll = el => {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    const overflow = style.overflowY || '';
+                    const cls = String(el.className || '');
+                    const id = String(el.id || '');
+                    return el.scrollHeight > el.clientHeight + 30
+                      && (/(auto|scroll|hidden)/.test(overflow)
+                        || /conversation|session|contact|chat|list|scroll|el-scrollbar/i.test(cls + ' ' + id));
+                  };
+                  const rows = Array.from(document.querySelectorAll('#conversation-list .list-item')).filter(visible);
+                  const findScrollableParent = start => {
+                    let cur = start || null;
+                    while (cur && cur !== document.body) {
+                      const box = cur.getBoundingClientRect();
+                      if (canScroll(cur) && box.width >= 160 && box.x < Math.min(760, window.innerWidth * 0.58)) return cur;
+                      cur = cur.parentElement;
+                    }
+                    return null;
+                  };
+                  let container = rows.length ? findScrollableParent(rows[0]) : null;
+                  if (!container) {
+                    const preferred = Array.from(document.querySelectorAll([
+                      '#conversation-list',
+                      '#conversation-list .el-scrollbar__wrap',
+                      '.el-scrollbar__wrap',
+                      '.conversation-list',
+                      '[class*="conversation" i]',
+                      '[class*="session" i]',
+                      '[class*="contact" i]',
+                      '[class*="chat-list" i]',
+                      '[class*="list" i]'
+                    ].join(','))).filter(el => {
+                      if (!visible(el) || !canScroll(el)) return false;
+                      const box = el.getBoundingClientRect();
+                      return box.width >= 160 && box.height >= 120 && box.x < Math.min(760, window.innerWidth * 0.58);
+                    });
+                    container = preferred[0] || null;
+                  }
+                  if (!container) return { scrolled: false, reason: 'no_scroll_container' };
+                  const before = container.scrollTop || 0;
+                  container.setAttribute('data-codex-job51-scroll-top', token);
+                  if (container.scrollTo) container.scrollTo({ top: 0, behavior: 'auto' });
+                  else container.scrollTop = 0;
+                  container.dispatchEvent(new Event('scroll', { bubbles: true }));
+                  return {
+                    scrolled: Math.abs((container.scrollTop || 0) - before) > 4,
+                    before: Math.round(before),
+                    after: Math.round(container.scrollTop || 0),
+                    maxTop: Math.round(Math.max(0, container.scrollHeight - container.clientHeight)),
+                    atTop: (container.scrollTop || 0) <= 4
+                  };
+                }""",
+                {"token": token},
+            )
+        except Exception as error:
+            return {"scrolled": False, "error": safe_text(str(error), 160)}
+        try:
+            page.wait_for_timeout(random.randint(520, 860))
+        except Exception:
+            pass
         return result if isinstance(result, dict) else {"scrolled": False}
 
     def job51_wait_chat_ready(self, terminal: BrowserTerminal, timeout_ms: int = 5000) -> bool:

@@ -545,9 +545,20 @@ def compact_recruiter_resume_result(resume: dict | None) -> dict:
 def classify_recruiter_screen_result_action(result: dict) -> str:
     screening = result.get("screening") if isinstance(result.get("screening"), dict) else {}
     status = str(screening.get("status") or "")
-    if result.get("blocked"):
-        return "blocked"
     resume = result.get("resume") if isinstance(result.get("resume"), dict) else {}
+    if result.get("blocked"):
+        sent = result.get("sent") if isinstance(result.get("sent"), dict) else {}
+        if sent:
+            if result.get("positionScreening"):
+                return "sent_position_screening"
+            if sent.get("send") or sent.get("verification") or "已触发" in str(sent.get("message") or "") or "已点击" in str(sent.get("message") or ""):
+                return "sent_basic_conditions"
+            return "basic_conditions_send_blocked"
+        if resume and result.get("knowledgeAnswer"):
+            return "knowledge_answered_resume_blocked"
+        if resume:
+            return "accepted_resume_blocked"
+        return "blocked"
     resume_skipped = bool(resume.get("skipped") and resume.get("skipReason") in {"already_requested", "resume_attachment_received"})
     resume_downloaded = bool(result.get("downloaded") or resume.get("downloaded"))
     if resume_downloaded and result.get("knowledgeAnswer"):

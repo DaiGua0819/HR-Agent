@@ -28,6 +28,7 @@
                 options = payload.get("options")
                 if isinstance(options, dict):
                     SERVICE.set_options(options)
+                SERVICE.set_pause(False, "开始 51job 消息处理前自动解除暂停")
                 timing = SERVICE.start_operation_timing("chat", "51job处理全部未读消息")
                 raw_max_total = payload.get("maxTotal", payload.get("count", 40))
                 max_total = int(raw_max_total if raw_max_total is not None else 40)
@@ -54,6 +55,7 @@
                 options = payload.get("options")
                 if isinstance(options, dict):
                     SERVICE.set_options(options)
+                SERVICE.set_pause(False, "开始 51job 主动联系前自动解除暂停")
                 timing = SERVICE.start_operation_timing("chat", "51job主动联系预览")
                 max_total = int(payload.get("maxTotal") or payload.get("count") or 10)
                 timeout_seconds = max(90, min(420, max_total * 35 + 60))
@@ -89,6 +91,7 @@
                 options = payload.get("options")
                 if isinstance(options, dict):
                     SERVICE.set_options(options)
+                SERVICE.set_pause(False, "开始智联消息处理前自动解除暂停")
                 timing = SERVICE.start_operation_timing("chat", "智联处理全部未读消息")
                 raw_max_total = payload.get("maxTotal", payload.get("count", 40))
                 max_total = int(raw_max_total if raw_max_total is not None else 40)
@@ -113,6 +116,7 @@
                 options = payload.get("options")
                 if isinstance(options, dict):
                     SERVICE.set_options(options)
+                SERVICE.set_pause(False, "开始智联主动联系前自动解除暂停")
                 result = SERVICE.with_zhilian_terminal(
                     lambda zhilian_terminal: SERVICE.zhilian_proactive_contact_recommended_candidates(
                         zhilian_terminal,
