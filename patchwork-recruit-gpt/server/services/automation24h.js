@@ -280,24 +280,33 @@ function createAutomation24hScheduler({
     }).catch((error) => ({ error: error.message || "暂停信号发送失败" }));
   }
 
+  function targetMaxTotalPerRound(target) {
+    if (target.platform === "zhilian") {
+      const zhilianLimit = normalizeCount(process.env.AUTOMATION_24H_ZHILIAN_MAX_TOTAL, 8);
+      return Math.max(1, Math.min(maxTotalPerRound, zhilianLimit));
+    }
+    return maxTotalPerRound;
+  }
+
   function targetProcessRequest(target) {
+    const maxTotal = targetMaxTotalPerRound(target);
     if (target.platform === "51job") {
       return {
         path: "/api/51job/process-messages",
-        body: { accountId: target.accountId, maxTotal: maxTotalPerRound },
+        body: { accountId: target.accountId, maxTotal },
         timeoutMs: 5400000,
       };
     }
     if (target.platform === "zhilian") {
       return {
         path: "/api/zhilian/process-messages",
-        body: { accountId: target.accountId, maxTotal: maxTotalPerRound },
+        body: { accountId: target.accountId, maxTotal },
         timeoutMs: 5400000,
       };
     }
     return {
       path: "/api/recruiter/process-messages",
-      body: { accountId: target.accountId, maxTotal: maxTotalPerRound },
+      body: { accountId: target.accountId, maxTotal },
       timeoutMs: 5400000,
     };
   }
