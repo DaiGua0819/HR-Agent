@@ -808,7 +808,7 @@ async function toggleAutomation24h() {
   if (!button) return;
   const current = await refreshAutomation24hStatus({ silent: true });
   if (automation24hIsActive(current)) {
-    const confirmed = window.confirm("确认中断24小时自动运转？当前候选人处理完后会停止，不会关闭浏览器和agent。");
+    const confirmed = window.confirm("确认中断24小时自动运转？当前候选人处理完后会停止，并关闭对应浏览器和 agent。");
     if (!confirmed) return;
     button.disabled = true;
     try {

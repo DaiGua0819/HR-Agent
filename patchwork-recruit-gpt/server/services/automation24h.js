@@ -118,7 +118,13 @@ function buildLogMessage(entry) {
     return `${time} 第${entry.cycle}大轮处理完成，等待 ${Math.round((entry.delayMs || 0) / 60000)} 分钟`;
   }
   if (entry.event === "stop_requested") {
-    return `${time} 已请求停止24小时自动运转，当前候选人处理完后停止`;
+    return `${time} 已请求停止24小时自动运转，当前候选人处理完后关闭对应浏览器和 agent`;
+  }
+  if (entry.event === "target_runtime_closed") {
+    return `${time} ${label} 浏览器和 agent 已关闭`;
+  }
+  if (entry.event === "target_runtime_close_failed") {
+    return `${time} ${label} 浏览器或 agent 关闭失败：${entry.error || "未知原因"}`;
   }
   return `${time} ${label} ${entry.message || entry.event || "状态更新"}`;
 }
@@ -452,35 +458,41 @@ function createAutomation24hScheduler({
         error: error.message || "处理失败",
       });
     } finally {
-      if (!state.stopRequested) {
-        try {
-          const cleanup = await cleanupFinishedTarget(target);
-          await appendLog({
-            event: "target_agent_closed",
-            targetId: target.id,
-            targetLabel: target.label,
-            platform: target.platform,
-            platformLabel: target.platformLabel,
-            accountId: target.accountId,
-            accountName: target.accountName,
-            sourceKey: target.sourceKey,
-            cleanup,
-            message: `${chinaTimeText()} ${target.label} agent进程已关闭，浏览器保持打开`,
-          });
-        } catch (cleanupError) {
-          await appendLog({
-            event: "target_agent_close_failed",
-            targetId: target.id,
-            targetLabel: target.label,
-            platform: target.platform,
-            platformLabel: target.platformLabel,
-            accountId: target.accountId,
-            accountName: target.accountName,
-            sourceKey: target.sourceKey,
-            error: cleanupError.message || "agent进程关闭失败",
-            message: `${chinaTimeText()} ${target.label} agent进程关闭失败：${cleanupError.message || "未知原因"}`,
-          });
+      try {
+        const cleanup = await cleanupFinishedTarget(target);
+        if (cleanup && cleanup.ok === false) {
+          const cleanupErrors = [
+            cleanup.error,
+            cleanup.browser?.errors,
+            cleanup.agent?.errors,
+          ].flat().filter(Boolean).join("；");
+          throw new Error(cleanupErrors || "浏览器或 agent 关闭失败");
         }
+        await appendLog({
+          event: "target_runtime_closed",
+          targetId: target.id,
+          targetLabel: target.label,
+          platform: target.platform,
+          platformLabel: target.platformLabel,
+          accountId: target.accountId,
+          accountName: target.accountName,
+          sourceKey: target.sourceKey,
+          cleanup,
+          message: `${chinaTimeText()} ${target.label} 浏览器和 agent 已关闭`,
+        });
+      } catch (cleanupError) {
+        await appendLog({
+          event: "target_runtime_close_failed",
+          targetId: target.id,
+          targetLabel: target.label,
+          platform: target.platform,
+          platformLabel: target.platformLabel,
+          accountId: target.accountId,
+          accountName: target.accountName,
+          sourceKey: target.sourceKey,
+          error: cleanupError.message || "浏览器或 agent 关闭失败",
+          message: `${chinaTimeText()} ${target.label} 浏览器或 agent 关闭失败：${cleanupError.message || "未知原因"}`,
+        });
       }
     }
   }
@@ -562,7 +574,7 @@ function createAutomation24hScheduler({
     state.stopRequested = true;
     state.stopping = true;
     state.status = "stopping";
-    state.message = "停止中，当前候选人处理完后停止";
+    state.message = "停止中，当前候选人处理完后关闭对应浏览器和 agent";
     updateSummary();
     await appendLog({ event: "stop_requested", reason });
     const running = state.targets.filter((target) => target.status === "running" || target.status === "stopping");

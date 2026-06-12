@@ -145,8 +145,21 @@ const automation24hScheduler = createAutomation24hScheduler({
     };
   },
   async cleanupTarget(target) {
-    if (!target.agentPort) return { ok: true, skipped: true, reason: "agent_port_missing" };
-    return stopAutomationLocalPort(target.agentPort, "agent");
+    const [browser, agent] = await Promise.all([
+      target.cdpPort
+        ? stopAutomationLocalPort(target.cdpPort, "browser")
+        : Promise.resolve({ ok: true, kind: "browser", skipped: true, reason: "browser_port_missing" }),
+      target.agentPort
+        ? stopAutomationLocalPort(target.agentPort, "agent")
+        : Promise.resolve({ ok: true, kind: "agent", skipped: true, reason: "agent_port_missing" }),
+    ]);
+    return {
+      ok: Boolean(browser.ok && agent.ok),
+      cdpPort: target.cdpPort || 0,
+      agentPort: target.agentPort || 0,
+      browser,
+      agent,
+    };
   },
 });
 
