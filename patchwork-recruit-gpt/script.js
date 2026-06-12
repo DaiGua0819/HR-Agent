@@ -8,7 +8,7 @@
     "./src/client/batch/imports.js",
     "./src/client/core/init.js",
   ];
-  const VERSION = "20260612-close-browser-on-stop";
+  const VERSION = "20260612-pdf-left-click-open";
   const statusNode = document.querySelector("#statusPill");
 
   async function loadClient() {

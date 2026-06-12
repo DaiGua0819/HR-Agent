@@ -221,6 +221,23 @@ async function copyActiveResumePdf() {
   }
 }
 
+function openActiveResumePdf(pdfUrl = "") {
+  if (!activeDetailResume?.id || !activeDetailResume?.hasPdf) {
+    setPdfCopyStatus("没有可下载的 PDF", "is-error");
+    return;
+  }
+  const url = pdfUrl || `/api/resumes/${activeDetailResume.id}/pdf?t=${Date.now()}`;
+  const link = document.createElement("a");
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.download = activeDetailResume.fileName || "resume.pdf";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setPdfCopyStatus(activeDetailResume.fileName ? `已打开 PDF：${activeDetailResume.fileName}` : "已打开 PDF", "is-done");
+}
+
 function openActiveResumeConversationFromPdf(event) {
   event?.preventDefault?.();
   event?.stopPropagation?.();
@@ -268,7 +285,7 @@ async function renderPdfPreview(pdfUrl) {
       const ratio = window.devicePixelRatio || 1;
 
       canvas.className = "pdf-page-canvas";
-      canvas.title = "左键复制 PDF；右键查看聊天记录";
+      canvas.title = "左键打开/下载 PDF；右键查看聊天记录";
       canvas.width = Math.floor(viewport.width * ratio);
       canvas.height = Math.floor(viewport.height * ratio);
       canvas.style.width = `${Math.floor(viewport.width)}px`;
@@ -277,7 +294,7 @@ async function renderPdfPreview(pdfUrl) {
 
       elements.pdfPages.appendChild(canvas);
       await page.render({ canvasContext: context, viewport }).promise;
-      canvas.addEventListener("click", copyActiveResumePdf);
+      canvas.addEventListener("click", () => openActiveResumePdf(pdfUrl));
       canvas.addEventListener("contextmenu", openActiveResumeConversationFromPdf);
     }
   } catch (error) {
@@ -302,8 +319,9 @@ function renderPdfFallback(pdfUrl, message) {
   link.href = pdfUrl;
   link.target = "_blank";
   link.rel = "noopener";
+  link.download = activeDetailResume?.fileName || "resume.pdf";
   link.textContent = "打开原始 PDF";
-  link.title = "左键打开原始 PDF；右键查看聊天记录";
+  link.title = "左键打开/下载原始 PDF；右键查看聊天记录";
   link.addEventListener("contextmenu", openActiveResumeConversationFromPdf);
 
   const frame = document.createElement("iframe");
