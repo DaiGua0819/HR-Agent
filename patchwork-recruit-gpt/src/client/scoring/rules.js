@@ -652,12 +652,98 @@ async function openResumeConversation(id, triggerButton = null) {
   }
 }
 
-async function loadResumeList() {
-  const payload = await requestJson("/api/resumes");
-  const resumes = payload.resumes || [];
-  resumeCache = resumes;
+const RESUME_LIST_SESSION_CACHE_KEY = "resumeAgent.resumeList.session.v1";
+const RESUME_LIST_SESSION_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+let resumeListCacheSignature = "";
+
+function createResumeListCacheSignature(resumes = []) {
+  const list = Array.isArray(resumes) ? resumes : [];
+  return [
+    list.length,
+    ...list.map((resume) =>
+      [
+        resume.id || "",
+        resume.updatedAt || "",
+        resume.matchScore ?? "",
+        resume.hasPdf ? "1" : "0",
+        resume.feedback?.updatedAt || "",
+        resume.feedback?.decision || "",
+      ].join(":")
+    ),
+  ].join("|");
+}
+
+function readResumeListSessionCache() {
+  try {
+    if (typeof window === "undefined" || !window.sessionStorage) return null;
+    const raw = window.sessionStorage.getItem(RESUME_LIST_SESSION_CACHE_KEY);
+    if (!raw) return null;
+    const payload = JSON.parse(raw);
+    if (!payload || !Array.isArray(payload.resumes)) return null;
+    const cachedAt = Number(payload.cachedAt || 0);
+    if (cachedAt && Date.now() - cachedAt > RESUME_LIST_SESSION_CACHE_TTL_MS) {
+      window.sessionStorage.removeItem(RESUME_LIST_SESSION_CACHE_KEY);
+      return null;
+    }
+    return {
+      resumes: payload.resumes,
+      cacheSignature: payload.cacheSignature || createResumeListCacheSignature(payload.resumes),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeResumeListSessionCache(resumes = [], cacheSignature = "") {
+  try {
+    if (typeof window === "undefined" || !window.sessionStorage) return;
+    const list = Array.isArray(resumes) ? resumes : [];
+    window.sessionStorage.setItem(
+      RESUME_LIST_SESSION_CACHE_KEY,
+      JSON.stringify({
+        cachedAt: Date.now(),
+        cacheSignature: cacheSignature || createResumeListCacheSignature(list),
+        resumes: list,
+      })
+    );
+  } catch {
+    // The resume list can exceed browser storage limits; backend cache still speeds up reloads.
+  }
+}
+
+function applyResumeList(resumes = [], cacheSignature = "") {
+  const list = Array.isArray(resumes) ? resumes : [];
+  const nextSignature = cacheSignature || createResumeListCacheSignature(list);
+  if (resumeListCacheSignature && nextSignature === resumeListCacheSignature) {
+    resumeCache = list;
+    return false;
+  }
+  resumeCache = list;
+  resumeListCacheSignature = nextSignature;
   refreshResumeView();
-  return resumes;
+  return true;
+}
+
+async function loadResumeList(options = {}) {
+  const cachedSnapshot = options.skipSessionCache ? null : readResumeListSessionCache();
+  if (cachedSnapshot) {
+    applyResumeList(cachedSnapshot.resumes, cachedSnapshot.cacheSignature);
+  }
+
+  try {
+    const payload = await requestJson("/api/resumes");
+    const resumes = Array.isArray(payload.resumes) ? payload.resumes : [];
+    const cacheSignature = payload.cacheSignature || createResumeListCacheSignature(resumes);
+    applyResumeList(resumes, cacheSignature);
+    writeResumeListSessionCache(resumes, cacheSignature);
+    return resumes;
+  } catch (error) {
+    if (cachedSnapshot) {
+      console.warn("Resume list refresh failed; using session cache.", error);
+      return cachedSnapshot.resumes;
+    }
+    throw error;
+  }
 }
 
 async function deleteResumeRecord(resume) {

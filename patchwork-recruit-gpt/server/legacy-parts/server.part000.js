@@ -207,6 +207,7 @@ const GPT_TEXT_TIMEOUT_MS = Number(process.env.GPT_TEXT_TIMEOUT_MS || process.en
 let feishuTokenCache = null;
 let sqliteDb = null;
 let databaseInitialized = false;
+let resumeListResponseCache = null;
 const batchWorkers = new Map();
 const BOSS_IMPORT_DONE_STATUSES = new Set(["saved", "duplicate"]);
 const BOSS_IMPORT_SKIP_STATUSES = new Set(["pending", "parsing", "saved", "duplicate"]);
@@ -932,6 +933,39 @@ function runSqlTransaction(task) {
   }
 }
 
+function invalidateResumeListResponseCache() {
+  resumeListResponseCache = null;
+}
+
+function getResumeDatabaseFingerprint() {
+  const db = getDb();
+  const row = db.prepare("SELECT COUNT(*) AS total, MAX(updated_at) AS latestUpdatedAt FROM resumes").get() || {};
+  const fileMarkers = [SQLITE_DB_PATH, `${SQLITE_DB_PATH}-wal`]
+    .map((filePath) => {
+      try {
+        const stat = fsSync.statSync(filePath);
+        return `${stat.size}:${Math.trunc(stat.mtimeMs)}`;
+      } catch {
+        return "missing";
+      }
+    })
+    .join("|");
+  return `${row.total || 0}:${row.latestUpdatedAt || ""}:${fileMarkers}`;
+}
+
+function getCachedResumeListResponse() {
+  if (!resumeListResponseCache) return null;
+  const fingerprint = getResumeDatabaseFingerprint();
+  return resumeListResponseCache.fingerprint === fingerprint ? resumeListResponseCache.payload : null;
+}
+
+function setCachedResumeListResponse(payload) {
+  resumeListResponseCache = {
+    fingerprint: getResumeDatabaseFingerprint(),
+    payload,
+  };
+}
+
 function upsertResumeRow(record) {
   const db = getDb();
   db.prepare(`
@@ -1248,6 +1282,7 @@ async function writeDatabase(records) {
     db.prepare("DELETE FROM resumes").run();
     uniqueRecords.forEach(upsertResumeRow);
   });
+  invalidateResumeListResponseCache();
 }
 
 function backfillPositionRuleScores() {

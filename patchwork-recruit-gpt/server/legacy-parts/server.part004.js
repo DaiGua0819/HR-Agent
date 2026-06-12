@@ -1048,7 +1048,30 @@ function startJob51ResumeAutoImport() {
   );
 }
 
+function createResumeListCacheSignature(resumes = []) {
+  return [
+    resumes.length,
+    ...resumes.map((resume) =>
+      [
+        resume.id || "",
+        resume.updatedAt || "",
+        resume.matchScore ?? "",
+        resume.hasPdf ? "1" : "0",
+        resume.feedback?.updatedAt || "",
+        resume.feedback?.decision || "",
+      ].join(":")
+    ),
+  ].join("|");
+}
+
 async function handleListResumes(_request, response) {
+  await ensureDatabase();
+  const cachedPayload = getCachedResumeListResponse();
+  if (cachedPayload) {
+    sendJson(response, 200, { ...cachedPayload, cached: true });
+    return;
+  }
+
   const records = await readDatabase();
   const resumes = getUniqueCandidateRecords(records)
     .map(publicRecord)
@@ -1057,7 +1080,13 @@ async function handleListResumes(_request, response) {
       if (scoreDiff !== 0) return scoreDiff;
       return String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""));
     });
-  sendJson(response, 200, { resumes });
+  const payload = {
+    resumes,
+    cacheSignature: createResumeListCacheSignature(resumes),
+    generatedAt: new Date().toISOString(),
+  };
+  setCachedResumeListResponse(payload);
+  sendJson(response, 200, { ...payload, cached: false });
 }
 
 async function handleCreateResume(request, response) {
