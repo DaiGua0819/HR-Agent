@@ -107,6 +107,22 @@
                 </div>
                 <section class="automation-24h-panel" id="automation24hPanel">
                   <button class="automation-24h-button" type="button" id="automation24hToggleBtn">24小时自动运转</button>
+                  <div class="automation-24h-settings">
+                    <label>
+                      <span>等待间隔</span>
+                      <input id="automation24hDelayInput" type="number" min="1" max="1440" step="1" value="15" />
+                      <span>分钟</span>
+                    </label>
+                    <label>
+                      <span>运行时间</span>
+                      <input id="automation24hStartInput" type="time" value="06:00" />
+                    </label>
+                    <label>
+                      <span>至</span>
+                      <input id="automation24hEndInput" type="time" value="23:00" />
+                    </label>
+                    <button class="automation-24h-save" type="button" id="automation24hSaveSettingsBtn">保存设置</button>
+                  </div>
                   <div class="automation-24h-summary" id="automation24hSummary">未启动</div>
                   <div class="automation-24h-targets" id="automation24hTargets" aria-live="polite"></div>
                   <div class="automation-24h-log-head">

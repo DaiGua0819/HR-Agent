@@ -666,7 +666,7 @@ async function oneClickLaunchAutomationBrowserJobMode() {
 
 function automation24hIsActive(payload = automation24hLastStatus) {
   if (!payload) return false;
-  return Boolean(payload.active || payload.stopping || ["running", "waiting", "stopping"].includes(payload.status));
+  return Boolean(payload.active || payload.stopping || ["running", "waiting", "stopping", "outside_window", "outside_window_stopping"].includes(payload.status));
 }
 
 function automation24hStatusLabel(status) {
@@ -674,6 +674,8 @@ function automation24hStatusLabel(status) {
     waiting: "等待",
     running: "处理中",
     stopping: "停止中",
+    outside_window: "时间段外等待",
+    outside_window_stopping: "时间段外暂停中",
     stopped: "已停止",
     completed: "已完成",
     failed: "异常",
@@ -685,11 +687,42 @@ function automation24hStatusLabel(status) {
   return labels[status] || status || "等待";
 }
 
+function automation24hRunningText() {
+  return `自动处理中${"。".repeat(automation24hDotCount || 1)}`;
+}
+
+function normalizeAutomation24hTimeInput(value, fallback) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return fallback;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return fallback;
+  }
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function renderAutomation24hSettings(payload = automation24hLastStatus) {
+  if (automation24hSettingsDirty) return;
+  const settings = payload?.settings || {};
+  if (elements.automation24hDelayInput && settings.cycleDelayMinutes != null) {
+    elements.automation24hDelayInput.value = String(Math.max(1, Math.min(1440, Number(settings.cycleDelayMinutes || 15))));
+  }
+  if (elements.automation24hStartInput && settings.activeStart) {
+    elements.automation24hStartInput.value = normalizeAutomation24hTimeInput(settings.activeStart, "06:00");
+  }
+  if (elements.automation24hEndInput && settings.activeEnd) {
+    elements.automation24hEndInput.value = normalizeAutomation24hTimeInput(settings.activeEnd, "23:00");
+  }
+}
+
 function renderAutomation24hStatus(payload = automation24hLastStatus) {
   if (!elements.automation24hToggleBtn || !elements.automation24hSummary || !elements.automation24hTargets) return;
+  renderAutomation24hSettings(payload);
   const active = automation24hIsActive(payload);
   const stopping = Boolean(payload?.stopping || payload?.status === "stopping");
-  elements.automation24hToggleBtn.textContent = stopping ? "停止中，当前候选人处理完后停止" : active ? "自动处理中。。。" : "24小时自动运转";
+  elements.automation24hToggleBtn.textContent = stopping ? "停止中，当前候选人处理完后停止" : active ? automation24hRunningText() : "24小时自动运转";
   elements.automation24hToggleBtn.classList.toggle("is-running", active && !stopping);
   elements.automation24hToggleBtn.classList.toggle("is-stopping", stopping);
 
@@ -785,17 +818,61 @@ async function refreshAutomation24hLogs() {
   }
 }
 
+function readAutomation24hSettingsFromInputs() {
+  const delayValue = Number(elements.automation24hDelayInput?.value || 15);
+  if (!Number.isFinite(delayValue) || delayValue < 1) {
+    throw new Error("等待间隔必须大于等于 1 分钟");
+  }
+  return {
+    cycleDelayMinutes: Math.min(1440, Math.floor(delayValue)),
+    activeStart: normalizeAutomation24hTimeInput(elements.automation24hStartInput?.value, "06:00"),
+    activeEnd: normalizeAutomation24hTimeInput(elements.automation24hEndInput?.value, "23:00"),
+  };
+}
+
+async function saveAutomation24hSettings({ silent = false } = {}) {
+  const button = elements.automation24hSaveSettingsBtn;
+  const settings = readAutomation24hSettingsFromInputs();
+  if (button) button.disabled = true;
+  try {
+    const payload = await requestJson("/api/automation-24h/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+    automation24hSettingsDirty = false;
+    automation24hLastStatus = payload;
+    renderAutomation24hStatus(payload);
+    if (!silent) {
+      setStatus(`24小时自动运转设置已保存：等待 ${settings.cycleDelayMinutes} 分钟，运行 ${settings.activeStart}-${settings.activeEnd}`, "is-done");
+    }
+    return payload;
+  } catch (error) {
+    console.error(error);
+    if (!silent) setStatus(error.message || "保存24小时自动运转设置失败");
+    throw error;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 function startAutomation24hMonitor() {
   if (elements.automation24hLogDateInput && !elements.automation24hLogDateInput.value) {
     elements.automation24hLogDateInput.value = getChinaDateKey();
   }
   window.clearInterval(automation24hStatusTimer);
   window.clearInterval(automation24hLogsTimer);
+  window.clearInterval(automation24hDotsTimer);
   refreshAutomation24hStatus({ silent: true }).catch(() => {});
   refreshAutomation24hLogs().catch(() => {});
   automation24hStatusTimer = window.setInterval(() => {
     refreshAutomation24hStatus({ silent: true }).catch(() => {});
   }, 3000);
+  automation24hDotsTimer = window.setInterval(() => {
+    if (!automation24hIsActive()) return;
+    automation24hDotCount = (automation24hDotCount % 3) + 1;
+    renderAutomation24hStatus();
+  }, 500);
   automation24hLogsTimer = window.setInterval(() => {
     if (automation24hIsActive() || elements.automation24hLogDateInput?.value === getChinaDateKey()) {
       refreshAutomation24hLogs().catch(() => {});
@@ -832,6 +909,7 @@ async function toggleAutomation24h() {
 
   button.disabled = true;
   try {
+    await saveAutomation24hSettings({ silent: true });
     const payload = await requestJson("/api/automation-24h/start", { method: "POST" });
     automation24hLastStatus = payload;
     renderAutomation24hStatus(payload);
@@ -1685,6 +1763,21 @@ elements.browserLaunchButtons?.forEach((button) => {
 });
 elements.oneClickLaunchBrowserBtn?.addEventListener("click", oneClickLaunchAutomationBrowserJobMode);
 elements.automation24hToggleBtn?.addEventListener("click", toggleAutomation24h);
+[
+  elements.automation24hDelayInput,
+  elements.automation24hStartInput,
+  elements.automation24hEndInput,
+].forEach((input) => {
+  input?.addEventListener("input", () => {
+    automation24hSettingsDirty = true;
+  });
+  input?.addEventListener("change", () => {
+    automation24hSettingsDirty = true;
+  });
+});
+elements.automation24hSaveSettingsBtn?.addEventListener("click", () => {
+  saveAutomation24hSettings().catch(() => {});
+});
 elements.automation24hLogDateInput?.addEventListener("change", () => {
   refreshAutomation24hLogs().catch((error) => console.warn(error));
 });

@@ -90,6 +90,10 @@ const elements = {
   bossBrowserSummary: document.querySelector("#bossBrowserSummary"),
   automation24hPanel: document.querySelector("#automation24hPanel"),
   automation24hToggleBtn: document.querySelector("#automation24hToggleBtn"),
+  automation24hDelayInput: document.querySelector("#automation24hDelayInput"),
+  automation24hStartInput: document.querySelector("#automation24hStartInput"),
+  automation24hEndInput: document.querySelector("#automation24hEndInput"),
+  automation24hSaveSettingsBtn: document.querySelector("#automation24hSaveSettingsBtn"),
   automation24hSummary: document.querySelector("#automation24hSummary"),
   automation24hTargets: document.querySelector("#automation24hTargets"),
   automation24hLogDateInput: document.querySelector("#automation24hLogDateInput"),
@@ -260,9 +264,12 @@ let batchPollTimer = 0;
 let automationBrowserStatusTimer = 0;
 let automation24hStatusTimer = 0;
 let automation24hLogsTimer = 0;
+let automation24hDotsTimer = 0;
+let automation24hDotCount = 1;
 let automation24hLastStatus = null;
 let automation24hStatusBusy = false;
 let automation24hLogsBusy = false;
+let automation24hSettingsDirty = false;
 let batchPage = 1;
 let recordsPage = 1;
 let resumeCache = [];

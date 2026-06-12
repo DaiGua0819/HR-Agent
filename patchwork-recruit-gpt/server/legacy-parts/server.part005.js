@@ -184,6 +184,20 @@ function handleAutomation24hStatus(request, response) {
   sendJson(response, 200, automation24hScheduler.status());
 }
 
+async function handleAutomation24hSettings(request, response) {
+  try {
+    if (request.method === "GET") {
+      const current = automation24hScheduler.status();
+      sendJson(response, 200, { ok: true, settings: current.settings || {} });
+      return;
+    }
+    const body = await readJsonBody(request).catch(() => ({}));
+    sendJson(response, 200, await automation24hScheduler.updateSettings(body));
+  } catch (error) {
+    sendJson(response, error.statusCode || 500, { ok: false, error: error.message || "更新24小时自动运转设置失败" });
+  }
+}
+
 async function handleAutomation24hLogs(request, response) {
   try {
     const url = new URL(request.url, `http://${request.headers.host}`);
@@ -267,6 +281,11 @@ const server = http.createServer((request, response) => {
 
   if (request.method === "GET" && url.pathname === "/api/automation-24h/status") {
     handleAutomation24hStatus(request, response);
+    return;
+  }
+
+  if ((request.method === "GET" || request.method === "POST") && url.pathname === "/api/automation-24h/settings") {
+    handleAutomation24hSettings(request, response);
     return;
   }
 

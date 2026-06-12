@@ -8,7 +8,7 @@
     "./src/client/batch/imports.js",
     "./src/client/core/init.js",
   ];
-  const VERSION = "20260612-resume-library-fast-load";
+  const VERSION = "20260612-automation-24h-settings";
   const statusNode = document.querySelector("#statusPill");
 
   async function loadClient() {

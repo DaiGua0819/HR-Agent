@@ -3,6 +3,8 @@ const fsSync = require("node:fs");
 const path = require("node:path");
 
 const DEFAULT_CYCLE_DELAY_MS = 15 * 60 * 1000;
+const DEFAULT_ACTIVE_START = "06:00";
+const DEFAULT_ACTIVE_END = "23:00";
 const DEFAULT_TARGETS = [
   { platform: "boss", accountId: "boss_a" },
   { platform: "boss", accountId: "boss_b" },
@@ -37,6 +39,77 @@ function chinaTimeText(date = new Date()) {
 function normalizeCount(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? Math.floor(number) : fallback;
+}
+
+function normalizeDelayMinutes(value, fallback = 15) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 1 ? Math.min(Math.floor(number), 1440) : fallback;
+}
+
+function normalizeTimeText(value, fallback) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return fallback;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return fallback;
+  }
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function timeTextToMinutes(value) {
+  const [hour, minute] = String(value || "00:00").split(":").map((item) => Number(item));
+  return hour * 60 + minute;
+}
+
+function chinaClockMinutes(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Shanghai",
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+  }).formatToParts(date);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value || 0);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value || 0);
+  return hour * 60 + minute;
+}
+
+function normalizeSchedulerSettings(input = {}, fallback = {}) {
+  const fallbackDelayMinutes = normalizeDelayMinutes(
+    fallback.cycleDelayMinutes ?? Number(fallback.cycleDelayMs || DEFAULT_CYCLE_DELAY_MS) / 60000,
+    15
+  );
+  const cycleDelayMinutes = normalizeDelayMinutes(
+    input.cycleDelayMinutes ?? input.delayMinutes ?? Number(input.cycleDelayMs || 0) / 60000,
+    fallbackDelayMinutes
+  );
+  const activeStart = normalizeTimeText(input.activeStart ?? input.runStart ?? input.startTime, fallback.activeStart || DEFAULT_ACTIVE_START);
+  const activeEnd = normalizeTimeText(input.activeEnd ?? input.runEnd ?? input.endTime, fallback.activeEnd || DEFAULT_ACTIVE_END);
+  return {
+    cycleDelayMinutes,
+    cycleDelayMs: cycleDelayMinutes * 60 * 1000,
+    activeStart,
+    activeEnd,
+  };
+}
+
+function isWithinActiveWindow(settings, date = new Date()) {
+  const start = timeTextToMinutes(settings.activeStart);
+  const end = timeTextToMinutes(settings.activeEnd);
+  if (start === end) return true;
+  const current = chinaClockMinutes(date);
+  if (start < end) return current >= start && current < end;
+  return current >= start || current < end;
+}
+
+function msUntilActiveWindow(settings, date = new Date()) {
+  if (isWithinActiveWindow(settings, date)) return 0;
+  const start = date.getTime();
+  for (let offset = 60 * 1000; offset <= 48 * 60 * 60 * 1000; offset += 60 * 1000) {
+    if (isWithinActiveWindow(settings, new Date(start + offset))) return offset;
+  }
+  return 15 * 60 * 1000;
 }
 
 function sumCountKeys(object, keys) {
@@ -150,11 +223,23 @@ function createAutomation24hScheduler({
   const cleanupFinishedTarget = typeof cleanupTarget === "function" ? cleanupTarget : async () => null;
 
   const logDir = path.join(dataDir, "automation-24h-logs");
+  const settingsPath = path.join(dataDir, "automation-24h-settings.json");
+  let storedSettings = {};
+  try {
+    storedSettings = fsSync.existsSync(settingsPath) ? JSON.parse(fsSync.readFileSync(settingsPath, "utf8")) : {};
+  } catch {
+    storedSettings = {};
+  }
+  let schedulerSettings = normalizeSchedulerSettings(
+    storedSettings,
+    { cycleDelayMs, activeStart: DEFAULT_ACTIVE_START, activeEnd: DEFAULT_ACTIVE_END }
+  );
   const state = {
     ok: true,
     active: false,
     stopping: false,
     stopRequested: false,
+    windowPauseRequested: false,
     status: "stopped",
     message: "24小时自动运转未启动",
     runId: "",
@@ -164,6 +249,8 @@ function createAutomation24hScheduler({
     currentBatch: [],
     nextRunAt: "",
     lastError: "",
+    settings: { ...schedulerSettings },
+    withinActiveWindow: isWithinActiveWindow(schedulerSettings),
     targets: [],
     summary: {
       running: 0,
@@ -178,6 +265,20 @@ function createAutomation24hScheduler({
 
   function nowIso() {
     return new Date().toISOString();
+  }
+
+  function publicSettings() {
+    return {
+      cycleDelayMinutes: schedulerSettings.cycleDelayMinutes,
+      cycleDelayMs: schedulerSettings.cycleDelayMs,
+      activeStart: schedulerSettings.activeStart,
+      activeEnd: schedulerSettings.activeEnd,
+    };
+  }
+
+  function nextActiveAtIso() {
+    const waitMs = msUntilActiveWindow(schedulerSettings);
+    return waitMs > 0 ? new Date(Date.now() + waitMs).toISOString() : "";
   }
 
   function publicTarget(spec, patch = {}) {
@@ -210,6 +311,8 @@ function createAutomation24hScheduler({
 
   function updateSummary() {
     const rows = state.targets || [];
+    state.settings = publicSettings();
+    state.withinActiveWindow = isWithinActiveWindow(schedulerSettings);
     state.summary = {
       running: rows.filter((item) => item.status === "running").length,
       waiting: rows.filter((item) => item.status === "waiting").length,
@@ -254,6 +357,23 @@ function createAutomation24hScheduler({
     const filePath = path.join(logDir, `${chinaDateKey(new Date(timestamp))}.jsonl`);
     await fs.appendFile(filePath, `${JSON.stringify(payload)}\n`, "utf8");
     return payload;
+  }
+
+  async function saveSettings() {
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(settingsPath, `${JSON.stringify(publicSettings(), null, 2)}\n`, "utf8");
+  }
+
+  async function updateSettings(input = {}) {
+    schedulerSettings = normalizeSchedulerSettings(input, schedulerSettings);
+    updateSummary();
+    await saveSettings();
+    await appendLog({
+      event: "settings_updated",
+      settings: publicSettings(),
+      message: `${chinaTimeText()} 24小时自动运转设置已更新：等待 ${schedulerSettings.cycleDelayMinutes} 分钟，运行 ${schedulerSettings.activeStart}-${schedulerSettings.activeEnd}`,
+    });
+    return status();
   }
 
   async function observeTarget(target) {
@@ -314,6 +434,45 @@ function createAutomation24hScheduler({
   function shouldRunSecondRound(observed) {
     if (!observed?.ok || observed.busy) return false;
     return normalizeCount(observed.remainingUnread, 0) > 0 || normalizeCount(observed.remainingActionable, 0) > 0;
+  }
+
+  async function waitForActiveWindow() {
+    while (!state.stopRequested && !isWithinActiveWindow(schedulerSettings)) {
+      const waitMs = msUntilActiveWindow(schedulerSettings);
+      state.status = "outside_window";
+      state.message = `当前不在运行时间段 ${schedulerSettings.activeStart}-${schedulerSettings.activeEnd}，等待到运行时间再继续`;
+      state.nextRunAt = new Date(Date.now() + waitMs).toISOString();
+      updateSummary();
+      await appendLog({
+        event: "outside_window_waiting",
+        delayMs: waitMs,
+        settings: publicSettings(),
+        message: `${chinaTimeText()} 当前不在运行时间段 ${schedulerSettings.activeStart}-${schedulerSettings.activeEnd}，等待到运行时间再继续`,
+      });
+      await sleep(Math.min(60 * 1000, waitMs));
+    }
+    if (!state.stopRequested) {
+      state.nextRunAt = "";
+      state.windowPauseRequested = false;
+      updateSummary();
+    }
+  }
+
+  async function requestWindowPauseIfNeeded() {
+    if (state.stopRequested || state.windowPauseRequested || isWithinActiveWindow(schedulerSettings)) return false;
+    state.windowPauseRequested = true;
+    state.status = "outside_window_stopping";
+    state.message = `已超出运行时间段 ${schedulerSettings.activeStart}-${schedulerSettings.activeEnd}，当前候选人处理完后暂停`;
+    state.nextRunAt = nextActiveAtIso();
+    updateSummary();
+    await appendLog({
+      event: "outside_window_pause_requested",
+      settings: publicSettings(),
+      message: `${chinaTimeText()} 已超出运行时间段 ${schedulerSettings.activeStart}-${schedulerSettings.activeEnd}，当前候选人处理完后暂停`,
+    });
+    const running = state.targets.filter((target) => target.status === "running" || target.status === "stopping");
+    await Promise.all(running.map((target) => pauseTarget(target, true, "超出24小时自动运转运行时间段：当前候选人处理完后暂停")));
+    return true;
   }
 
   async function runRound(target, round) {
@@ -386,7 +545,7 @@ function createAutomation24hScheduler({
       let lastObserved = await observeTarget(target);
 
       for (let round = 1; round <= maxRoundsPerTarget; round += 1) {
-        if (state.stopRequested) break;
+        if (state.stopRequested || state.windowPauseRequested) break;
         setTarget(target.id, {
           status: "running",
           round,
@@ -507,12 +666,23 @@ function createAutomation24hScheduler({
   }
 
   async function runBatch(batch) {
-    await Promise.all(batch.map((spec) => runTarget(spec)));
+    let finished = false;
+    const batchPromise = Promise.all(batch.map((spec) => runTarget(spec))).finally(() => {
+      finished = true;
+    });
+    while (!finished && !state.stopRequested) {
+      await sleep(5000);
+      await requestWindowPauseIfNeeded();
+    }
+    await batchPromise;
   }
 
   async function runLoop() {
     try {
       while (!state.stopRequested) {
+        await waitForActiveWindow();
+        if (state.stopRequested) break;
+
         state.cycle += 1;
         resetTargets();
         state.status = "running";
@@ -520,20 +690,39 @@ function createAutomation24hScheduler({
         updateSummary();
         await appendLog({ event: "cycle_started", message: `${chinaTimeText()} 第${state.cycle}大轮开始` });
 
-        for (let index = 0; index < targets.length && !state.stopRequested; index += concurrency) {
+        for (let index = 0; index < targets.length && !state.stopRequested && !state.windowPauseRequested; index += concurrency) {
+          if (!isWithinActiveWindow(schedulerSettings)) {
+            await requestWindowPauseIfNeeded();
+            break;
+          }
           const batch = targets.slice(index, index + concurrency);
           await runBatch(batch);
         }
 
         if (state.stopRequested) break;
+        if (state.windowPauseRequested) {
+          state.status = "outside_window";
+          state.message = `已暂停，等待运行时间段 ${schedulerSettings.activeStart}-${schedulerSettings.activeEnd}`;
+          state.nextRunAt = nextActiveAtIso();
+          updateSummary();
+          await appendLog({
+            event: "outside_window_paused",
+            settings: publicSettings(),
+            message: `${chinaTimeText()} 已暂停，等待运行时间段 ${schedulerSettings.activeStart}-${schedulerSettings.activeEnd}`,
+          });
+          continue;
+        }
+
+        const delayMs = schedulerSettings.cycleDelayMs;
         state.status = "waiting";
         state.message = `第${state.cycle}大轮完成，等待下一轮`;
-        state.nextRunAt = new Date(Date.now() + cycleDelayMs).toISOString();
+        state.nextRunAt = new Date(Date.now() + delayMs).toISOString();
         updateSummary();
-        await appendLog({ event: "cycle_completed", cycle: state.cycle, delayMs: cycleDelayMs });
+        await appendLog({ event: "cycle_completed", cycle: state.cycle, delayMs });
 
-        const waitUntil = Date.now() + cycleDelayMs;
+        const waitUntil = Date.now() + delayMs;
         while (!state.stopRequested && Date.now() < waitUntil) {
+          if (!isWithinActiveWindow(schedulerSettings)) break;
           await sleep(Math.min(5000, waitUntil - Date.now()));
         }
         state.nextRunAt = "";
@@ -553,6 +742,7 @@ function createAutomation24hScheduler({
     state.active = false;
     state.stopping = false;
     state.stopRequested = false;
+    state.windowPauseRequested = false;
     state.message = "24小时自动运转已停止";
     state.nextRunAt = "";
     updateSummary();
@@ -564,12 +754,15 @@ function createAutomation24hScheduler({
     state.active = true;
     state.stopping = false;
     state.stopRequested = false;
+    state.windowPauseRequested = false;
     state.status = "running";
     state.runId = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     state.startedAt = nowIso();
     state.updatedAt = state.startedAt;
     state.cycle = 0;
     state.lastError = "";
+    state.settings = publicSettings();
+    state.withinActiveWindow = isWithinActiveWindow(schedulerSettings);
     state.message = "24小时自动运转已启动";
     resetTargets();
     updateSummary();
@@ -624,6 +817,7 @@ function createAutomation24hScheduler({
     start,
     stop,
     status,
+    updateSettings,
     readLogs,
     get loopPromise() {
       return loopPromise;

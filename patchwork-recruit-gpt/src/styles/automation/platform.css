@@ -43,6 +43,64 @@
   box-shadow: 0 12px 28px rgba(161, 98, 7, 0.2);
 }
 
+.automation-24h-settings {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.1fr) minmax(120px, 0.8fr) minmax(100px, 0.7fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.automation-24h-settings label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.automation-24h-settings input {
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 9px;
+  color: var(--text);
+  background: #fff;
+  font: inherit;
+}
+
+.automation-24h-settings input[type="number"] {
+  width: 72px;
+}
+
+.automation-24h-settings input[type="time"] {
+  width: 110px;
+}
+
+.automation-24h-save {
+  min-height: 34px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  padding: 0 12px;
+  color: #1d4ed8;
+  background: #eff6ff;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.automation-24h-save:hover,
+.automation-24h-save:focus-visible {
+  background: #dbeafe;
+  outline: none;
+}
+
+.automation-24h-save:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
 .automation-24h-summary {
   min-height: 34px;
   padding: 8px 10px;
@@ -740,6 +798,19 @@ body.details-dialog-open {
 }
 
 @media (max-width: 720px) {
+  .automation-24h-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .automation-24h-settings label {
+    justify-content: space-between;
+  }
+
+  .automation-24h-settings input[type="number"],
+  .automation-24h-settings input[type="time"] {
+    width: min(160px, 52vw);
+  }
+
   .automation-24h-targets {
     grid-template-columns: 1fr;
   }
