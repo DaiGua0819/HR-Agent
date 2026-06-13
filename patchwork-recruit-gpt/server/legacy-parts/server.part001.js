@@ -1076,8 +1076,12 @@ async function launchCloakBrowserInteractiveTask({ cdpPort, profileDir, startUrl
     "if ($LASTEXITCODE -ne 0) { throw ('创建可视化浏览器任务失败：' + ($CreateOutput -join ' ')) }",
     `$RunOutput = & schtasks.exe /Run /TN ${powerShellSingleQuoted(taskName)} 2>&1`,
     "if ($LASTEXITCODE -ne 0) { throw ('运行可视化浏览器任务失败：' + ($RunOutput -join ' ')) }",
+    "Start-Sleep -Seconds 3",
+    "$ErrorActionPreference = 'Continue'",
+    `$CleanupOutput = & schtasks.exe /Delete /TN ${powerShellSingleQuoted(taskName)} /F 2>&1`,
+    "if ($LASTEXITCODE -ne 0) { Write-Output ('清理可视化浏览器任务失败：' + ($CleanupOutput -join ' ')) }",
   ].join("; ");
-  await runPowerShellAutomationCommand(command, { timeoutMs: 12000 });
+  await runPowerShellAutomationCommand(command, { timeoutMs: 20000 });
   return { pid: null, args, taskName, scriptPath };
 }
 
