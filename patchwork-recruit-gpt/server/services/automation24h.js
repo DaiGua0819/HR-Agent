@@ -6,11 +6,11 @@ const DEFAULT_CYCLE_DELAY_MS = 15 * 60 * 1000;
 const DEFAULT_ACTIVE_START = "06:00";
 const DEFAULT_ACTIVE_END = "23:00";
 const DEFAULT_MAX_CYCLES = 0;
-const BOSS_TASK_START_TIMEOUT_MS = 30000;
-const BOSS_TASK_POLL_TIMEOUT_MS = 12000;
-const BOSS_TASK_POLL_MS = 5000;
-const BOSS_TASK_MAX_MS = 90 * 60 * 1000;
-const BOSS_TASK_POLL_FAILURE_LIMIT = 12;
+const PROCESS_TASK_START_TIMEOUT_MS = 30000;
+const PROCESS_TASK_POLL_TIMEOUT_MS = 12000;
+const PROCESS_TASK_POLL_MS = 5000;
+const PROCESS_TASK_MAX_MS = 90 * 60 * 1000;
+const PROCESS_TASK_POLL_FAILURE_LIMIT = 12;
 const DEFAULT_TARGETS = [
   { platform: "boss", accountId: "boss_a" },
   { platform: "boss", accountId: "boss_b" },
@@ -544,8 +544,32 @@ function createAutomation24hScheduler({
     return normalizeCount(observed.remainingUnread, 0) > 0 || normalizeCount(observed.remainingActionable, 0) > 0;
   }
 
-  function isBossTarget(target) {
-    return target?.platform === "boss";
+  function processTaskRoutes(target) {
+    if (target?.platform === "boss") {
+      return {
+        label: "BOSS",
+        startPath: "/api/recruiter/process-messages/start",
+        taskPath: "/api/recruiter/process-messages/task",
+        cancelPath: "/api/recruiter/process-messages/cancel",
+      };
+    }
+    if (target?.platform === "51job") {
+      return {
+        label: "51",
+        startPath: "/api/51job/process-messages/start",
+        taskPath: "/api/51job/process-messages/task",
+        cancelPath: "/api/51job/process-messages/cancel",
+      };
+    }
+    if (target?.platform === "zhilian") {
+      return {
+        label: "Zhilian",
+        startPath: "/api/zhilian/process-messages/start",
+        taskPath: "/api/zhilian/process-messages/task",
+        cancelPath: "/api/zhilian/process-messages/cancel",
+      };
+    }
+    return null;
   }
 
   function browserStatusFromResult(result = {}) {
@@ -731,10 +755,10 @@ function createAutomation24hScheduler({
     return { stats, observed };
   }
 
-  async function cancelBossTask(target, taskId, reason) {
+  async function cancelProcessTask(target, taskId, reason, routes) {
     if (!taskId) return null;
     try {
-      const { payload } = await fetchAgentJson(target.sourceKey, "/api/recruiter/process-messages/cancel", {
+      const { payload } = await fetchAgentJson(target.sourceKey, routes.cancelPath, {
         method: "POST",
         body: { taskId, reason },
         timeoutMs: 30000,
@@ -752,29 +776,29 @@ function createAutomation24hScheduler({
         sourceKey: target.sourceKey,
         taskId,
         error: error.message || "cancel failed",
-        message: `${chinaTimeText()} ${target.label} BOSS task cancel failed: ${error.message || "unknown"}`,
+        message: `${chinaTimeText()} ${target.label} background task cancel failed: ${error.message || "unknown"}`,
       });
       return null;
     }
   }
 
-  async function pollBossTaskResult(target, round, taskId) {
+  async function pollProcessTaskResult(target, round, taskId, routes) {
     const startedAt = Date.now();
     let cancelSent = false;
     let pollFailures = 0;
     while (true) {
       const elapsedMs = Date.now() - startedAt;
-      if (elapsedMs > BOSS_TASK_MAX_MS) {
+      if (elapsedMs > PROCESS_TASK_MAX_MS) {
         if (!cancelSent) {
           cancelSent = true;
-          await cancelBossTask(target, taskId, "boss background task exceeded time limit");
+          await cancelProcessTask(target, taskId, "background task exceeded time limit", routes);
         }
-        throw new Error("BOSS background task exceeded time limit");
+        throw new Error(`${routes.label} background task exceeded time limit`);
       }
 
       if ((state.stopRequested || state.windowPauseRequested) && !cancelSent) {
         cancelSent = true;
-        await cancelBossTask(target, taskId, "24h scheduler stop requested; finish current candidate then stop");
+        await cancelProcessTask(target, taskId, "24h scheduler stop requested; finish current candidate then stop", routes);
         setTarget(target.id, {
           status: "stopping",
           lastMessage: "Stop requested; waiting current candidate to finish",
@@ -786,26 +810,26 @@ function createAutomation24hScheduler({
       try {
         const response = await fetchAgentJson(
           target.sourceKey,
-          `/api/recruiter/process-messages/task?taskId=${encodeURIComponent(taskId)}`,
-          { timeoutMs: BOSS_TASK_POLL_TIMEOUT_MS }
+          `${routes.taskPath}?taskId=${encodeURIComponent(taskId)}`,
+          { timeoutMs: PROCESS_TASK_POLL_TIMEOUT_MS }
         );
         payload = response.payload;
         pollFailures = 0;
       } catch (error) {
         pollFailures += 1;
-        if (pollFailures > BOSS_TASK_POLL_FAILURE_LIMIT) {
-          throw new Error(`BOSS background task polling failed: ${error.message || error}`);
+        if (pollFailures > PROCESS_TASK_POLL_FAILURE_LIMIT) {
+          throw new Error(`${routes.label} background task polling failed: ${error.message || error}`);
         }
         setTarget(target.id, {
           status: cancelSent ? "stopping" : "running",
-          lastMessage: `BOSS task polling retry ${pollFailures}/${BOSS_TASK_POLL_FAILURE_LIMIT}`,
+          lastMessage: `${routes.label} task polling retry ${pollFailures}/${PROCESS_TASK_POLL_FAILURE_LIMIT}`,
         });
-        await sleep(BOSS_TASK_POLL_MS);
+        await sleep(PROCESS_TASK_POLL_MS);
         continue;
       }
 
       if (payload?.ok === false) {
-        throw new Error(payload.error || "BOSS background task not found");
+        throw new Error(payload.error || `${routes.label} background task not found`);
       }
 
       const task = payload?.task && typeof payload.task === "object" ? payload.task : payload;
@@ -815,12 +839,12 @@ function createAutomation24hScheduler({
         return result && typeof result === "object" ? result : task;
       }
       if (status === "paused" || result?.paused || payload?.paused || payload?.pause?.paused) {
-        const error = new Error(result?.reply || result?.message || task?.error || payload?.error || "BOSS background task paused");
+        const error = new Error(result?.reply || result?.message || task?.error || payload?.error || `${routes.label} background task paused`);
         error.payload = result || payload;
         throw error;
       }
       if (status === "failed") {
-        const error = new Error(task?.error || result?.error || payload?.error || "BOSS background task failed");
+        const error = new Error(task?.error || result?.error || payload?.error || `${routes.label} background task failed`);
         error.payload = result || payload;
         throw error;
       }
@@ -829,21 +853,21 @@ function createAutomation24hScheduler({
         status: cancelSent ? "stopping" : "running",
         lastMessage: cancelSent
           ? "Stop requested; waiting current candidate to finish"
-          : `BOSS round ${round} running ${Math.floor(elapsedMs / 60000)}m`,
+          : `${routes.label} round ${round} running ${Math.floor(elapsedMs / 60000)}m`,
       });
-      await sleep(BOSS_TASK_POLL_MS);
+      await sleep(PROCESS_TASK_POLL_MS);
     }
   }
 
-  async function runBossRound(target, round, request) {
-    const { payload: startPayload } = await fetchAgentJson(target.sourceKey, "/api/recruiter/process-messages/start", {
+  async function runProcessTaskRound(target, round, request, routes) {
+    const { payload: startPayload } = await fetchAgentJson(target.sourceKey, routes.startPath, {
       method: "POST",
       body: request.body,
-      timeoutMs: BOSS_TASK_START_TIMEOUT_MS,
+      timeoutMs: PROCESS_TASK_START_TIMEOUT_MS,
     });
     const taskId = String(startPayload?.taskId || startPayload?.task?.taskId || "");
     if (!taskId) {
-      throw new Error("BOSS background task did not return taskId");
+      throw new Error(`${routes.label} background task did not return taskId`);
     }
     await appendLog({
       event: "round_task_started",
@@ -857,21 +881,22 @@ function createAutomation24hScheduler({
       round,
       taskId,
       alreadyRunning: Boolean(startPayload?.alreadyRunning),
-      message: `${chinaTimeText()} ${target.label} BOSS background task started (${taskId})`,
+      message: `${chinaTimeText()} ${target.label} background task started (${taskId})`,
     });
     setTarget(target.id, {
       status: "running",
-      lastMessage: startPayload?.alreadyRunning ? "Attached to running BOSS task" : "BOSS task started",
+      lastMessage: startPayload?.alreadyRunning ? `Attached to running ${routes.label} task` : `${routes.label} task started`,
     });
-    const result = await pollBossTaskResult(target, round, taskId);
+    const result = await pollProcessTaskResult(target, round, taskId, routes);
     return finishRoundFromPayload(target, round, result);
   }
 
   async function runRound(target, round) {
     await pauseTarget(target, false, "24小时自动运转开始处理前自动解除暂停");
     const request = targetProcessRequest(target);
-    if (isBossTarget(target)) {
-      return runBossRound(target, round, request);
+    const routes = processTaskRoutes(target);
+    if (routes) {
+      return runProcessTaskRound(target, round, request, routes);
     }
     const { payload } = await fetchAgentJson(target.sourceKey, request.path, {
       method: "POST",

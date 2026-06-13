@@ -62,6 +62,16 @@
                         custom_rules=payload.get("customRules") if isinstance(payload.get("customRules"), dict) else None,
                     )
                 self.send_json(result)
+            elif path == "/api/51job/process-messages/start":
+                result = SERVICE.start_job51_process_task(self.read_json())
+                self.send_json(result, status=202 if result.get("ok") else 500)
+            elif path == "/api/51job/process-messages/cancel":
+                payload = self.read_json()
+                result = SERVICE.cancel_boss_process_task(
+                    str(payload.get("taskId") or payload.get("id") or ""),
+                    str(payload.get("reason") or ""),
+                )
+                self.send_json(result, status=200 if result.get("ok") else 404)
             elif path == "/api/51job/process-messages":
                 payload = self.read_json()
                 options = payload.get("options")
@@ -125,6 +135,16 @@
                     lambda job51_terminal: SERVICE.job51_download_resume_attachment(job51_terminal)
                 )
                 self.send_json(result)
+            elif path == "/api/zhilian/process-messages/start":
+                result = SERVICE.start_zhilian_process_task(self.read_json())
+                self.send_json(result, status=202 if result.get("ok") else 500)
+            elif path == "/api/zhilian/process-messages/cancel":
+                payload = self.read_json()
+                result = SERVICE.cancel_boss_process_task(
+                    str(payload.get("taskId") or payload.get("id") or ""),
+                    str(payload.get("reason") or ""),
+                )
+                self.send_json(result, status=200 if result.get("ok") else 404)
             elif path == "/api/zhilian/process-messages":
                 payload = self.read_json()
                 options = payload.get("options")

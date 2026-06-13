@@ -1175,6 +1175,147 @@ class WebAgentService:
         finally:
             self.close_current_thread_terminal()
 
+    def _start_platform_process_task(self, platform: str, payload: dict) -> dict:
+        if not isinstance(payload, dict):
+            payload = {}
+        platform = str(platform or "").strip().lower()
+        if platform not in {"51job", "zhilian"}:
+            return {"ok": False, "error": "unsupported_platform", "platform": platform}
+
+        raw_max_total = payload.get("maxTotal", payload.get("count", 40))
+        try:
+            max_total = int(raw_max_total if raw_max_total is not None else 40)
+        except Exception:
+            max_total = 40
+        max_total = max(1, max_total)
+        target_position = safe_text(str(payload.get("targetPosition") or ""), 200)
+        options = payload.get("options") if isinstance(payload.get("options"), dict) else None
+
+        now = time.time()
+        with self.boss_process_tasks_lock:
+            self._prune_boss_process_tasks_locked()
+            running = next(
+                (
+                    task
+                    for task in self.boss_process_tasks.values()
+                    if isinstance(task, dict) and task.get("status") == "running"
+                ),
+                None,
+            )
+            if isinstance(running, dict):
+                public = self._boss_process_task_public(running)
+                return {
+                    "ok": True,
+                    "taskId": public.get("taskId"),
+                    "status": public.get("status"),
+                    "task": public,
+                    "alreadyRunning": True,
+                }
+
+            task_id = str(uuid.uuid4())
+            task = {
+                "taskId": task_id,
+                "platform": platform,
+                "status": "running",
+                "startedAt": self._operation_timing_timestamp(now),
+                "startedAtMs": int(now * 1000),
+                "updatedAt": self._operation_timing_timestamp(now),
+                "updatedAtMs": int(now * 1000),
+                "finishedAt": "",
+                "finishedAtMs": 0,
+                "maxTotal": max_total,
+                "targetPosition": target_position,
+                "cancelRequested": False,
+                "cancelReason": "",
+                "result": None,
+                "error": "",
+            }
+            self.boss_process_tasks[task_id] = task
+            public = self._boss_process_task_public(task)
+
+        thread = threading.Thread(
+            target=self._run_platform_process_task,
+            args=(platform, task_id, options, max_total, target_position),
+            name=f"{platform}-process-{task_id[:8]}",
+            daemon=True,
+        )
+        thread.start()
+        return {"ok": True, "taskId": task_id, "status": "running", "task": public, "alreadyRunning": False}
+
+    def start_job51_process_task(self, payload: dict) -> dict:
+        return self._start_platform_process_task("51job", payload)
+
+    def start_zhilian_process_task(self, payload: dict) -> dict:
+        return self._start_platform_process_task("zhilian", payload)
+
+    def _run_platform_process_task(
+        self,
+        platform: str,
+        task_id: str,
+        options: dict | None,
+        max_total: int,
+        target_position: str,
+    ) -> None:
+        timing = None
+        try:
+            self.set_pause(False, f"{platform} background process started")
+            timing = self.start_operation_timing("chat", f"{platform} process unread messages")
+            if isinstance(options, dict):
+                self.set_options(options)
+            if platform == "51job":
+                timeout_seconds = max(300, min(1800, max_total * 60 + 180))
+                result = self.with_job51_terminal(
+                    lambda job51_terminal: self.job51_process_unread_all_positions(
+                        job51_terminal,
+                        max_total=max_total,
+                        target_position=target_position,
+                    ),
+                    timeout_seconds=timeout_seconds,
+                )
+            elif platform == "zhilian":
+                result = self.with_zhilian_terminal(
+                    lambda zhilian_terminal: self.zhilian_process_unread_all_positions(
+                        zhilian_terminal,
+                        max_total=max_total,
+                        target_position=target_position,
+                    )
+                )
+            else:
+                raise AgentError(f"unsupported platform: {platform}")
+            finished_timing = self.finish_operation_timing(timing, "success")
+            if isinstance(result, dict) and finished_timing:
+                result["timings"] = finished_timing
+            self._update_boss_process_task(
+                task_id,
+                status="completed",
+                result=compact_process_messages_response(result),
+                error="",
+            )
+        except PauseRequested as error:
+            finished_timing = self.finish_operation_timing(timing, "paused", str(error))
+            result = {
+                "reply": str(error),
+                "paused": True,
+                "pause": self.pause_state(),
+                "timings": finished_timing,
+            }
+            self._update_boss_process_task(
+                task_id,
+                status="paused",
+                result=result,
+                error=safe_text(str(error), 260),
+            )
+        except Exception as error:
+            finished_timing = self.finish_operation_timing(timing, "failed", str(error))
+            self._update_boss_process_task(
+                task_id,
+                status="failed",
+                result={"error": str(error), "timings": finished_timing},
+                error=safe_text(str(error), 260),
+            )
+        finally:
+            self.close_current_thread_terminal()
+
     def set_options(self, options: dict) -> dict:
         with self.lock:
             terminal = self.get_terminal()
