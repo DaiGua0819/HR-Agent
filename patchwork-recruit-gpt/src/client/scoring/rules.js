@@ -425,6 +425,78 @@ async function runJdMatch() {
   }
 }
 
+const INTERVIEW_INVITE_TEXT = "加我微信沟通，carhhxh";
+
+function getResumeInviteSourceText(resume = {}) {
+  return getResumeSourceDisplay(resume);
+}
+
+function getResumeInviteUnavailableReason(resume = {}) {
+  if (!resume.platformCandidateId) return "历史简历缺少平台ID，无法按ID搜索约面试";
+  const sourceText = getResumeInviteSourceText(resume);
+  if (/邮箱|email|未知/i.test(sourceText)) return "该简历不是自动化平台来源，无法约面试";
+  return "";
+}
+
+function getResumeInviteButtonLabel(resume = {}) {
+  const invite = resume.interviewInvite || {};
+  if (invite.status === "sent") return "已约面试";
+  if (invite.status === "failed") return "重试约面";
+  return "约面试";
+}
+
+async function startResumeInterviewInvite(resume, button = null) {
+  const unavailable = getResumeInviteUnavailableReason(resume);
+  if (unavailable) {
+    window.alert(unavailable);
+    return;
+  }
+  const confirmed = window.confirm(
+    [
+      `确认给 ${resume.name || resume.fileName || "该候选人"} 发送约面试消息？`,
+      `来源：${getResumeInviteSourceText(resume)}`,
+      `平台ID：${resume.platformCandidateId}`,
+      `发送内容：${INTERVIEW_INVITE_TEXT}`,
+    ].join("\n")
+  );
+  if (!confirmed) return;
+
+  const originalText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "发送中";
+    button.classList.add("is-working");
+  }
+  try {
+    const payload = await requestJson(`/api/resumes/${resume.id}/interview-invite`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed: true }),
+    });
+    if (payload.resume) {
+      resumeCache = resumeCache.map((item) => (item.id === payload.resume.id ? payload.resume : item));
+      if (activeDetailResume?.id === payload.resume.id) activeDetailResume = payload.resume;
+      renderResumeTable(getFilteredResumes(resumeCache));
+    }
+    if (payload.ok) {
+      setStatus(payload.message || "约面试消息已发送", "is-done");
+    } else {
+      setStatus(payload.error || payload.message || "约面试失败", "is-error");
+      window.alert(payload.error || payload.message || "约面试失败");
+    }
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message || "约面试失败", "is-error");
+    window.alert(error.message || "约面试失败");
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText || getResumeInviteButtonLabel(resume);
+    }
+  } finally {
+    if (button) button.classList.remove("is-working");
+  }
+}
+
 function renderResumeTable(resumes) {
   renderResumeTableHeader();
   const fragment = document.createDocumentFragment();
@@ -482,6 +554,24 @@ function renderResumeTable(resumes) {
     chatButton.title = "查看聊天记录";
     chatButton.addEventListener("click", () => openResumeConversation(resume.id, chatButton));
     actionGroup.appendChild(chatButton);
+
+    const inviteButton = document.createElement("button");
+    inviteButton.className = "ghost-btn small interview-invite-btn";
+    inviteButton.type = "button";
+    inviteButton.textContent = getResumeInviteButtonLabel(resume);
+    const unavailable = getResumeInviteUnavailableReason(resume);
+    if (resume.interviewInvite?.status === "sent") {
+      inviteButton.disabled = true;
+      inviteButton.classList.add("is-done");
+      inviteButton.title = "该候选人已发送过约面试消息";
+    } else if (unavailable) {
+      inviteButton.disabled = true;
+      inviteButton.title = unavailable;
+    } else {
+      inviteButton.title = `按平台ID搜索并发送：${INTERVIEW_INVITE_TEXT}`;
+      inviteButton.addEventListener("click", () => startResumeInterviewInvite(resume, inviteButton));
+    }
+    actionGroup.appendChild(inviteButton);
 
     const deleteButton = document.createElement("button");
     deleteButton.className = "ghost-btn small danger";

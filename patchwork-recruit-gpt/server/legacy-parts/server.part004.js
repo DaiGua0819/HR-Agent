@@ -885,6 +885,7 @@ async function createFolderImportBatchJobFromCandidates(
       emailSourceKind: candidate.emailSourceKind || "",
       trigger,
     });
+    const identityMeta = buildResumeAutomationIdentityMetadata(candidate);
     await fs.writeFile(filePath, candidate.pdfBuffer);
     getDb()
       .prepare(
@@ -900,6 +901,7 @@ async function createFolderImportBatchJobFromCandidates(
         `来自 ${importLabel} 文件夹${trigger === "auto" || trigger === "email-auto" ? "自动" : ""}导入，等待后端队列处理`,
         JSON.stringify({
           ...sourceMeta,
+          ...identityMeta,
           source: source.id,
           sourcePath: candidate.sourcePath,
           sourceHash: candidate.hash,
@@ -914,6 +916,11 @@ async function createFolderImportBatchJobFromCandidates(
           emailSourceKind: candidate.emailSourceKind || sourceMeta.emailSourceKind || "",
           sourceLabel: sourceMeta.sourceLabel || "",
           sourcePlatform: sourceMeta.sourcePlatform || "",
+          platformCandidateId: identityMeta.platformCandidateId || "",
+          conversationKey: identityMeta.conversationKey || "",
+          candidateIdentityKey: identityMeta.candidateIdentityKey || "",
+          sourceKey: identityMeta.sourceKey || candidate.sourceKey || "",
+          detailUrl: identityMeta.detailUrl || "",
         }),
         now,
         now
@@ -1346,6 +1353,150 @@ async function handleGetResumeConversation(id, response) {
     });
   } catch (error) {
     sendJson(response, 500, { error: error.message || "读取聊天记录失败" });
+  }
+}
+
+const INTERVIEW_INVITE_MESSAGE = "加我微信沟通，carhhxh";
+
+function normalizeResumeInvitePlatform(record = {}) {
+  const text = [
+    record.platform,
+    record.sourceKey,
+    record.sourcePlatform,
+    record.importSource,
+    record.source,
+    record.sourceLabel,
+    record.sourceName,
+    record.fileName,
+    record.detailUrl,
+  ].filter(Boolean).join(" ");
+  if (/51job|job51|前程|51招聘|^51\b/i.test(text)) return "51job";
+  if (/zhilian|zhaopin|智联/i.test(text)) return "zhilian";
+  if (/boss|zhipin|kanzhun/i.test(text)) return "boss";
+  return record.platform ? normalizeAutomationPlatformId(record.platform) : "";
+}
+
+function normalizeResumeInviteAccount(record = {}) {
+  const sourceKey = String(record.sourceKey || "").trim().toLowerCase();
+  if (sourceKey.endsWith("_b") || /boss_b|job51_b|zhilian_b/.test(sourceKey)) return "boss_b";
+  if (sourceKey.endsWith("_a") || /boss_a|job51_a|zhilian_a/.test(sourceKey)) return "boss_a";
+  return normalizeBossAutomationAccountId(record.accountId || record.accountName || record.sourceLabel || record.sourceName || "");
+}
+
+function resolveResumeInterviewTarget(record = {}) {
+  const platform = normalizeResumeInvitePlatform(record);
+  if (!platform || platform === "email") {
+    return { ok: false, reason: "unsupported_source", message: "该简历不是可自动约面试的平台来源" };
+  }
+  const accountId = normalizeResumeInviteAccount(record);
+  if (!accountId || accountId === "all") {
+    return { ok: false, reason: "missing_account", message: "该简历缺少来源账号，无法确定要用哪个平台账号发送" };
+  }
+  const sourceKey = String(record.sourceKey || automationBrowserSourceKey(platform, accountId) || "").trim();
+  if (!sourceKey) {
+    return { ok: false, reason: "missing_source_key", message: "未能解析自动化服务 sourceKey" };
+  }
+  const platformCandidateId = String(record.platformCandidateId || "").trim();
+  if (!platformCandidateId) {
+    return { ok: false, reason: "missing_platform_candidate_id", message: "历史简历缺少平台ID，无法按ID搜索约面试" };
+  }
+  return {
+    ok: true,
+    platform,
+    accountId,
+    sourceKey,
+    platformCandidateId,
+    conversationKey: String(record.conversationKey || "").trim(),
+    candidateIdentityKey: String(record.candidateIdentityKey || "").trim(),
+    detailUrl: String(record.detailUrl || "").trim(),
+  };
+}
+
+async function handleResumeInterviewInvite(id, request, response) {
+  try {
+    const body = await readJsonBody(request);
+    const { records, index, record } = await findResume(id);
+    if (!record) {
+      sendJson(response, 404, { ok: false, error: "简历不存在" });
+      return;
+    }
+
+    const existingInvite = record.interviewInvite && typeof record.interviewInvite === "object" ? record.interviewInvite : {};
+    if (existingInvite.status === "sent" && !body.force) {
+      sendJson(response, 200, {
+        ok: true,
+        skipped: true,
+        reason: "already_sent",
+        message: "该候选人已约面试，未重复发送",
+        resume: publicRecord(record),
+      });
+      return;
+    }
+
+    const target = resolveResumeInterviewTarget(record);
+    if (!target.ok) {
+      records[index] = {
+        ...record,
+        interviewInvite: {
+          status: "failed",
+          reason: target.reason,
+          message: target.message,
+          updatedAt: new Date().toISOString(),
+        },
+        updatedAt: new Date().toISOString(),
+      };
+      await writeDatabase(records);
+      sendJson(response, 409, { ok: false, error: target.message, reason: target.reason, resume: publicRecord(records[index]) });
+      return;
+    }
+
+    const dryRun = Boolean(body.dryRun);
+    const agentRequest = {
+      ...target,
+      resumeId: record.id,
+      candidateName: record.name || "",
+      message: INTERVIEW_INVITE_MESSAGE,
+      dryRun,
+    };
+    const { payload, source } = await fetchAgentJson(target.sourceKey, "/api/interview-invite", {
+      method: "POST",
+      body: agentRequest,
+      timeoutMs: dryRun ? 90000 : 180000,
+    });
+    const success = dryRun ? Boolean(payload.ok && !payload.blocked) : Boolean(payload.sent || payload.verified);
+    const status = dryRun ? (success ? "probed" : "failed") : success ? "sent" : "failed";
+    const nextRecord = {
+      ...record,
+      platform: record.platform || target.platform,
+      accountId: record.accountId || target.accountId,
+      sourceKey: record.sourceKey || target.sourceKey,
+      platformCandidateId: record.platformCandidateId || target.platformCandidateId,
+      interviewInvite: {
+        status,
+        message: payload.message || (success ? "约面试消息已发送" : "约面试处理失败"),
+        platform: target.platform,
+        accountId: target.accountId,
+        sourceKey: target.sourceKey,
+        sourceLabel: source?.label || "",
+        platformCandidateId: target.platformCandidateId,
+        dryRun,
+        sentAt: !dryRun && success ? new Date().toISOString() : existingInvite.sentAt || "",
+        updatedAt: new Date().toISOString(),
+        result: payload,
+      },
+      updatedAt: new Date().toISOString(),
+    };
+    records[index] = nextRecord;
+    await writeDatabase(records);
+    sendJson(response, 200, {
+      ok: success,
+      message: nextRecord.interviewInvite.message,
+      error: success ? "" : nextRecord.interviewInvite.message,
+      result: payload,
+      resume: publicRecord(nextRecord),
+    });
+  } catch (error) {
+    sendJson(response, error.statusCode || 500, { ok: false, error: error.message || "约面试失败", ...(error.payload || {}) });
   }
 }
 

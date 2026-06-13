@@ -887,6 +887,12 @@ function publicRecord(record) {
     importSource: record.importSource || "",
     accountId: record.accountId || "",
     accountName: record.accountName || "",
+    sourceKey: record.sourceKey || "",
+    platformCandidateId: record.platformCandidateId || "",
+    conversationKey: record.conversationKey || "",
+    candidateIdentityKey: record.candidateIdentityKey || "",
+    detailUrl: record.detailUrl || "",
+    interviewInvite: record.interviewInvite || null,
     hasPdf: Boolean(record.pdfPath),
     scoringVersion: record.scoringVersion || getCurrentScoringVersion(record.jobType),
     scoringVersionMeta: getScoringVersionMeta(record.scoringVersion || getCurrentScoringVersion(record.jobType), record.jobType),
@@ -907,6 +913,7 @@ function createRecordPayload(body = {}) {
   const fields = sanitizeResumeFields(source);
   const details = sanitizeResumeDetails(source);
   const sourceMeta = buildResumeSourceMetadata(source);
+  const automationIdentityMeta = buildResumeAutomationIdentityMetadata(source);
   const now = new Date().toISOString();
   return applyPositionRuleScoring({
     id: crypto.randomUUID(),
@@ -915,6 +922,7 @@ function createRecordPayload(body = {}) {
     fileName: String(source.fileName || "").trim(),
     parseMode: String(source.parseMode || "").trim(),
     ...sourceMeta,
+    ...automationIdentityMeta,
     pdfPath: "",
     scoringVersion: getCurrentScoringVersion(fields.jobType),
     feedback: null,

@@ -437,6 +437,7 @@ const server = http.createServer((request, response) => {
   const resumeFeedbackMatch = url.pathname.match(/^\/api\/resumes\/([^/]+)\/feedback$/);
   const resumePdfMatch = url.pathname.match(/^\/api\/resumes\/([^/]+)\/pdf$/);
   const resumeConversationMatch = url.pathname.match(/^\/api\/resumes\/([^/]+)\/conversation$/);
+  const resumeInterviewInviteMatch = url.pathname.match(/^\/api\/resumes\/([^/]+)\/interview-invite$/);
   const resumeCopyPdfMatch = url.pathname.match(/^\/api\/resumes\/([^/]+)\/copy-pdf$/);
   const ruleSuggestionActionMatch = url.pathname.match(/^\/api\/rule-suggestions\/([^/]+)\/(adopt|reject)$/);
   const batchJobMatch = url.pathname.match(/^\/api\/batch-jobs\/([^/]+)$/);
@@ -727,6 +728,11 @@ const server = http.createServer((request, response) => {
 
   if (resumeConversationMatch && request.method === "GET") {
     handleGetResumeConversation(resumeConversationMatch[1], response);
+    return;
+  }
+
+  if (resumeInterviewInviteMatch && request.method === "POST") {
+    handleResumeInterviewInvite(resumeInterviewInviteMatch[1], request, response);
     return;
   }
 

@@ -1207,10 +1207,12 @@ async function saveParsedResumeFromPdf({ filename, pdfBuffer, result, parseMode,
     let duplicatePublicRecord = duplicateRecord;
     if (duplicateIndex >= 0) {
       const mergedSource = buildResumeSourceMetadata({ ...records[duplicateIndex], ...sourceMeta, fileName: filename });
-      if (shouldUpdateResumeSource(records[duplicateIndex], mergedSource)) {
+      const identityMeta = buildResumeAutomationIdentityMetadata({ ...records[duplicateIndex], ...sourceMeta });
+      if (shouldUpdateResumeSource(records[duplicateIndex], mergedSource) || Object.keys(identityMeta).some((key) => identityMeta[key] && !records[duplicateIndex][key])) {
         records[duplicateIndex] = {
           ...records[duplicateIndex],
           ...mergedSource,
+          ...identityMeta,
           updatedAt: new Date().toISOString(),
         };
         duplicatePublicRecord = records[duplicateIndex];
@@ -1462,6 +1464,7 @@ async function processBatchJob(jobId) {
         fileName: item.filename,
         filePath: item.file_path,
       });
+      const identityMeta = buildResumeAutomationIdentityMetadata(resolvedPayload);
       const pdfBuffer = await fs.readFile(item.file_path);
       const result = await parseResumePdfWithGpt({ filename: item.filename, pdfBuffer });
       if (getBatchJobStatus(jobId) === "cancelled") {
@@ -1476,7 +1479,7 @@ async function processBatchJob(jobId) {
         pdfBuffer,
         result,
         parseMode: "direct-batch",
-        sourceMeta,
+        sourceMeta: { ...sourceMeta, ...identityMeta },
       });
       const record = saveResult.record || {};
       const importStatus = saveResult.duplicate ? "duplicate" : "saved";
@@ -1484,6 +1487,7 @@ async function processBatchJob(jobId) {
         ...resolvedPayload,
         ...result,
         ...sourceMeta,
+        ...identityMeta,
         source: resolvedPayload.source || sourceMeta.importSource || "",
         sourcePath: resolvedPayload.sourcePath || fileResolution.sourcePath || "",
         sourceHash: resolvedPayload.sourceHash || "",
@@ -1498,6 +1502,11 @@ async function processBatchJob(jobId) {
         emailSourceKind: resolvedPayload.emailSourceKind || sourceMeta.emailSourceKind || "",
         sourceLabel: sourceMeta.sourceLabel || resolvedPayload.sourceLabel || "",
         sourcePlatform: sourceMeta.sourcePlatform || resolvedPayload.sourcePlatform || "",
+        platformCandidateId: identityMeta.platformCandidateId || "",
+        conversationKey: identityMeta.conversationKey || "",
+        candidateIdentityKey: identityMeta.candidateIdentityKey || "",
+        sourceKey: identityMeta.sourceKey || resolvedPayload.sourceKey || "",
+        detailUrl: identityMeta.detailUrl || "",
         resumeId: record.id || "",
         name: record.name || result.name || "",
         phone: record.phone || result.phone || "",

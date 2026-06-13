@@ -1514,6 +1514,93 @@ function sanitizeResumeDetails(input = {}) {
   };
 }
 
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function extractPlatformCandidateIdFromUrl(value = "") {
+  const text = String(value || "").trim();
+  if (!/^https?:\/\//i.test(text)) return "";
+  try {
+    const url = new URL(text);
+    const keys = [
+      "platformCandidateId",
+      "candidateId",
+      "candidate_id",
+      "geekId",
+      "encryptGeekId",
+      "securityId",
+      "resumeId",
+      "resumeNo",
+      "resumeNumber",
+      "candidateResumeNumber",
+      "cardToken",
+      "uid",
+      "userId",
+      "personId",
+      "talentId",
+    ];
+    for (const key of keys) {
+      const candidate = String(url.searchParams.get(key) || "").trim();
+      if (candidate) return candidate;
+    }
+    const pathMatch = url.pathname.match(/(?:candidate|geek|resume|talent)[_/.-]([A-Za-z0-9_-]{6,})/i);
+    return pathMatch ? pathMatch[1] : "";
+  } catch {
+    return "";
+  }
+}
+
+function buildResumeAutomationIdentityMetadata(input = {}) {
+  const identity = input.candidateIdentity && typeof input.candidateIdentity === "object" ? input.candidateIdentity : {};
+  const detailUrl = firstNonEmptyString(
+    input.detailUrl,
+    input.candidateDetailUrl,
+    input.resumeUrl,
+    input.sourceUrl,
+    identity.detailUrl,
+    identity.candidateDetailUrl
+  );
+  const platformCandidateId = firstNonEmptyString(
+    input.platformCandidateId,
+    input.candidatePlatformId,
+    input.sourceCandidateId,
+    input.platformId,
+    input.candidateResumeNumber,
+    input.proactiveCandidateKey,
+    input.cardToken,
+    input.detailCandidateId,
+    identity.platformCandidateId,
+    identity.candidatePlatformId,
+    identity.sourceCandidateId,
+    extractPlatformCandidateIdFromUrl(detailUrl)
+  );
+  const candidateIdentityKey = firstNonEmptyString(input.candidateIdentityKey, identity.identityKey);
+  const conversationKey = firstNonEmptyString(input.conversationKey, identity.conversationKey);
+  const sourceKey = firstNonEmptyString(input.sourceKey, input.automationSourceKey);
+
+  const meta = {};
+  if (platformCandidateId) meta.platformCandidateId = platformCandidateId;
+  if (conversationKey) meta.conversationKey = conversationKey;
+  if (candidateIdentityKey) meta.candidateIdentityKey = candidateIdentityKey;
+  if (sourceKey) meta.sourceKey = sourceKey;
+  if (detailUrl) meta.detailUrl = detailUrl;
+  if (identity && Object.keys(identity).length) {
+    meta.candidateIdentity = {
+      identityKey: firstNonEmptyString(identity.identityKey),
+      conversationKey: firstNonEmptyString(identity.conversationKey),
+      candidateName: firstNonEmptyString(identity.candidateName),
+      appliedPosition: firstNonEmptyString(identity.appliedPosition),
+      listLabel: firstNonEmptyString(identity.listLabel),
+    };
+  }
+  return meta;
+}
+
 function normalizePhoneKey(phone) {
   const digits = String(phone || "").replace(/\D/g, "");
   if (digits.length === 13 && digits.startsWith("86")) {

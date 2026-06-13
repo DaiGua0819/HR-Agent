@@ -1432,6 +1432,394 @@ def parse_json_object(content: str) -> dict:
         return json.loads(match.group(0))
 
 
+INTERVIEW_INVITE_DEFAULT_MESSAGE = "加我微信沟通，carhhxh"
+
+
+def normalize_interview_platform(value: str) -> str:
+    key = str(value or "").strip().lower()
+    if key in {"51", "51job", "job51", "job51_a", "job51_b"}:
+        return "51job"
+    if key in {"zhilian", "zhaopin", "zhilian_a", "zhilian_b"}:
+        return "zhilian"
+    return "boss"
+
+
+def interview_page_probe(page, target_id: str = "") -> dict:
+    return page.evaluate(
+        r"""targetId => {
+          const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+          const looksNoResult = text => /没有找到|未找到|暂无|无相关|搜索中|no\s+result|not\s+found/i.test(normalize(text));
+          const visible = el => {
+            if (!el || !el.isConnected) return false;
+            const box = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return box.width > 4 && box.height > 4
+              && box.bottom > 0 && box.right > 0
+              && box.top < window.innerHeight && box.left < window.innerWidth
+              && style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && style.opacity !== '0';
+          };
+          const rect = el => {
+            const box = el.getBoundingClientRect();
+            return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
+          };
+          const labelFor = el => normalize([
+            el.getAttribute('placeholder'),
+            el.getAttribute('aria-label'),
+            el.getAttribute('title'),
+            el.getAttribute('data-testid'),
+            el.getAttribute('class'),
+            el.innerText,
+            el.textContent,
+            el.parentElement ? el.parentElement.innerText : '',
+          ].filter(Boolean).join(' '));
+          const editables = Array.from(document.querySelectorAll('input:not([type="hidden"]), textarea, [contenteditable="true"]'));
+          const editableItems = editables.map((el, index) => {
+            const label = labelFor(el);
+            const lower = label.toLowerCase();
+            let searchScore = 0;
+            if (/搜索|搜|search|候选|联系人|姓名|手机号|id|简历|人才/.test(label) || /search|candidate|contact|resume|talent/.test(lower)) searchScore += 80;
+            if (/输入|回复|发送|开启对话|聊天|message|chat|reply/.test(label) || /drop-area|sender|textarea_self/.test(lower)) searchScore -= 120;
+            if (el.tagName === 'INPUT') searchScore += 20;
+            if (rect(el).x < window.innerWidth * 0.55) searchScore += 12;
+            if (rect(el).y < window.innerHeight * 0.45) searchScore += 10;
+            if (el.disabled || el.readOnly) searchScore -= 200;
+
+            let chatScore = 0;
+            if (/输入|回复|发送|开启对话|聊天|message|chat|reply|drop-area|sender|textarea_self/.test(label) || /drop-area|sender|textarea_self/.test(lower)) chatScore += 90;
+            if (rect(el).y > window.innerHeight * 0.45) chatScore += 20;
+            if (el.disabled || el.readOnly) chatScore -= 200;
+            return { index, tag: el.tagName.toLowerCase(), label: label.slice(0, 180), rect: rect(el), searchScore, chatScore };
+          }).filter(item => visible(editables[item.index]));
+          const searchInputs = editableItems
+            .filter(item => item.searchScore > 0)
+            .sort((a, b) => b.searchScore - a.searchScore)
+            .slice(0, 8);
+          const chatInputs = editableItems
+            .filter(item => item.chatScore > 0)
+            .sort((a, b) => b.chatScore - a.chatScore)
+            .slice(0, 8);
+
+          const allNodes = Array.from(document.querySelectorAll('body *'));
+          const resultMatches = [];
+          let noResult = false;
+          const target = normalize(targetId);
+          const metaFor = el => normalize([
+            el.id,
+            el.getAttribute('class'),
+            el.getAttribute('role'),
+            el.getAttribute('data-testid'),
+            el.getAttribute('placeholder'),
+            el.getAttribute('aria-label'),
+            el.parentElement ? el.parentElement.getAttribute('class') : '',
+            el.parentElement && el.parentElement.parentElement ? el.parentElement.parentElement.getAttribute('class') : '',
+          ].filter(Boolean).join(' ')).toLowerCase();
+          const isSearchEcho = (el, text) => {
+            if (!target) return false;
+            if (normalize(text) === target) return true;
+            const meta = metaFor(el);
+            if (/(keyword|input|filter|condition|query|tag|search-box|conversation-search|el-input|suggest)/i.test(meta)) return true;
+            if (el.closest('input, textarea, [contenteditable="true"]')) return true;
+            return false;
+          };
+          if (target) {
+            allNodes.forEach((el, index) => {
+              if (!visible(el)) return;
+              const text = normalize(el.innerText || el.textContent || '');
+              if (!text || text.length > 800 || !text.includes(target)) return;
+              if (looksNoResult(text)) {
+                noResult = true;
+                return;
+              }
+              if (isSearchEcho(el, text)) return;
+              const childText = Array.from(el.children || []).map(child => normalize(child.innerText || child.textContent || '')).join(' ');
+              if (childText.includes(target) && text.length > 180) return;
+              resultMatches.push({ domIndex: index, text: text.slice(0, 260), rect: rect(el), tag: el.tagName.toLowerCase(), className: String(el.className || '').slice(0, 120) });
+            });
+          }
+
+          const buttons = Array.from(document.querySelectorAll('button,a,[role="button"],.btn,.el-button'))
+            .filter(visible)
+            .map(el => ({ text: normalize(el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '').slice(0, 120), rect: rect(el), className: String(el.className || '').slice(0, 120) }))
+            .filter(item => /发送|send/i.test(item.text + ' ' + item.className))
+            .slice(0, 8);
+
+          const pageText = normalize(document.body ? document.body.innerText || '' : '');
+          if (target && looksNoResult(pageText) && pageText.includes(target)) noResult = true;
+          const url = String(location.href || '');
+          const idInUrl = Boolean(target && url.includes(target));
+          const idInBody = false;
+          return {
+            title: document.title || '',
+            url,
+            searchInputs,
+            chatInputs,
+            sendButtons: buttons,
+            resultMatches: resultMatches.slice(0, 8),
+            noResult,
+            idEvidence: { target, idInUrl, idInBody, matched: !noResult && (idInUrl || resultMatches.length > 0) },
+            bodyPreview: pageText.slice(0, 800),
+          };
+        }""",
+        str(target_id or ""),
+    ) or {}
+
+
+def open_interview_search_surface(page, platform: str = "") -> dict:
+    token = f"codex_interview_search_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    info = page.evaluate(
+        r"""({ token, platform }) => {
+          const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+          const visible = el => {
+            if (!el || !el.isConnected) return false;
+            const box = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return box.width > 4 && box.height > 4
+              && box.bottom > 0 && box.right > 0
+              && box.top < window.innerHeight && box.left < window.innerWidth
+              && style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && style.opacity !== '0';
+          };
+          const rect = el => {
+            const box = el.getBoundingClientRect();
+            return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
+          };
+          const nodes = Array.from(document.querySelectorAll('button,a,[role="button"],li,span,div'));
+          let best = null;
+          for (const el of nodes) {
+            if (!visible(el)) continue;
+            const text = normalize(el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '');
+            if (!text || text.length > 20) continue;
+            let score = 0;
+            if (text === '搜索') score += 120;
+            else if (/搜索|search/i.test(text)) score += 60;
+            if (!score) continue;
+            const box = rect(el);
+            if (platform === 'boss' && box.x < 220 && box.w > 80) continue;
+            if (box.y < 120) score += 40;
+            if (box.x < 400) score += 15;
+            if (/active|selected|current/i.test(String(el.className || ''))) score -= 20;
+            const item = { score, text, rect: box, tag: el.tagName.toLowerCase(), className: String(el.className || '').slice(0, 120) };
+            if (!best || item.score > best.score) best = { ...item, el };
+          }
+          if (!best) return { clicked: false, reason: 'search_entry_not_found', platform };
+          best.el.setAttribute('data-codex-interview-search', token);
+          const { el, ...publicItem } = best;
+          return { clicked: true, target: publicItem, platform };
+        }""",
+        {"token": token, "platform": platform},
+    ) or {}
+    if not info.get("clicked"):
+        return info
+    page.locator(f"[data-codex-interview-search='{token}']").first.click(timeout=5000, force=True)
+    page.wait_for_timeout(random.randint(900, 1400))
+    return info
+
+
+def ensure_interview_platform_home(page, platform: str = "") -> dict:
+    platform = normalize_interview_platform(platform)
+    url = str(getattr(page, "url", "") or "")
+    target = ""
+    if platform == "boss" and "/web/chat/index" not in url:
+        target = "https://www.zhipin.com/web/chat/index"
+    elif platform == "51job" and "ehire.51job.com/Revision/chat" not in url:
+        target = "https://ehire.51job.com/Revision/chat/"
+    elif platform == "zhilian" and "rd6.zhaopin.com/app/im" not in url:
+        target = "https://rd6.zhaopin.com/app/im"
+    if not target:
+        return {"navigated": False, "url": url, "platform": platform}
+    try:
+        page.goto(target, wait_until="domcontentloaded", timeout=20000)
+        page.wait_for_timeout(random.randint(1400, 2200))
+        return {"navigated": True, "from": url, "to": str(getattr(page, "url", "") or target), "platform": platform}
+    except Exception as exc:
+        return {"navigated": False, "url": url, "target": target, "platform": platform, "error": str(exc)[:260]}
+
+
+def fill_interview_search_box(page, search_index: int, target_id: str) -> dict:
+    selector = "input:not([type='hidden']), textarea, [contenteditable='true']"
+    locator = page.locator(selector).nth(int(search_index))
+    locator.click(timeout=5000, force=True)
+    page.wait_for_timeout(random.randint(120, 260))
+    try:
+        locator.fill("", timeout=3000)
+        locator.type(str(target_id), delay=random.randint(20, 55), timeout=8000)
+    except Exception:
+        locator.evaluate(
+            """(el, value) => {
+              el.focus();
+              if ('value' in el) el.value = '';
+              else el.textContent = '';
+              el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+              if ('value' in el) el.value = value;
+              else el.textContent = value;
+              el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            }""",
+            str(target_id),
+        )
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(random.randint(1200, 1800))
+    return {"filled": True, "searchIndex": int(search_index)}
+
+
+def click_interview_result_match(page, dom_index: int) -> dict:
+    locator = page.locator("body *").nth(int(dom_index))
+    info = locator.evaluate(
+        """el => {
+          const box = el.getBoundingClientRect();
+          return {
+            text: String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 220),
+            x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height)
+          };
+        }"""
+    )
+    locator.click(timeout=6000, force=True)
+    page.wait_for_timeout(random.randint(1000, 1600))
+    return {"clicked": True, "result": info}
+
+
+def service_interview_invite(self, payload: dict) -> dict:
+    payload = payload if isinstance(payload, dict) else {}
+    platform = normalize_interview_platform(payload.get("platform") or payload.get("sourceKey") or "")
+    target_id = safe_text(str(payload.get("platformCandidateId") or payload.get("candidateId") or "").strip(), 180)
+    message = str(payload.get("message") or INTERVIEW_INVITE_DEFAULT_MESSAGE).strip()
+    dry_run = bool(payload.get("dryRun"))
+    if not target_id:
+        return {"ok": False, "blocked": True, "reason": "missing_platform_candidate_id", "message": "缺少平台候选人ID，未执行搜索"}
+
+    def run_with_terminal(terminal: BrowserTerminal) -> dict:
+        page = terminal.current_page()
+        home = ensure_interview_platform_home(page, platform)
+        page = terminal.current_page()
+        if platform == "51job":
+            self.job51_dismiss_interruptions(terminal, reason="interview_invite_probe")
+        elif platform == "zhilian":
+            self.zhilian_dismiss_interruptions(terminal, reason="interview_invite_probe")
+
+        before = interview_page_probe(page, target_id)
+        search_inputs = before.get("searchInputs") if isinstance(before, dict) else []
+        opened_search = {}
+        if not search_inputs:
+            opened_search = open_interview_search_surface(page, platform)
+            before = interview_page_probe(page, target_id)
+            search_inputs = before.get("searchInputs") if isinstance(before, dict) else []
+        if not search_inputs:
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "search_input_not_found",
+                "message": f"{platform} 未找到可用搜索栏",
+                "platform": platform,
+                "home": home,
+                "openedSearch": opened_search,
+                "before": before,
+            }
+
+        search = fill_interview_search_box(page, int(search_inputs[0].get("index") or 0), target_id)
+        after_search = interview_page_probe(page, target_id)
+        result_matches = after_search.get("resultMatches") if isinstance(after_search, dict) else []
+        if isinstance(after_search, dict) and after_search.get("noResult"):
+            result_matches = []
+        clicked = {}
+        if result_matches:
+            clicked = click_interview_result_match(page, int(result_matches[0].get("domIndex") or 0))
+        final = interview_page_probe(page, target_id)
+        final_evidence = final.get("idEvidence") if isinstance(final, dict) else {}
+        search_evidence = after_search.get("idEvidence") if isinstance(after_search, dict) else {}
+        id_matched = bool((final_evidence or {}).get("matched") or (search_evidence or {}).get("matched"))
+        chat_inputs = final.get("chatInputs") if isinstance(final, dict) else []
+        send_buttons = final.get("sendButtons") if isinstance(final, dict) else []
+        base = {
+            "ok": bool(id_matched and chat_inputs),
+            "platform": platform,
+            "platformCandidateId": target_id,
+            "dryRun": dry_run,
+            "idMatched": id_matched,
+            "inputReady": bool(chat_inputs),
+            "sendButtonReady": bool(send_buttons),
+            "message": "约面试 dry-run 已定位到候选人输入框" if dry_run else "约面试候选人已定位",
+            "home": home,
+            "openedSearch": opened_search,
+            "search": search,
+            "clicked": clicked,
+            "before": before,
+            "afterSearch": after_search,
+            "final": final,
+        }
+        if dry_run:
+            if not id_matched:
+                base.update({"ok": False, "blocked": True, "reason": "candidate_id_not_verified", "message": "已搜索但未能核对平台ID一致"})
+            elif not chat_inputs:
+                base.update({"ok": False, "blocked": True, "reason": "chat_input_not_found", "message": "已核对平台ID，但未找到聊天输入框"})
+            return base
+        if not id_matched:
+            base.update({"ok": False, "blocked": True, "reason": "candidate_id_not_verified", "message": "搜索结果未核对到同一平台ID，未发送"})
+            return base
+        if not chat_inputs:
+            base.update({"ok": False, "blocked": True, "reason": "chat_input_not_found", "message": "未找到聊天输入框，未发送"})
+            return base
+
+        if platform == "51job":
+            sent = self.job51_send_message_with_verification(terminal, message)
+            verified = not bool(sent.get("blocked")) and bool((sent.get("verification") or {}).get("verified") or sent.get("sent"))
+        elif platform == "zhilian":
+            sent = self.zhilian_send_message_with_verification(terminal, message)
+            verified = not bool(sent.get("blocked")) and bool(sent.get("verified") or sent.get("sent"))
+        else:
+            self.smart_fill(terminal, "聊天", message)
+            sent = self.send_current_chat_reply_with_verification(terminal, message)
+            verified = bool((sent.get("verification") or {}).get("verified"))
+        base.update({
+            "ok": verified,
+            "sent": verified,
+            "verified": verified,
+            "send": sent,
+            "message": "约面试消息已发送并校验" if verified else "已尝试发送，但未校验到消息已发出",
+            "blocked": not verified,
+        })
+        return base
+
+    if platform == "51job":
+        return self.with_job51_terminal(run_with_terminal, timeout_seconds=120)
+    if platform == "zhilian":
+        return self.with_zhilian_terminal(run_with_terminal)
+    with self.lock:
+        return run_with_terminal(self.get_terminal())
+
+
+WebAgentService.interview_invite = service_interview_invite
+
+
+ORIGINAL_AGENT_DO_POST_FOR_INTERVIEW = AgentRequestHandler.do_POST
+
+
+def patched_agent_do_post_for_interview(self) -> None:
+    path = unquote(urlparse(self.path).path)
+    if path in {"/api/interview-invite", "/api/interview-invite/probe", "/api/51job/interview-invite", "/api/zhilian/interview-invite"}:
+        try:
+            payload = self.read_json()
+            if path.startswith("/api/51job/"):
+                payload["platform"] = "51job"
+            elif path.startswith("/api/zhilian/"):
+                payload["platform"] = "zhilian"
+            if path.endswith("/probe"):
+                payload["dryRun"] = True
+            result = SERVICE.interview_invite(payload)
+            self.send_json(result, status=200 if result.get("ok") or result.get("blocked") else 500)
+        except Exception as error:
+            self.send_json({"ok": False, "error": str(error)}, status=500)
+        finally:
+            SERVICE.close_current_thread_terminal()
+        return
+    return ORIGINAL_AGENT_DO_POST_FOR_INTERVIEW(self)
+
+
+AgentRequestHandler.do_POST = patched_agent_do_post_for_interview
+
+
 SERVICE = WebAgentService()
 atexit.register(SERVICE.close)
 
