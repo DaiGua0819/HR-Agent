@@ -501,8 +501,17 @@ async function handleBossAutomationSummary(request, response) {
       sendJson(response, 200, payload);
       return;
     }
-    const summaries = await Promise.all(bossAutomationSources(accountId).map((sourceKey) => fetchAutomationSummary(sourceKey)));
-    const payload = buildBossAutomationSummaryPayload(summaries, { accountId, date });
+    let payload;
+    try {
+      const summaries = await Promise.all(bossAutomationSources(accountId).map((sourceKey) => fetchAutomationSummary(sourceKey)));
+      payload = buildBossAutomationSummaryPayload(summaries, { accountId, date });
+    } catch (error) {
+      payload = {
+        ...buildAutomationSummaryPayloadFromRecords([], { platform: "boss", accountId, date }),
+        agentOffline: true,
+        error: error.message || "BOSS 自动化 agent 未启动",
+      };
+    }
     setAutomationSummaryResponseCache(cacheKey, payload);
     sendJson(response, 200, payload);
   } catch (error) {
@@ -534,12 +543,22 @@ async function handlePlatformAutomationSummary(request, response) {
       return;
     }
     const sourceKeys = platformAutomationSources(platform, accountId);
-    const summaries = await Promise.all(sourceKeys.map((sourceKey) => fetchAutomationSummary(sourceKey)));
-    const payload = {
-      ...buildBossAutomationSummaryPayload(summaries, { accountId, date }),
-      platform,
-      sourceKeys,
-    };
+    let payload;
+    try {
+      const summaries = await Promise.all(sourceKeys.map((sourceKey) => fetchAutomationSummary(sourceKey)));
+      payload = {
+        ...buildBossAutomationSummaryPayload(summaries, { accountId, date }),
+        platform,
+        sourceKeys,
+      };
+    } catch (error) {
+      payload = {
+        ...buildAutomationSummaryPayloadFromRecords([], { platform, accountId, date }),
+        sourceKeys,
+        agentOffline: true,
+        error: error.message || "自动化 agent 未启动",
+      };
+    }
     setAutomationSummaryResponseCache(cacheKey, payload);
     sendJson(response, 200, payload);
   } catch (error) {

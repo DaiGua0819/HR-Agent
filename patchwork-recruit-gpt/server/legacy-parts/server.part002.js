@@ -874,7 +874,18 @@ async function buildAutomationDetailsPayload(platform, sourceKeys, options = {})
   const selectedDate = normalizeAutomationDetailDate(options.date);
   const accountId = options.accountId || "all";
   const deepRecords = await collectDeepAutomationDetailRecords(platform, accountId, selectedDate);
-  const items = deepRecords.length ? [] : await Promise.all(sourceKeys.map((sourceKey) => fetchAutomationSummary(sourceKey)));
+  let items = [];
+  let agentOffline = false;
+  let agentError = "";
+  if (!deepRecords.length) {
+    try {
+      items = await Promise.all(sourceKeys.map((sourceKey) => fetchAutomationSummary(sourceKey)));
+    } catch (error) {
+      agentOffline = true;
+      agentError = error.message || "自动化 agent 未启动";
+      items = [];
+    }
+  }
   const baseRecords = deepRecords.length ? deepRecords : automationDetailRecordsFromSummaries(items, selectedDate);
   const records = filterAutomationDetailRecordsForRequest(baseRecords, options);
   const jobs = [...new Set(records.map((record) => record.appliedPosition).filter(Boolean))].sort((a, b) =>
@@ -886,13 +897,15 @@ async function buildAutomationDetailsPayload(platform, sourceKeys, options = {})
     date: selectedDate,
     today: automationChinaDateKey(),
     updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
-    metrics: deepRecords.length || useRecordMetrics
+    metrics: deepRecords.length || useRecordMetrics || agentOffline
       ? automationMetricPayloadFromRecords(baseRecords, { includeDate: selectedDate !== "all" })
       : automationDetailMetricPayload(items, platform, {
           accountId: options.accountId,
           date: selectedDate,
         }),
     records,
+    agentOffline,
+    error: agentError,
     filters: {
       jobs,
       statuses: [
