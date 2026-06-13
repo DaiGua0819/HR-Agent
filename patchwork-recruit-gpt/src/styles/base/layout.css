@@ -362,6 +362,21 @@ h2 {
   flex-wrap: wrap;
 }
 
+.automation-control-card {
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.automation-control-copy {
+  display: none;
+}
+
+.automation-control-card .automation-launch-actions {
+  flex: 0 0 520px;
+  width: 520px;
+  max-width: 100%;
+}
+
 .automation-launch-actions {
   display: grid;
   grid-template-columns: minmax(300px, 1fr);
@@ -370,7 +385,7 @@ h2 {
 
 .automation-platform-picks {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 8px;
 }
 
@@ -384,7 +399,7 @@ h2 {
   display: grid;
   grid-template-columns: repeat(3, 92px);
   gap: 6px;
-  justify-content: end;
+  justify-content: start;
 }
 
 .launch-browser-btn {
