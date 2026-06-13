@@ -99,6 +99,37 @@ def append_recruiter_batch_report(report: dict) -> dict:
     return item
 
 
+def compact_process_messages_response(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        return payload
+    compact = {
+        "message": safe_text(str(payload.get("message") or payload.get("reply") or ""), 1200),
+    }
+    for key in ("counts", "state", "batchReportId", "unreadFilter", "timings", "passes"):
+        if key in payload:
+            compact[key] = payload.get(key)
+    if isinstance(payload.get("filteredOut"), list):
+        compact["filteredOut"] = [
+            compact_recruiter_batch_result(item)
+            for item in payload.get("filteredOut")[:30]
+            if isinstance(item, dict)
+        ]
+    if isinstance(payload.get("unclearQuestions"), list):
+        compact["unclearQuestions"] = [
+            compact_recruiter_batch_result(item)
+            for item in payload.get("unclearQuestions")[:30]
+            if isinstance(item, dict)
+        ]
+    if isinstance(payload.get("results"), list):
+        compact["results"] = [
+            compact_recruiter_batch_result(item)
+            for item in payload.get("results")[:80]
+            if isinstance(item, dict)
+        ]
+        compact["resultCount"] = len(payload.get("results"))
+    return compact
+
+
 def scoped_json_siblings(path: Path) -> list[Path]:
     if not isinstance(path, Path):
         path = Path(path)

@@ -1497,6 +1497,13 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                     finished_timing = SERVICE.finish_operation_timing(timing, "success")
                     if isinstance(result, dict) and finished_timing:
                         result["timings"] = finished_timing
+                    if (
+                        isinstance(result, dict)
+                        and result.get("batchReportId")
+                        and isinstance(result.get("state"), dict)
+                        and result["state"].get("processedPeople") is not None
+                    ):
+                        result = compact_process_messages_response(result)
                 except Exception as error:
                     finished_timing = SERVICE.finish_operation_timing(timing, "failed", str(error))
                     self.send_json({"error": str(error), "timings": finished_timing}, status=500)

@@ -308,8 +308,6 @@ function getBrowserLaunchButtonStatus(target = {}) {
   if (target.status === "captcha" || target.captcha) return "captcha";
   if (target.status === "account_abnormal" || target.accountAbnormal) return "account_abnormal";
   if (target.status === "failed") return "failed";
-  if (target.cdpReady === false && target.agentReady) return "failed";
-  if (target.cdpReady && target.agentReady === false) return "failed";
   if (target.status === "closed" || target.status === "offline" || target.cdpReady === false) return "idle";
   if (target.status === "needs_login" || target.needsLogin) return "needs_login";
   if (target.agentBusy && target.cdpReady && target.agentReady) return "processing";
@@ -672,6 +670,8 @@ function automation24hIsActive(payload = automation24hLastStatus) {
 function automation24hStatusLabel(status) {
   const labels = {
     waiting: "等待",
+    preparing: "检查浏览器",
+    browser_ready: "已登录待处理",
     running: "处理中",
     stopping: "停止中",
     outside_window: "时间段外等待",
@@ -729,9 +729,10 @@ function renderAutomation24hStatus(payload = automation24hLastStatus) {
   const summary = payload?.summary || {};
   const runningLabels = (payload?.currentBatch || []).map((item) => item.label).filter(Boolean);
   const runningText = runningLabels.length ? `当前处理：${runningLabels.join("、")}` : "当前处理：无";
+  const browserReadyText = `已登录待处理 ${Number(summary.browserReady || 0)}`;
   const remainingText = `未读红点 ${Number(summary.remainingUnread || 0)}，本轮剩余 ${Number(summary.remainingActionable || 0)}`;
   elements.automation24hSummary.textContent = payload
-    ? `${payload.message || automation24hStatusLabel(payload.status)}；${runningText}；${remainingText}`
+    ? `${payload.message || automation24hStatusLabel(payload.status)}；${runningText}；${browserReadyText}；${remainingText}`
     : "未启动";
 
   const targets = Array.isArray(payload?.targets) ? payload.targets : [];
@@ -885,7 +886,7 @@ async function toggleAutomation24h() {
   if (!button) return;
   const current = await refreshAutomation24hStatus({ silent: true });
   if (automation24hIsActive(current)) {
-    const confirmed = window.confirm("确认中断24小时自动运转？当前候选人处理完后会停止，并关闭对应浏览器和 agent。");
+    const confirmed = window.confirm("确认中断24小时自动运转？当前候选人处理完后会停止，并关闭对应 agent，浏览器保持打开。");
     if (!confirmed) return;
     button.disabled = true;
     try {

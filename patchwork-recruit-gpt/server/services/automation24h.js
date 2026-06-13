@@ -117,6 +117,19 @@ function sumCountKeys(object, keys) {
   return keys.reduce((total, key) => total + normalizeCount(object[key], 0), 0);
 }
 
+const REQUESTED_RESUME_COUNT_KEYS = [
+  "accepted_requested_resume",
+  "knowledge_answered_and_requested_resume",
+  "accepted_resume_already_requested",
+  "knowledge_answered_resume_already_requested",
+];
+
+const DOWNLOADED_RESUME_COUNT_KEYS = [
+  "accepted_resume_downloaded",
+  "knowledge_answered_resume_downloaded",
+  "resume_downloaded",
+];
+
 function resultArray(payload) {
   if (Array.isArray(payload?.results)) return payload.results;
   if (Array.isArray(payload?.result?.results)) return payload.result.results;
@@ -137,16 +150,11 @@ function extractRunStats(payload) {
   );
   const requestedResume = normalizeCount(
     state.requestedResume,
-    sumCountKeys(counts, [
-      "accepted_requested_resume",
-      "knowledge_answered_and_requested_resume",
-      "accepted_resume_already_requested",
-      "knowledge_answered_resume_already_requested",
-    ])
+    sumCountKeys(counts, REQUESTED_RESUME_COUNT_KEYS)
   );
   const downloadedResume = normalizeCount(
     state.downloadedResume,
-    sumCountKeys(counts, ["accepted_resume_downloaded", "knowledge_answered_resume_downloaded", "resume_downloaded"])
+    sumCountKeys(counts, DOWNLOADED_RESUME_COUNT_KEYS)
   );
   return {
     processed,
@@ -157,6 +165,42 @@ function extractRunStats(payload) {
     message: String(payload?.message || payload?.reply || payload?.result?.message || "").replace(/\s+/g, " ").trim(),
     counts,
     state,
+  };
+}
+
+function normalizeRecoveredStats(payload) {
+  if (!payload || typeof payload !== "object") {
+    return {
+      ok: false,
+      recovered: false,
+      processed: 0,
+      requestedResume: 0,
+      downloadedResume: 0,
+      counts: {},
+      message: "",
+      source: "",
+    };
+  }
+  const counts = payload.counts && typeof payload.counts === "object" ? payload.counts : {};
+  const processed = normalizeCount(payload.processed ?? payload.processedPeople ?? payload.processedRecords, 0);
+  const requestedResume = normalizeCount(
+    payload.requestedResume,
+    sumCountKeys(counts, REQUESTED_RESUME_COUNT_KEYS)
+  );
+  const downloadedResume = normalizeCount(
+    payload.downloadedResume,
+    sumCountKeys(counts, DOWNLOADED_RESUME_COUNT_KEYS)
+  );
+  return {
+    ok: Boolean(payload.ok),
+    recovered: Boolean(payload.recovered || processed || requestedResume || downloadedResume),
+    processed,
+    requestedResume,
+    downloadedResume,
+    counts,
+    message: String(payload.message || "").replace(/\s+/g, " ").trim(),
+    source: String(payload.source || ""),
+    details: payload.details && typeof payload.details === "object" ? payload.details : null,
   };
 }
 
@@ -182,6 +226,9 @@ function buildLogMessage(entry) {
     return `${time} ${label} 第${entry.round}轮处理完成，处理 ${entry.processed || 0} 条消息，获取 ${entry.downloadedResume || 0} 个简历，求简历 ${entry.requestedResume || 0} 个，剩余红点 ${entry.remainingUnread ?? "-"}`;
   }
   if (entry.event === "target_interrupted") {
+    if (entry.partialStatsRecovered && normalizeCount(entry.partialProcessed, 0) > 0) {
+      return `${time} ${label} 处理中断，已恢复中断前进度：处理 ${entry.partialProcessed || 0} 条消息，获取 ${entry.partialDownloadedResume || 0} 个简历，求简历 ${entry.partialRequestedResume || 0} 个，原因：${entry.reason || entry.error || "未知"}`;
+    }
     return `${time} ${label} 处理中断，原因：${entry.reason || entry.error || "未知"}`;
   }
   if (entry.event === "target_completed") {
@@ -190,14 +237,26 @@ function buildLogMessage(entry) {
   if (entry.event === "cycle_completed") {
     return `${time} 第${entry.cycle}大轮处理完成，等待 ${Math.round((entry.delayMs || 0) / 60000)} 分钟`;
   }
+  if (entry.event === "target_browser_ready") {
+    return `${time} ${label} 浏览器已登录，等待调度处理`;
+  }
+  if (entry.event === "target_browser_blocked") {
+    return `${time} ${label} 浏览器检查未通过：${entry.reason || entry.error || "未知"}`;
+  }
+  if (entry.event === "target_browser_failed") {
+    return `${time} ${label} 浏览器检查失败：${entry.error || "未知原因"}`;
+  }
+  if (entry.event === "target_agent_ready") {
+    return `${time} ${label} agent 已启动，开始处理消息`;
+  }
   if (entry.event === "stop_requested") {
-    return `${time} 已请求停止24小时自动运转，当前候选人处理完后关闭对应浏览器和 agent`;
+    return `${time} 已请求停止24小时自动运转，当前候选人处理完后关闭对应 agent，浏览器保持打开`;
   }
   if (entry.event === "target_runtime_closed") {
-    return `${time} ${label} 浏览器和 agent 已关闭`;
+    return `${time} ${label} agent 已关闭，浏览器保持打开`;
   }
   if (entry.event === "target_runtime_close_failed") {
-    return `${time} ${label} 浏览器或 agent 关闭失败：${entry.error || "未知原因"}`;
+    return `${time} ${label} agent 关闭失败：${entry.error || "未知原因"}`;
   }
   return `${time} ${label} ${entry.message || entry.event || "状态更新"}`;
 }
@@ -211,16 +270,20 @@ function createAutomation24hScheduler({
   maxTotalPerRound = 40,
   sleep,
   resolveTarget,
+  prepareTargetBrowser,
   ensureTargetReady,
   cleanupTarget,
   fetchAgentJson,
+  recoverPartialStats,
 } = {}) {
   if (!dataDir) throw new Error("automation24h requires dataDir");
   if (typeof sleep !== "function") throw new Error("automation24h requires sleep");
   if (typeof resolveTarget !== "function") throw new Error("automation24h requires resolveTarget");
   if (typeof ensureTargetReady !== "function") throw new Error("automation24h requires ensureTargetReady");
   if (typeof fetchAgentJson !== "function") throw new Error("automation24h requires fetchAgentJson");
+  const prepareBrowser = typeof prepareTargetBrowser === "function" ? prepareTargetBrowser : null;
   const cleanupFinishedTarget = typeof cleanupTarget === "function" ? cleanupTarget : async () => null;
+  const recoverPartialRunStats = typeof recoverPartialStats === "function" ? recoverPartialStats : null;
 
   const logDir = path.join(dataDir, "automation-24h-logs");
   const settingsPath = path.join(dataDir, "automation-24h-settings.json");
@@ -255,8 +318,13 @@ function createAutomation24hScheduler({
     summary: {
       running: 0,
       waiting: targets.length,
+      preparing: 0,
+      browserReady: 0,
       completed: 0,
+      stopping: 0,
       failed: 0,
+      needsLogin: 0,
+      captcha: 0,
       remainingUnread: 0,
       remainingActionable: 0,
     },
@@ -281,17 +349,30 @@ function createAutomation24hScheduler({
     return waitMs > 0 ? new Date(Date.now() + waitMs).toISOString() : "";
   }
 
-  function publicTarget(spec, patch = {}) {
+  function materializeTarget(spec) {
     const resolved = resolveTarget(spec);
     return {
+      ...resolved,
       id: `${resolved.platform}:${resolved.accountId}`,
+      label: `${resolved.platformLabel} ${resolved.accountName}`,
+    };
+  }
+
+  function publicTarget(spec, patch = {}) {
+    const resolved = materializeTarget(spec);
+    return {
+      id: resolved.id,
       platform: resolved.platform,
       platformLabel: resolved.platformLabel,
       accountId: resolved.accountId,
       accountName: resolved.accountName,
       sourceKey: resolved.sourceKey,
-      label: `${resolved.platformLabel} ${resolved.accountName}`,
+      label: resolved.label,
+      cdpPort: resolved.cdpPort || 0,
+      agentPort: resolved.agentPort || 0,
       status: "waiting",
+      browserReady: false,
+      agentReady: false,
       round: 0,
       processed: 0,
       requestedResume: 0,
@@ -315,10 +396,14 @@ function createAutomation24hScheduler({
     state.withinActiveWindow = isWithinActiveWindow(schedulerSettings);
     state.summary = {
       running: rows.filter((item) => item.status === "running").length,
-      waiting: rows.filter((item) => item.status === "waiting").length,
+      waiting: rows.filter((item) => item.status === "waiting" || item.status === "preparing" || item.status === "browser_ready").length,
+      preparing: rows.filter((item) => item.status === "preparing").length,
+      browserReady: rows.filter((item) => item.status === "browser_ready").length,
       completed: rows.filter((item) => item.status === "completed").length,
       stopping: rows.filter((item) => item.status === "stopping").length,
-      failed: rows.filter((item) => item.status === "failed" || item.status === "interrupted").length,
+      failed: rows.filter((item) => item.status === "failed" || item.status === "interrupted" || item.status === "account_abnormal").length,
+      needsLogin: rows.filter((item) => item.status === "needs_login").length,
+      captcha: rows.filter((item) => item.status === "captcha").length,
       remainingUnread: rows.reduce((sum, item) => sum + normalizeCount(item.remainingUnread, 0), 0),
       remainingActionable: rows.reduce((sum, item) => sum + normalizeCount(item.remainingActionable, 0), 0),
     };
@@ -436,6 +521,121 @@ function createAutomation24hScheduler({
     return normalizeCount(observed.remainingUnread, 0) > 0 || normalizeCount(observed.remainingActionable, 0) > 0;
   }
 
+  function browserStatusFromResult(result = {}) {
+    const item = result || {};
+    if (item.captcha) return "captcha";
+    if (item.accountAbnormal) return "account_abnormal";
+    if (item.needsLogin) return "needs_login";
+    return "browser_ready";
+  }
+
+  function browserStatusMessage(status) {
+    if (status === "browser_ready") return "浏览器已登录，等待调度处理";
+    if (status === "needs_login") return "账号未登录，需要人工登录";
+    if (status === "captcha") return "检测到人机验证，需要人工处理";
+    if (status === "account_abnormal") return "账号异常，需要人工处理";
+    return "浏览器检查完成";
+  }
+
+  function blockedReasonFromStatus(status) {
+    if (status === "needs_login") return "needs_login";
+    if (status === "captcha") return "human_verification";
+    if (status === "account_abnormal") return "account_abnormal";
+    return status || "blocked";
+  }
+
+  async function prepareOneBrowser(spec) {
+    const target = materializeTarget(spec);
+    setTarget(target.id, {
+      status: "preparing",
+      round: 0,
+      error: "",
+      browserReady: false,
+      agentReady: false,
+      cdpPort: target.cdpPort || 0,
+      agentPort: target.agentPort || 0,
+      lastMessage: "正在打开浏览器并检查登录状态",
+    });
+    try {
+      const result = await prepareBrowser(target);
+      const status = browserStatusFromResult(result);
+      const browserReady = status === "browser_ready";
+      setTarget(target.id, {
+        status,
+        browserReady,
+        agentReady: false,
+        cdpPort: result?.cdpPort || target.cdpPort || 0,
+        agentPort: target.agentPort || 0,
+        page: result?.page || null,
+        authenticated: Boolean(result?.authenticated),
+        error: browserReady ? "" : result?.error || "",
+        lastMessage: browserStatusMessage(status),
+      });
+      await appendLog({
+        event: browserReady ? "target_browser_ready" : "target_browser_blocked",
+        targetId: target.id,
+        targetLabel: target.label,
+        platform: target.platform,
+        platformLabel: target.platformLabel,
+        accountId: target.accountId,
+        accountName: target.accountName,
+        sourceKey: target.sourceKey,
+        status,
+        reason: browserReady ? "" : blockedReasonFromStatus(status),
+        error: result?.error || "",
+      });
+      return browserReady ? spec : null;
+    } catch (error) {
+      setTarget(target.id, {
+        status: "failed",
+        browserReady: false,
+        agentReady: false,
+        error: error.message || "浏览器检查失败",
+        lastMessage: "浏览器检查失败",
+      });
+      await appendLog({
+        event: "target_browser_failed",
+        targetId: target.id,
+        targetLabel: target.label,
+        platform: target.platform,
+        platformLabel: target.platformLabel,
+        accountId: target.accountId,
+        accountName: target.accountName,
+        sourceKey: target.sourceKey,
+        error: error.message || "浏览器检查失败",
+      });
+      return null;
+    }
+  }
+
+  async function prepareBrowsersForCycle() {
+    if (!prepareBrowser) return targets.slice();
+    state.message = `第${state.cycle}大轮：正在打开浏览器并检查登录状态`;
+    updateSummary();
+    await appendLog({
+      event: "cycle_browser_preparing",
+      message: `${chinaTimeText()} 第${state.cycle}大轮开始检查浏览器登录状态`,
+    });
+
+    const readySpecs = [];
+    let nextIndex = 0;
+    const workerCount = Math.min(Math.max(1, concurrency), targets.length);
+    async function worker() {
+      while (!state.stopRequested && nextIndex < targets.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        const ready = await prepareOneBrowser(targets[currentIndex]);
+        if (ready) readySpecs.push({ index: currentIndex, spec: ready });
+      }
+    }
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    readySpecs.sort((left, right) => left.index - right.index);
+    const orderedReadySpecs = readySpecs.map((item) => item.spec);
+    state.message = `第${state.cycle}大轮：浏览器检查完成，就绪 ${orderedReadySpecs.length} 个，开始处理消息`;
+    updateSummary();
+    return orderedReadySpecs;
+  }
+
   async function waitForActiveWindow() {
     while (!state.stopRequested && !isWithinActiveWindow(schedulerSettings)) {
       const waitMs = msUntilActiveWindow(schedulerSettings);
@@ -511,15 +711,76 @@ function createAutomation24hScheduler({
     return { stats, observed };
   }
 
+  async function recoverInterruptedRound(target, round, roundStartedAt, error) {
+    if (!recoverPartialRunStats) {
+      return { stats: normalizeRecoveredStats(null), observed: null };
+    }
+    try {
+      const stats = normalizeRecoveredStats(await recoverPartialRunStats({
+        target,
+        round,
+        roundStartedAt,
+        error,
+        runId: state.runId,
+        cycle: state.cycle,
+      }));
+      if (!stats.recovered) {
+        return { stats, observed: null };
+      }
+      const observed = await observeTarget(target);
+      await appendLog({
+        event: "round_partial_stats_recovered",
+        targetId: target.id,
+        targetLabel: target.label,
+        platform: target.platform,
+        platformLabel: target.platformLabel,
+        accountId: target.accountId,
+        accountName: target.accountName,
+        sourceKey: target.sourceKey,
+        round,
+        processed: stats.processed,
+        requestedResume: stats.requestedResume,
+        downloadedResume: stats.downloadedResume,
+        counts: stats.counts,
+        source: stats.source,
+        error: error.message || "interrupted",
+        remainingUnread: observed?.ok ? observed.remainingUnread : null,
+        remainingActionable: observed?.ok ? observed.remainingActionable : null,
+        message: `${chinaTimeText()} ${target.label} 第${round}轮中断前进度已恢复：处理 ${stats.processed} 条消息，获取 ${stats.downloadedResume} 个简历，求简历 ${stats.requestedResume} 个`,
+      });
+      return { stats, observed };
+    } catch (recoverError) {
+      await appendLog({
+        event: "round_partial_stats_recover_failed",
+        targetId: target.id,
+        targetLabel: target.label,
+        platform: target.platform,
+        platformLabel: target.platformLabel,
+        accountId: target.accountId,
+        accountName: target.accountName,
+        sourceKey: target.sourceKey,
+        round,
+        error: recoverError.message || "partial stats recovery failed",
+        originalError: error.message || "",
+        message: `${chinaTimeText()} ${target.label} 第${round}轮中断前进度恢复失败：${recoverError.message || "未知原因"}`,
+      });
+      return { stats: normalizeRecoveredStats(null), observed: null };
+    }
+  }
+
   async function runTarget(spec) {
-    const target = resolveTarget(spec);
-    target.id = `${target.platform}:${target.accountId}`;
-    target.label = `${target.platformLabel} ${target.accountName}`;
+    const target = materializeTarget(spec);
+    let totalProcessed = 0;
+    let totalRequested = 0;
+    let totalDownloaded = 0;
+    let lastObserved = null;
     setTarget(target.id, {
       status: "running",
       round: 0,
       error: "",
-      lastMessage: "正在启动浏览器和agent",
+      browserReady: true,
+      agentReady: false,
+      lastMessage: "正在启动 agent",
     });
     await appendLog({
       event: "target_started",
@@ -538,11 +799,25 @@ function createAutomation24hScheduler({
       if (ready?.captcha) throw new Error("检测到人机验证");
       if (ready?.needsLogin) throw new Error("账号未登录，需要人工登录");
       if (ready?.accountAbnormal) throw new Error("账号异常，需要人工处理");
+      setTarget(target.id, {
+        status: "running",
+        agentReady: true,
+        cdpPort: ready?.cdpPort || target.cdpPort || 0,
+        agentPort: ready?.agentPort || target.agentPort || 0,
+        lastMessage: "agent 已启动，准备处理消息",
+      });
+      await appendLog({
+        event: "target_agent_ready",
+        targetId: target.id,
+        targetLabel: target.label,
+        platform: target.platform,
+        platformLabel: target.platformLabel,
+        accountId: target.accountId,
+        accountName: target.accountName,
+        sourceKey: target.sourceKey,
+      });
 
-      let totalProcessed = 0;
-      let totalRequested = 0;
-      let totalDownloaded = 0;
-      let lastObserved = await observeTarget(target);
+      lastObserved = await observeTarget(target);
 
       for (let round = 1; round <= maxRoundsPerTarget; round += 1) {
         if (state.stopRequested || state.windowPauseRequested) break;
@@ -554,6 +829,7 @@ function createAutomation24hScheduler({
           remainingActionable: lastObserved.ok ? lastObserved.remainingActionable : null,
         });
         let roundResult;
+        const roundStartedAt = nowIso();
         try {
           roundResult = await runRound(target, round);
         } catch (error) {
@@ -564,6 +840,26 @@ function createAutomation24hScheduler({
               error: "",
             });
             break;
+          }
+          const partialResult = await recoverInterruptedRound(target, round, roundStartedAt, error);
+          if (partialResult?.stats?.recovered) {
+            totalProcessed += partialResult.stats.processed;
+            totalRequested += partialResult.stats.requestedResume;
+            totalDownloaded += partialResult.stats.downloadedResume;
+            lastObserved = partialResult.observed || lastObserved;
+            error.partialStats = partialResult.stats;
+            setTarget(target.id, {
+              processed: totalProcessed,
+              requestedResume: totalRequested,
+              downloadedResume: totalDownloaded,
+              remainingUnread: lastObserved?.ok ? lastObserved.remainingUnread : null,
+              remainingActionable: lastObserved?.ok ? lastObserved.remainingActionable : null,
+              partialStatsRecovered: true,
+              partialProcessed: partialResult.stats.processed,
+              partialRequestedResume: partialResult.stats.requestedResume,
+              partialDownloadedResume: partialResult.stats.downloadedResume,
+              lastMessage: `第${round}轮中断，已恢复部分处理进度`,
+            });
           }
           throw error;
         }
@@ -607,10 +903,18 @@ function createAutomation24hScheduler({
       });
     } catch (error) {
       const reason = detectInterruption(error);
+      const partialStats = error.partialStats && typeof error.partialStats === "object" ? error.partialStats : null;
       setTarget(target.id, {
-        status: reason === "human_verification" ? "captcha" : reason === "needs_login" ? "needs_login" : "failed",
+        status: reason === "human_verification" ? "captcha" : reason === "needs_login" ? "needs_login" : reason === "account_abnormal" ? "account_abnormal" : "failed",
         error: error.message || "处理失败",
-        lastMessage: "处理中断",
+        processed: totalProcessed,
+        requestedResume: totalRequested,
+        downloadedResume: totalDownloaded,
+        partialStatsRecovered: Boolean(partialStats?.recovered),
+        partialProcessed: partialStats?.processed || 0,
+        partialRequestedResume: partialStats?.requestedResume || 0,
+        partialDownloadedResume: partialStats?.downloadedResume || 0,
+        lastMessage: partialStats?.recovered ? "处理中断，已恢复中断前进度" : "处理中断",
       });
       state.lastError = `${target.label}：${error.message || "处理失败"}`;
       await appendLog({
@@ -624,6 +928,11 @@ function createAutomation24hScheduler({
         sourceKey: target.sourceKey,
         reason,
         error: error.message || "处理失败",
+        partialStatsRecovered: Boolean(partialStats?.recovered),
+        partialProcessed: partialStats?.processed || 0,
+        partialRequestedResume: partialStats?.requestedResume || 0,
+        partialDownloadedResume: partialStats?.downloadedResume || 0,
+        counts: partialStats?.counts || {},
       });
     } finally {
       try {
@@ -631,11 +940,19 @@ function createAutomation24hScheduler({
         if (cleanup && cleanup.ok === false) {
           const cleanupErrors = [
             cleanup.error,
-            cleanup.browser?.errors,
             cleanup.agent?.errors,
           ].flat().filter(Boolean).join("；");
-          throw new Error(cleanupErrors || "浏览器或 agent 关闭失败");
+          throw new Error(cleanupErrors || "agent 关闭失败");
         }
+        const latestTarget = state.targets.find((item) => item.id === target.id);
+        const cleanupPatch = {
+          agentReady: false,
+          browserReady: latestTarget ? !["failed", "captcha", "needs_login", "account_abnormal"].includes(latestTarget.status) : true,
+        };
+        if (latestTarget && ["completed", "stopped"].includes(latestTarget.status)) {
+          cleanupPatch.lastMessage = `${latestTarget.lastMessage || "处理完成"}，agent 已关闭，浏览器保持打开`;
+        }
+        setTarget(target.id, cleanupPatch);
         await appendLog({
           event: "target_runtime_closed",
           targetId: target.id,
@@ -646,7 +963,7 @@ function createAutomation24hScheduler({
           accountName: target.accountName,
           sourceKey: target.sourceKey,
           cleanup,
-          message: `${chinaTimeText()} ${target.label} 浏览器和 agent 已关闭`,
+          message: `${chinaTimeText()} ${target.label} agent 已关闭，浏览器保持打开`,
         });
       } catch (cleanupError) {
         await appendLog({
@@ -658,23 +975,45 @@ function createAutomation24hScheduler({
           accountId: target.accountId,
           accountName: target.accountName,
           sourceKey: target.sourceKey,
-          error: cleanupError.message || "浏览器或 agent 关闭失败",
-          message: `${chinaTimeText()} ${target.label} 浏览器或 agent 关闭失败：${cleanupError.message || "未知原因"}`,
+          error: cleanupError.message || "agent 关闭失败",
+          message: `${chinaTimeText()} ${target.label} agent 关闭失败：${cleanupError.message || "未知原因"}`,
         });
       }
     }
   }
 
-  async function runBatch(batch) {
+  async function runReadyTargets(readyTargets) {
+    if (!readyTargets.length) {
+      await appendLog({
+        event: "cycle_no_ready_targets",
+        message: `${chinaTimeText()} 第${state.cycle}大轮没有可处理的已登录浏览器`,
+      });
+      return;
+    }
+    let nextIndex = 0;
     let finished = false;
-    const batchPromise = Promise.all(batch.map((spec) => runTarget(spec))).finally(() => {
+
+    async function worker() {
+      while (!state.stopRequested && !state.windowPauseRequested && nextIndex < readyTargets.length) {
+        if (!isWithinActiveWindow(schedulerSettings)) {
+          await requestWindowPauseIfNeeded();
+          break;
+        }
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        await runTarget(readyTargets[currentIndex]);
+      }
+    }
+
+    const workerCount = Math.min(Math.max(1, concurrency), readyTargets.length);
+    const poolPromise = Promise.all(Array.from({ length: workerCount }, () => worker())).finally(() => {
       finished = true;
     });
     while (!finished && !state.stopRequested) {
       await sleep(5000);
       await requestWindowPauseIfNeeded();
     }
-    await batchPromise;
+    await poolPromise;
   }
 
   async function runLoop() {
@@ -690,13 +1029,13 @@ function createAutomation24hScheduler({
         updateSummary();
         await appendLog({ event: "cycle_started", message: `${chinaTimeText()} 第${state.cycle}大轮开始` });
 
-        for (let index = 0; index < targets.length && !state.stopRequested && !state.windowPauseRequested; index += concurrency) {
+        const readyTargets = await prepareBrowsersForCycle();
+        if (!state.stopRequested && !state.windowPauseRequested) {
           if (!isWithinActiveWindow(schedulerSettings)) {
             await requestWindowPauseIfNeeded();
-            break;
+          } else {
+            await runReadyTargets(readyTargets);
           }
-          const batch = targets.slice(index, index + concurrency);
-          await runBatch(batch);
         }
 
         if (state.stopRequested) break;
@@ -776,7 +1115,7 @@ function createAutomation24hScheduler({
     state.stopRequested = true;
     state.stopping = true;
     state.status = "stopping";
-    state.message = "停止中，当前候选人处理完后关闭对应浏览器和 agent";
+    state.message = "停止中，当前候选人处理完后关闭对应 agent，浏览器保持打开";
     updateSummary();
     await appendLog({ event: "stop_requested", reason });
     const running = state.targets.filter((target) => target.status === "running" || target.status === "stopping");

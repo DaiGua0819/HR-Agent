@@ -35,7 +35,7 @@
                     finished_timing = SERVICE.finish_operation_timing(timing, "failed", str(error))
                     self.send_json({"error": str(error), "timings": finished_timing}, status=500)
                     return
-                self.send_json(result)
+                self.send_json(compact_process_messages_response(result))
             elif path == "/api/recruiter/proactive-contact":
                 payload = self.read_json()
                 options = payload.get("options")

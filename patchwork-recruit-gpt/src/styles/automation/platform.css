@@ -154,9 +154,19 @@
   font-weight: 800;
 }
 
-.automation-24h-target.is-running .automation-24h-badge {
+.automation-24h-target.is-preparing .automation-24h-badge,
+.automation-24h-target.is-browser_ready .automation-24h-badge {
   color: #075985;
   background: #e0f2fe;
+}
+
+.automation-24h-target.is-browser_ready .automation-24h-badge {
+  animation: automation24hBrowserReadyPulse 2.4s ease-in-out infinite;
+}
+
+.automation-24h-target.is-running .automation-24h-badge {
+  color: #166534;
+  background: #dcfce7;
 }
 
 .automation-24h-target.is-completed .automation-24h-badge {
@@ -166,7 +176,8 @@
 
 .automation-24h-target.is-failed .automation-24h-badge,
 .automation-24h-target.is-captcha .automation-24h-badge,
-.automation-24h-target.is-needs_login .automation-24h-badge {
+.automation-24h-target.is-needs_login .automation-24h-badge,
+.automation-24h-target.is-account_abnormal .automation-24h-badge {
   color: #b42318;
   background: #fee4e2;
 }
@@ -175,6 +186,18 @@
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
+}
+
+@keyframes automation24hBrowserReadyPulse {
+  0%,
+  100% {
+    background: #dbeafe;
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0);
+  }
+  50% {
+    background: #bfdbfe;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  }
 }
 
 .automation-24h-log-head {

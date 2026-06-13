@@ -117,6 +117,210 @@ async function serveStatic(request, response) {
   }
 }
 
+const PARTIAL_PROGRESS_ACTIONS = new Set([
+  "sent_basic_conditions",
+  "position_screening_sent_waiting",
+  "basic_conditions_sent_waiting",
+  "accepted_requested_resume",
+  "knowledge_answered_and_requested_resume",
+  "accepted_resume_already_requested",
+  "knowledge_answered_resume_already_requested",
+  "accepted_resume_downloaded",
+  "knowledge_answered_resume_downloaded",
+  "resume_downloaded",
+  "knowledge_answered",
+  "knowledge_answered_and_sent_screening",
+  "rejected_skipped",
+  "unconfigured_position_skipped",
+  "unclear_or_waiting_skipped",
+  "blocked",
+]);
+
+const PARTIAL_REQUESTED_RESUME_ACTIONS = new Set([
+  "accepted_requested_resume",
+  "knowledge_answered_and_requested_resume",
+  "accepted_resume_already_requested",
+  "knowledge_answered_resume_already_requested",
+]);
+
+const PARTIAL_DOWNLOADED_RESUME_ACTIONS = new Set([
+  "accepted_resume_downloaded",
+  "knowledge_answered_resume_downloaded",
+  "resume_downloaded",
+]);
+
+function parseChinaDateTimeMs(value) {
+  const text = String(value || "").trim();
+  if (!text) return 0;
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(text)) {
+    const zonedMs = Date.parse(text);
+    return Number.isFinite(zonedMs) ? zonedMs : 0;
+  }
+  const match = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (match) {
+    return Date.UTC(
+      Number(match[1]),
+      Number(match[2]) - 1,
+      Number(match[3]),
+      Number(match[4]) - 8,
+      Number(match[5]),
+      Number(match[6] || 0)
+    );
+  }
+  const isoMs = Date.parse(text);
+  return Number.isFinite(isoMs) ? isoMs : 0;
+}
+
+function automationAgentScopedFile(baseName, sourceKey) {
+  const parsed = path.parse(baseName);
+  const normalizedSource = String(sourceKey || "").trim();
+  if (!normalizedSource || normalizedSource === "boss_a" || normalizedSource === "default") {
+    return path.join(AUTOMATION_WORKSPACE, baseName);
+  }
+  return path.join(AUTOMATION_WORKSPACE, `${parsed.name}.${normalizedSource}${parsed.ext}`);
+}
+
+async function readJsonArrayFile(filePath) {
+  if (!filePath || !fsSync.existsSync(filePath)) return [];
+  const payload = JSON.parse(await fs.readFile(filePath, "utf8"));
+  if (Array.isArray(payload)) return payload;
+  if (payload && typeof payload === "object") return Object.values(payload);
+  return [];
+}
+
+function normalizePartialProgressAction(rawAction, item = {}) {
+  const action = String(rawAction || "").trim();
+  const lower = action.toLowerCase();
+  if (!lower) return "";
+  if (PARTIAL_PROGRESS_ACTIONS.has(lower)) return lower;
+  if (lower.includes("resume_downloaded") || lower === "done_resume_downloaded") {
+    return lower.includes("knowledge") ? "knowledge_answered_resume_downloaded" : "accepted_resume_downloaded";
+  }
+  if (lower.includes("resume_already_requested") || lower === "done_resume_already_requested") {
+    return lower.includes("knowledge") ? "knowledge_answered_resume_already_requested" : "accepted_resume_already_requested";
+  }
+  if (lower.includes("resume_requested") || lower === "done_resume_requested") {
+    return lower.includes("knowledge") ? "knowledge_answered_and_requested_resume" : "accepted_requested_resume";
+  }
+  if (lower.endsWith("_sent_waiting") || lower === "wait_candidate_reply") {
+    const status = String(item.status || "").trim().toLowerCase();
+    if (status.startsWith("knowledge_answered")) return "knowledge_answered";
+    if (status.includes("position_screening")) return "position_screening_sent_waiting";
+    if (status.includes("basic_conditions")) return "basic_conditions_sent_waiting";
+    return "sent_basic_conditions";
+  }
+  if (lower.startsWith("knowledge_answered")) return "knowledge_answered";
+  if (lower === "knowledge_silent_skipped") return "unclear_or_waiting_skipped";
+  if (lower.endsWith("_rejected") || lower === "done_skip_unsuitable") return "rejected_skipped";
+  if (lower.endsWith("_unclear") || lower.endsWith("_waiting") || lower === "wait_or_manual_review") {
+    return "unclear_or_waiting_skipped";
+  }
+  if (lower.includes("unconfigured_position")) return "unconfigured_position_skipped";
+  if (lower.includes("blocked") || lower.startsWith("retry_")) return "blocked";
+  return "";
+}
+
+function partialProgressAction(item = {}) {
+  return (
+    normalizePartialProgressAction(item.action, item) ||
+    normalizePartialProgressAction(item.status, item) ||
+    normalizePartialProgressAction(item.nextAction, item)
+  );
+}
+
+function partialProgressKey(item = {}) {
+  const identity = item.candidateIdentity && typeof item.candidateIdentity === "object" ? item.candidateIdentity : {};
+  const key = [
+    item.conversationKey,
+    item.candidateIdentityKey,
+    identity.identityKey,
+    identity.conversationKey,
+    item.candidateName,
+    item.candidateLabel,
+  ].map((value) => String(value || "").trim()).find(Boolean);
+  if (key) return key;
+  return crypto.createHash("sha1").update(JSON.stringify(item)).digest("hex").slice(0, 24);
+}
+
+function choosePartialProgressAction(actions) {
+  const priority = [
+    ...PARTIAL_DOWNLOADED_RESUME_ACTIONS,
+    ...PARTIAL_REQUESTED_RESUME_ACTIONS,
+    "position_screening_sent_waiting",
+    "knowledge_answered_and_sent_screening",
+    "basic_conditions_sent_waiting",
+    "sent_basic_conditions",
+    "knowledge_answered",
+    "rejected_skipped",
+    "blocked",
+    "unconfigured_position_skipped",
+    "unclear_or_waiting_skipped",
+  ];
+  for (const action of priority) {
+    if (actions.has(action)) return action;
+  }
+  return Array.from(actions)[0] || "processed";
+}
+
+async function recoverAutomation24hPartialStats({ target, roundStartedAt } = {}) {
+  if (!target || target.platform !== "boss") {
+    return { ok: true, recovered: false, source: "unsupported_platform" };
+  }
+  const sourceKey = target.sourceKey || automationBrowserSourceKey(target.platform, target.accountId);
+  const decisionLogPath = automationAgentScopedFile("recruiter_decision_log.json", sourceKey);
+  const parsedStartMs = parseChinaDateTimeMs(roundStartedAt);
+  const startMs = parsedStartMs ? parsedStartMs - 5000 : 0;
+  const endMs = Date.now() + 60000;
+  if (!parsedStartMs) {
+    return { ok: false, recovered: false, source: "decision_log", message: "missing round start time" };
+  }
+
+  const rows = await readJsonArrayFile(decisionLogPath);
+  const byConversation = new Map();
+  for (const item of rows) {
+    if (!item || typeof item !== "object") continue;
+    const itemMs = parseChinaDateTimeMs(item.time || item.updatedAt || item.createdAt);
+    if (!itemMs || itemMs < startMs || itemMs > endMs) continue;
+    const action = partialProgressAction(item);
+    if (!PARTIAL_PROGRESS_ACTIONS.has(action)) continue;
+    const key = partialProgressKey(item);
+    if (!byConversation.has(key)) {
+      byConversation.set(key, { actions: new Set(), item });
+    }
+    byConversation.get(key).actions.add(action);
+  }
+
+  const counts = {};
+  let requestedResume = 0;
+  let downloadedResume = 0;
+  for (const record of byConversation.values()) {
+    const primaryAction = choosePartialProgressAction(record.actions);
+    counts[primaryAction] = (counts[primaryAction] || 0) + 1;
+    if ([...record.actions].some((action) => PARTIAL_DOWNLOADED_RESUME_ACTIONS.has(action))) {
+      downloadedResume += 1;
+    } else if ([...record.actions].some((action) => PARTIAL_REQUESTED_RESUME_ACTIONS.has(action))) {
+      requestedResume += 1;
+    }
+  }
+
+  const processed = byConversation.size;
+  return {
+    ok: true,
+    recovered: processed > 0 || requestedResume > 0 || downloadedResume > 0,
+    source: "decision_log",
+    processed,
+    requestedResume,
+    downloadedResume,
+    counts,
+    message: processed > 0 ? `Recovered ${processed} processed conversations from ${path.basename(decisionLogPath)}` : "",
+    details: {
+      filePath: decisionLogPath,
+      since: roundStartedAt,
+      scanned: rows.length,
+    },
+  };
+}
+
 const automation24hScheduler = createAutomation24hScheduler({
   dataDir: DATA_DIR,
   targets: DEFAULT_BROWSER_LAUNCH_TARGETS,
@@ -126,6 +330,7 @@ const automation24hScheduler = createAutomation24hScheduler({
   maxTotalPerRound: Math.max(1, Math.min(Number(process.env.AUTOMATION_24H_MAX_TOTAL || 40), 120)),
   sleep,
   fetchAgentJson,
+  recoverPartialStats: recoverAutomation24hPartialStats,
   resolveTarget(spec = {}) {
     const accountId = normalizeBossAutomationAccountId(spec.accountId || spec.account || "boss_a");
     const platform = normalizeAutomationPlatformId(spec.platform || spec.source || "boss");
@@ -133,31 +338,49 @@ const automation24hScheduler = createAutomation24hScheduler({
     if (!account) throw new Error(`未找到自动化账号：${accountId}`);
     return getAutomationBrowserRuntimeTarget(account, platform);
   },
+  async prepareTargetBrowser(target) {
+    return startBrowserTarget(target.account, target.platform, { waitTimeoutMs: 45000 });
+  },
   async ensureTargetReady(target) {
-    const browser = await startBrowserTarget(target.account, target.platform, { waitTimeoutMs: 45000 });
+    const cdpReady = target.cdpPort ? await isCdpReady(target.cdpPort).catch(() => false) : false;
+    if (!cdpReady) {
+      throw new Error(`${target.label || target.platformLabel || target.platform} 浏览器 CDP 未就绪，需要重新打开浏览器`);
+    }
+    const browser = await inspectAutomationBrowserStatusPage(target);
+    if (!browser.page && !browser.authenticated) {
+      throw new Error(`${target.label || target.platformLabel || target.platform} 浏览器页面未就绪，需要重新打开浏览器`);
+    }
+    if (browser.captcha || browser.needsLogin || browser.accountAbnormal) {
+      return {
+        ...browser,
+        cdpPort: target.cdpPort || 0,
+        agentPort: target.agentPort || 0,
+        captcha: Boolean(browser.captcha),
+        needsLogin: Boolean(browser.needsLogin),
+        accountAbnormal: Boolean(browser.accountAbnormal),
+      };
+    }
     const agent = await ensureAutomationBrowserAgentReady(target);
     return {
       ...browser,
       agent,
+      cdpPort: target.cdpPort || 0,
+      agentPort: target.agentPort || 0,
+      agentReady: Boolean(agent.ready),
       captcha: Boolean(browser.captcha),
       needsLogin: Boolean(browser.needsLogin),
       accountAbnormal: Boolean(browser.accountAbnormal),
     };
   },
   async cleanupTarget(target) {
-    const [browser, agent] = await Promise.all([
-      target.cdpPort
-        ? stopAutomationLocalPort(target.cdpPort, "browser")
-        : Promise.resolve({ ok: true, kind: "browser", skipped: true, reason: "browser_port_missing" }),
-      target.agentPort
-        ? stopAutomationLocalPort(target.agentPort, "agent")
-        : Promise.resolve({ ok: true, kind: "agent", skipped: true, reason: "agent_port_missing" }),
-    ]);
+    const agent = target.agentPort
+      ? await stopAutomationLocalPort(target.agentPort, "agent")
+      : { ok: true, kind: "agent", skipped: true, reason: "agent_port_missing" };
     return {
-      ok: Boolean(browser.ok && agent.ok),
+      ok: Boolean(agent.ok),
       cdpPort: target.cdpPort || 0,
       agentPort: target.agentPort || 0,
-      browser,
+      browser: { ok: true, kind: "browser", skipped: true, keptOpen: true, reason: "browser_kept_open" },
       agent,
     };
   },

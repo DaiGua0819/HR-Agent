@@ -1513,14 +1513,6 @@ async function runBrowserLaunchTarget(job, target, waitTimeoutMs) {
     });
     updateBrowserLaunchJob(job);
     try {
-      const agentResult = await ensureAutomationBrowserAgentReady(target);
-      Object.assign(target, {
-        agentPort: agentResult.agentPort || target.agentPort,
-        agentStarted: Boolean(agentResult.started),
-        agentReady: Boolean(agentResult.ready),
-        agentError: "",
-      });
-      updateBrowserLaunchJob(job);
       const result = await startBrowserTarget(target.account, target.platform, { waitTimeoutMs });
       Object.assign(target, result, {
         status: result.captcha ? "captcha" : result.accountAbnormal ? "account_abnormal" : result.needsLogin ? "needs_login" : "ready",
@@ -1532,7 +1524,6 @@ async function runBrowserLaunchTarget(job, target, waitTimeoutMs) {
       if (error.launchPid) target.pid = error.launchPid;
       if (error.launchMethod) target.launchMethod = error.launchMethod;
       if (error.browserPath) target.browserPath = error.browserPath;
-      if (!target.agentReady) target.agentError = error.message || "agent 启动失败";
       target.error = error.message || "启动失败";
       updateBrowserLaunchJob(job);
       if (attempt < target.maxAttempts) {
@@ -2023,7 +2014,7 @@ async function handleStartAutomationBrowser(request, response) {
       ok: true,
       jobId: job.id,
       job: getPublicBrowserLaunchJob(job),
-      message: "已创建浏览器和 agent 启动任务",
+      message: "已创建浏览器启动和登录检查任务",
     });
   } catch (error) {
     sendJson(response, error.statusCode || 500, { error: error.message || "启动浏览器失败" });
@@ -2150,11 +2141,9 @@ async function inspectAutomationBrowserStatusTarget(account, platform) {
     target.blockReason = pageState.blockReason || "";
     if (pageState.error) target.pageError = pageState.error;
   }
-  if (!target.cdpReady && !target.agentReady) {
-    target.status = "closed";
-  } else if (!target.cdpReady || !target.agentReady) {
-    target.status = "failed";
-    target.error = target.cdpReady ? agentStatus.error || "agent 服务未响应" : "浏览器 CDP 未响应";
+  if (!target.cdpReady) {
+    target.status = target.agentReady ? "failed" : "closed";
+    if (target.agentReady) target.error = "浏览器 CDP 未响应";
   } else if (target.captcha) {
     target.status = "captcha";
   } else if (target.accountAbnormal) {
