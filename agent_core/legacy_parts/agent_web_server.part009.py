@@ -1469,6 +1469,11 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"files": SERVICE.files[-50:]})
             elif path == "/api/pause":
                 self.send_json(SERVICE.pause_state())
+            elif path == "/api/recruiter/process-messages/task":
+                query = urlparse(self.path).query
+                params = dict(part.split("=", 1) for part in query.split("&") if "=" in part)
+                task_id = unquote(params.get("taskId") or params.get("id") or "")
+                self.send_json(SERVICE.get_boss_process_task(task_id))
             else:
                 self.send_response(410)
                 self.send_cors_headers()

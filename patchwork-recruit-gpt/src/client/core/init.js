@@ -691,6 +691,32 @@ function automation24hRunningText() {
   return `自动处理中${"。".repeat(automation24hDotCount || 1)}`;
 }
 
+function formatAutomation24hDuration(ms) {
+  const totalSeconds = Math.max(0, Math.ceil(Number(ms || 0) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}小时${String(minutes).padStart(2, "0")}分${String(seconds).padStart(2, "0")}秒`;
+  if (minutes > 0) return `${minutes}分${String(seconds).padStart(2, "0")}秒`;
+  return `${seconds}秒`;
+}
+
+function automation24hCountdownText(payload = automation24hLastStatus) {
+  if (!payload || payload.status !== "waiting" || !payload.nextRunAt) return "";
+  const nextMs = Date.parse(payload.nextRunAt);
+  if (!Number.isFinite(nextMs)) return "";
+  return `距离下一轮 ${formatAutomation24hDuration(nextMs - Date.now())}`;
+}
+
+function automation24hButtonText(payload, active, stopping) {
+  if (stopping) return "停止中，当前候选人处理完后停止";
+  if (!active) return "24小时自动运转";
+  if (payload?.status === "waiting" && payload?.nextRunAt) {
+    return `第${Number(payload.cycle || 0)}轮已经处理完毕，等待下一轮启动中`;
+  }
+  return automation24hRunningText();
+}
+
 function normalizeAutomation24hTimeInput(value, fallback) {
   const text = String(value || "").trim();
   const match = text.match(/^(\d{1,2}):(\d{2})$/);
@@ -715,6 +741,9 @@ function renderAutomation24hSettings(payload = automation24hLastStatus) {
   if (elements.automation24hEndInput && settings.activeEnd) {
     elements.automation24hEndInput.value = normalizeAutomation24hTimeInput(settings.activeEnd, "23:00");
   }
+  if (elements.automation24hCyclesInput && settings.maxCycles != null) {
+    elements.automation24hCyclesInput.value = String(Math.max(0, Math.min(999, Number(settings.maxCycles || 0))));
+  }
 }
 
 function renderAutomation24hStatus(payload = automation24hLastStatus) {
@@ -722,17 +751,24 @@ function renderAutomation24hStatus(payload = automation24hLastStatus) {
   renderAutomation24hSettings(payload);
   const active = automation24hIsActive(payload);
   const stopping = Boolean(payload?.stopping || payload?.status === "stopping");
-  elements.automation24hToggleBtn.textContent = stopping ? "停止中，当前候选人处理完后停止" : active ? automation24hRunningText() : "24小时自动运转";
+  elements.automation24hToggleBtn.textContent = automation24hButtonText(payload, active, stopping);
   elements.automation24hToggleBtn.classList.toggle("is-running", active && !stopping);
   elements.automation24hToggleBtn.classList.toggle("is-stopping", stopping);
+  const countdownText = automation24hCountdownText(payload);
+  if (elements.automation24hCountdown) {
+    elements.automation24hCountdown.hidden = !countdownText;
+    elements.automation24hCountdown.textContent = countdownText;
+  }
 
   const summary = payload?.summary || {};
   const runningLabels = (payload?.currentBatch || []).map((item) => item.label).filter(Boolean);
   const runningText = runningLabels.length ? `当前处理：${runningLabels.join("、")}` : "当前处理：无";
   const browserReadyText = `已登录待处理 ${Number(summary.browserReady || 0)}`;
   const remainingText = `未读红点 ${Number(summary.remainingUnread || 0)}，本轮剩余 ${Number(summary.remainingActionable || 0)}`;
+  const maxCycles = Number(payload?.settings?.maxCycles || 0);
+  const cycleText = maxCycles > 0 ? `轮次 ${Number(payload?.cycle || 0)}/${maxCycles}` : `已运行 ${Number(payload?.cycle || 0)} 轮`;
   elements.automation24hSummary.textContent = payload
-    ? `${payload.message || automation24hStatusLabel(payload.status)}；${runningText}；${browserReadyText}；${remainingText}`
+    ? `${payload.message || automation24hStatusLabel(payload.status)}；${cycleText}；${runningText}；${browserReadyText}；${remainingText}`
     : "未启动";
 
   const targets = Array.isArray(payload?.targets) ? payload.targets : [];
@@ -824,10 +860,15 @@ function readAutomation24hSettingsFromInputs() {
   if (!Number.isFinite(delayValue) || delayValue < 1) {
     throw new Error("等待间隔必须大于等于 1 分钟");
   }
+  const maxCyclesValue = Number(elements.automation24hCyclesInput?.value || 0);
+  if (!Number.isFinite(maxCyclesValue) || maxCyclesValue < 0) {
+    throw new Error("总轮数必须大于等于 0，0 表示不限制");
+  }
   return {
     cycleDelayMinutes: Math.min(1440, Math.floor(delayValue)),
     activeStart: normalizeAutomation24hTimeInput(elements.automation24hStartInput?.value, "06:00"),
     activeEnd: normalizeAutomation24hTimeInput(elements.automation24hEndInput?.value, "23:00"),
+    maxCycles: Math.min(999, Math.floor(maxCyclesValue)),
   };
 }
 
@@ -845,7 +886,8 @@ async function saveAutomation24hSettings({ silent = false } = {}) {
     automation24hLastStatus = payload;
     renderAutomation24hStatus(payload);
     if (!silent) {
-      setStatus(`24小时自动运转设置已保存：等待 ${settings.cycleDelayMinutes} 分钟，运行 ${settings.activeStart}-${settings.activeEnd}`, "is-done");
+      const cyclesText = settings.maxCycles > 0 ? `总轮数 ${settings.maxCycles} 轮` : "总轮数不限";
+      setStatus(`24小时自动运转设置已保存：等待 ${settings.cycleDelayMinutes} 分钟，运行 ${settings.activeStart}-${settings.activeEnd}，${cyclesText}`, "is-done");
     }
     return payload;
   } catch (error) {
@@ -1768,6 +1810,7 @@ elements.automation24hToggleBtn?.addEventListener("click", toggleAutomation24h);
   elements.automation24hDelayInput,
   elements.automation24hStartInput,
   elements.automation24hEndInput,
+  elements.automation24hCyclesInput,
 ].forEach((input) => {
   input?.addEventListener("input", () => {
     automation24hSettingsDirty = true;

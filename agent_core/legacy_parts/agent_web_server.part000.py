@@ -605,6 +605,9 @@ class WebAgentService:
         self.automation_speed_factor = 1.0
         self.automation_speed_multiplier = AUTOMATION_SPEED_MULTIPLIER
         self.proactive_task_lock = threading.Lock()
+        self.boss_process_tasks: dict[str, dict] = {}
+        self.boss_process_tasks_lock = threading.Lock()
+        self.boss_process_task_ttl_seconds = 6 * 60 * 60
 
     def save_common_phrase_cache(self) -> None:
         save_json(COMMON_PHRASE_CACHE_FILE, self.common_phrase_cache)
@@ -974,6 +977,203 @@ class WebAgentService:
         if self.pause_requested:
             reason = self.pause_reason or "用户手动暂停"
             raise PauseRequested(f"任务已暂停：{reason}")
+
+    def _prune_boss_process_tasks_locked(self) -> None:
+        now = time.time()
+        stale_ids: list[str] = []
+        for task_id, task in self.boss_process_tasks.items():
+            if not isinstance(task, dict):
+                stale_ids.append(task_id)
+                continue
+            if task.get("status") == "running":
+                continue
+            finished_at_ms = int(task.get("finishedAtMs") or task.get("updatedAtMs") or 0)
+            if finished_at_ms and now - (finished_at_ms / 1000) > self.boss_process_task_ttl_seconds:
+                stale_ids.append(task_id)
+        for task_id in stale_ids:
+            self.boss_process_tasks.pop(task_id, None)
+
+    def _boss_process_task_public(self, task: dict | None) -> dict:
+        if not isinstance(task, dict):
+            return {}
+        public = dict(task)
+        public.pop("payload", None)
+        if public.get("status") == "running":
+            timing = self.refresh_operation_timing_runtime(self.current_operation_timing)
+            if isinstance(timing, dict):
+                public["timings"] = timing
+        return public
+
+    def _update_boss_process_task(self, task_id: str, **patch) -> dict:
+        now = time.time()
+        with self.boss_process_tasks_lock:
+            task = self.boss_process_tasks.get(task_id)
+            if not isinstance(task, dict):
+                return {}
+            task.update(patch)
+            task["updatedAt"] = self._operation_timing_timestamp(now)
+            task["updatedAtMs"] = int(now * 1000)
+            if patch.get("status") in {"completed", "failed", "paused"}:
+                task["finishedAt"] = task["updatedAt"]
+                task["finishedAtMs"] = task["updatedAtMs"]
+            return self._boss_process_task_public(task)
+
+    def get_boss_process_task(self, task_id: str) -> dict:
+        task_id = safe_text(str(task_id or ""), 80)
+        with self.boss_process_tasks_lock:
+            self._prune_boss_process_tasks_locked()
+            task = self.boss_process_tasks.get(task_id)
+            if not isinstance(task, dict):
+                return {"ok": False, "error": "task_not_found", "taskId": task_id}
+            public = self._boss_process_task_public(task)
+        return {
+            "ok": True,
+            "taskId": public.get("taskId") or task_id,
+            "status": public.get("status") or "",
+            "task": public,
+            "result": public.get("result"),
+            "error": public.get("error") or "",
+        }
+
+    def cancel_boss_process_task(self, task_id: str, reason: str = "") -> dict:
+        task_id = safe_text(str(task_id or ""), 80)
+        reason = safe_text(str(reason or "stop requested"), 180)
+        should_pause = False
+        with self.boss_process_tasks_lock:
+            task = self.boss_process_tasks.get(task_id)
+            if not isinstance(task, dict):
+                return {"ok": False, "error": "task_not_found", "taskId": task_id}
+            if task.get("status") == "running":
+                task["cancelRequested"] = True
+                task["cancelReason"] = reason
+                should_pause = True
+            public = self._boss_process_task_public(task)
+        if should_pause:
+            self.set_pause(True, reason)
+            public = self._update_boss_process_task(task_id, cancelRequested=True, cancelReason=reason)
+        return {
+            "ok": True,
+            "taskId": task_id,
+            "status": public.get("status") or "",
+            "task": public,
+            "cancelRequested": bool(public.get("cancelRequested")),
+        }
+
+    def start_boss_process_task(self, payload: dict) -> dict:
+        if not isinstance(payload, dict):
+            payload = {}
+        raw_max_total = payload.get("maxTotal", payload.get("count", 40))
+        try:
+            max_total = int(raw_max_total if raw_max_total is not None else 40)
+        except Exception:
+            max_total = 40
+        max_total = max(1, max_total)
+        target_position = safe_text(str(payload.get("targetPosition") or ""), 200)
+        options = payload.get("options") if isinstance(payload.get("options"), dict) else None
+
+        now = time.time()
+        with self.boss_process_tasks_lock:
+            self._prune_boss_process_tasks_locked()
+            running = next(
+                (
+                    task
+                    for task in self.boss_process_tasks.values()
+                    if isinstance(task, dict) and task.get("status") == "running"
+                ),
+                None,
+            )
+            if isinstance(running, dict):
+                public = self._boss_process_task_public(running)
+                return {
+                    "ok": True,
+                    "taskId": public.get("taskId"),
+                    "status": public.get("status"),
+                    "task": public,
+                    "alreadyRunning": True,
+                }
+
+            task_id = str(uuid.uuid4())
+            task = {
+                "taskId": task_id,
+                "status": "running",
+                "startedAt": self._operation_timing_timestamp(now),
+                "startedAtMs": int(now * 1000),
+                "updatedAt": self._operation_timing_timestamp(now),
+                "updatedAtMs": int(now * 1000),
+                "finishedAt": "",
+                "finishedAtMs": 0,
+                "maxTotal": max_total,
+                "targetPosition": target_position,
+                "cancelRequested": False,
+                "cancelReason": "",
+                "result": None,
+                "error": "",
+            }
+            self.boss_process_tasks[task_id] = task
+            public = self._boss_process_task_public(task)
+
+        thread = threading.Thread(
+            target=self._run_boss_process_task,
+            args=(task_id, options, max_total, target_position),
+            name=f"boss-process-{task_id[:8]}",
+            daemon=True,
+        )
+        thread.start()
+        return {"ok": True, "taskId": task_id, "status": "running", "task": public, "alreadyRunning": False}
+
+    def _run_boss_process_task(
+        self,
+        task_id: str,
+        options: dict | None,
+        max_total: int,
+        target_position: str,
+    ) -> None:
+        timing = None
+        try:
+            self.set_pause(False, "boss background process started")
+            timing = self.start_operation_timing("chat", "BOSS process unread messages")
+            with self.lock:
+                if isinstance(options, dict):
+                    self.set_options(options)
+                terminal = self.get_terminal()
+                result = self.screen_all_recruiter_unread_basic_conditions(
+                    terminal,
+                    max_total=max_total,
+                    target_position=target_position,
+                )
+            finished_timing = self.finish_operation_timing(timing, "success")
+            if isinstance(result, dict) and finished_timing:
+                result["timings"] = finished_timing
+            self._update_boss_process_task(
+                task_id,
+                status="completed",
+                result=compact_process_messages_response(result),
+                error="",
+            )
+        except PauseRequested as error:
+            finished_timing = self.finish_operation_timing(timing, "paused", str(error))
+            result = {
+                "reply": str(error),
+                "paused": True,
+                "pause": self.pause_state(),
+                "timings": finished_timing,
+            }
+            self._update_boss_process_task(
+                task_id,
+                status="paused",
+                result=result,
+                error=safe_text(str(error), 260),
+            )
+        except Exception as error:
+            finished_timing = self.finish_operation_timing(timing, "failed", str(error))
+            self._update_boss_process_task(
+                task_id,
+                status="failed",
+                result={"error": str(error), "timings": finished_timing},
+                error=safe_text(str(error), 260),
+            )
+        finally:
+            self.close_current_thread_terminal()
 
     def set_options(self, options: dict) -> dict:
         with self.lock:

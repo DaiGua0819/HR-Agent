@@ -7,6 +7,16 @@
                 self.send_json({"ok": True, "pause": SERVICE.set_pause(paused, reason)})
             elif path == "/api/options":
                 self.send_json(SERVICE.set_options(self.read_json()))
+            elif path == "/api/recruiter/process-messages/start":
+                result = SERVICE.start_boss_process_task(self.read_json())
+                self.send_json(result, status=202 if result.get("ok") else 500)
+            elif path == "/api/recruiter/process-messages/cancel":
+                payload = self.read_json()
+                result = SERVICE.cancel_boss_process_task(
+                    str(payload.get("taskId") or payload.get("id") or ""),
+                    str(payload.get("reason") or ""),
+                )
+                self.send_json(result, status=200 if result.get("ok") else 404)
             elif path == "/api/recruiter/process-messages":
                 payload = self.read_json()
                 options = payload.get("options")

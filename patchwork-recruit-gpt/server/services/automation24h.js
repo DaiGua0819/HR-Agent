@@ -5,6 +5,12 @@ const path = require("node:path");
 const DEFAULT_CYCLE_DELAY_MS = 15 * 60 * 1000;
 const DEFAULT_ACTIVE_START = "06:00";
 const DEFAULT_ACTIVE_END = "23:00";
+const DEFAULT_MAX_CYCLES = 0;
+const BOSS_TASK_START_TIMEOUT_MS = 30000;
+const BOSS_TASK_POLL_TIMEOUT_MS = 12000;
+const BOSS_TASK_POLL_MS = 5000;
+const BOSS_TASK_MAX_MS = 90 * 60 * 1000;
+const BOSS_TASK_POLL_FAILURE_LIMIT = 12;
 const DEFAULT_TARGETS = [
   { platform: "boss", accountId: "boss_a" },
   { platform: "boss", accountId: "boss_b" },
@@ -44,6 +50,13 @@ function normalizeCount(value, fallback = 0) {
 function normalizeDelayMinutes(value, fallback = 15) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 1 ? Math.min(Math.floor(number), 1440) : fallback;
+}
+
+function normalizeCycleLimit(value, fallback = DEFAULT_MAX_CYCLES) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  if (number <= 0) return 0;
+  return Math.min(Math.floor(number), 999);
 }
 
 function normalizeTimeText(value, fallback) {
@@ -86,11 +99,20 @@ function normalizeSchedulerSettings(input = {}, fallback = {}) {
   );
   const activeStart = normalizeTimeText(input.activeStart ?? input.runStart ?? input.startTime, fallback.activeStart || DEFAULT_ACTIVE_START);
   const activeEnd = normalizeTimeText(input.activeEnd ?? input.runEnd ?? input.endTime, fallback.activeEnd || DEFAULT_ACTIVE_END);
+  const fallbackMaxCycles = normalizeCycleLimit(
+    fallback.maxCycles ?? fallback.totalCycles ?? fallback.cycleLimit ?? DEFAULT_MAX_CYCLES,
+    DEFAULT_MAX_CYCLES
+  );
+  const maxCycles = normalizeCycleLimit(
+    input.maxCycles ?? input.totalCycles ?? input.cycleLimit ?? input.maxCycleCount,
+    fallbackMaxCycles
+  );
   return {
     cycleDelayMinutes,
     cycleDelayMs: cycleDelayMinutes * 60 * 1000,
     activeStart,
     activeEnd,
+    maxCycles,
   };
 }
 
@@ -235,7 +257,7 @@ function buildLogMessage(entry) {
     return `${time} ${label} 处理完成，共处理 ${entry.processed || 0} 条消息，获取 ${entry.downloadedResume || 0} 个简历`;
   }
   if (entry.event === "cycle_completed") {
-    return `${time} 第${entry.cycle}大轮处理完成，等待 ${Math.round((entry.delayMs || 0) / 60000)} 分钟`;
+    return `${time} 第${entry.cycle}轮已经处理完毕，等待下一轮启动中，间隔 ${Math.round((entry.delayMs || 0) / 60000)} 分钟`;
   }
   if (entry.event === "target_browser_ready") {
     return `${time} ${label} 浏览器已登录，等待调度处理`;
@@ -341,6 +363,7 @@ function createAutomation24hScheduler({
       cycleDelayMs: schedulerSettings.cycleDelayMs,
       activeStart: schedulerSettings.activeStart,
       activeEnd: schedulerSettings.activeEnd,
+      maxCycles: schedulerSettings.maxCycles,
     };
   }
 
@@ -456,7 +479,7 @@ function createAutomation24hScheduler({
     await appendLog({
       event: "settings_updated",
       settings: publicSettings(),
-      message: `${chinaTimeText()} 24小时自动运转设置已更新：等待 ${schedulerSettings.cycleDelayMinutes} 分钟，运行 ${schedulerSettings.activeStart}-${schedulerSettings.activeEnd}`,
+      message: `${chinaTimeText()} 24小时自动运转设置已更新：等待 ${schedulerSettings.cycleDelayMinutes} 分钟，运行 ${schedulerSettings.activeStart}-${schedulerSettings.activeEnd}，总轮数 ${schedulerSettings.maxCycles || "不限"}`,
     });
     return status();
   }
@@ -519,6 +542,10 @@ function createAutomation24hScheduler({
   function shouldRunSecondRound(observed) {
     if (!observed?.ok || observed.busy) return false;
     return normalizeCount(observed.remainingUnread, 0) > 0 || normalizeCount(observed.remainingActionable, 0) > 0;
+  }
+
+  function isBossTarget(target) {
+    return target?.platform === "boss";
   }
 
   function browserStatusFromResult(result = {}) {
@@ -675,14 +702,7 @@ function createAutomation24hScheduler({
     return true;
   }
 
-  async function runRound(target, round) {
-    await pauseTarget(target, false, "24小时自动运转开始处理前自动解除暂停");
-    const request = targetProcessRequest(target);
-    const { payload } = await fetchAgentJson(target.sourceKey, request.path, {
-      method: "POST",
-      body: request.body,
-      timeoutMs: request.timeoutMs,
-    });
+  async function finishRoundFromPayload(target, round, payload) {
     if (payload?.paused || payload?.pause?.paused) {
       throw new Error(payload.reply || payload.message || "任务已暂停");
     }
@@ -709,6 +729,156 @@ function createAutomation24hScheduler({
       resultMessage: stats.message,
     });
     return { stats, observed };
+  }
+
+  async function cancelBossTask(target, taskId, reason) {
+    if (!taskId) return null;
+    try {
+      const { payload } = await fetchAgentJson(target.sourceKey, "/api/recruiter/process-messages/cancel", {
+        method: "POST",
+        body: { taskId, reason },
+        timeoutMs: 30000,
+      });
+      return payload;
+    } catch (error) {
+      await appendLog({
+        event: "round_task_cancel_failed",
+        targetId: target.id,
+        targetLabel: target.label,
+        platform: target.platform,
+        platformLabel: target.platformLabel,
+        accountId: target.accountId,
+        accountName: target.accountName,
+        sourceKey: target.sourceKey,
+        taskId,
+        error: error.message || "cancel failed",
+        message: `${chinaTimeText()} ${target.label} BOSS task cancel failed: ${error.message || "unknown"}`,
+      });
+      return null;
+    }
+  }
+
+  async function pollBossTaskResult(target, round, taskId) {
+    const startedAt = Date.now();
+    let cancelSent = false;
+    let pollFailures = 0;
+    while (true) {
+      const elapsedMs = Date.now() - startedAt;
+      if (elapsedMs > BOSS_TASK_MAX_MS) {
+        if (!cancelSent) {
+          cancelSent = true;
+          await cancelBossTask(target, taskId, "boss background task exceeded time limit");
+        }
+        throw new Error("BOSS background task exceeded time limit");
+      }
+
+      if ((state.stopRequested || state.windowPauseRequested) && !cancelSent) {
+        cancelSent = true;
+        await cancelBossTask(target, taskId, "24h scheduler stop requested; finish current candidate then stop");
+        setTarget(target.id, {
+          status: "stopping",
+          lastMessage: "Stop requested; waiting current candidate to finish",
+          error: "",
+        });
+      }
+
+      let payload;
+      try {
+        const response = await fetchAgentJson(
+          target.sourceKey,
+          `/api/recruiter/process-messages/task?taskId=${encodeURIComponent(taskId)}`,
+          { timeoutMs: BOSS_TASK_POLL_TIMEOUT_MS }
+        );
+        payload = response.payload;
+        pollFailures = 0;
+      } catch (error) {
+        pollFailures += 1;
+        if (pollFailures > BOSS_TASK_POLL_FAILURE_LIMIT) {
+          throw new Error(`BOSS background task polling failed: ${error.message || error}`);
+        }
+        setTarget(target.id, {
+          status: cancelSent ? "stopping" : "running",
+          lastMessage: `BOSS task polling retry ${pollFailures}/${BOSS_TASK_POLL_FAILURE_LIMIT}`,
+        });
+        await sleep(BOSS_TASK_POLL_MS);
+        continue;
+      }
+
+      if (payload?.ok === false) {
+        throw new Error(payload.error || "BOSS background task not found");
+      }
+
+      const task = payload?.task && typeof payload.task === "object" ? payload.task : payload;
+      const status = String(task?.status || payload?.status || "");
+      const result = task?.result || payload?.result || {};
+      if (status === "completed") {
+        return result && typeof result === "object" ? result : task;
+      }
+      if (status === "paused" || result?.paused || payload?.paused || payload?.pause?.paused) {
+        const error = new Error(result?.reply || result?.message || task?.error || payload?.error || "BOSS background task paused");
+        error.payload = result || payload;
+        throw error;
+      }
+      if (status === "failed") {
+        const error = new Error(task?.error || result?.error || payload?.error || "BOSS background task failed");
+        error.payload = result || payload;
+        throw error;
+      }
+
+      setTarget(target.id, {
+        status: cancelSent ? "stopping" : "running",
+        lastMessage: cancelSent
+          ? "Stop requested; waiting current candidate to finish"
+          : `BOSS round ${round} running ${Math.floor(elapsedMs / 60000)}m`,
+      });
+      await sleep(BOSS_TASK_POLL_MS);
+    }
+  }
+
+  async function runBossRound(target, round, request) {
+    const { payload: startPayload } = await fetchAgentJson(target.sourceKey, "/api/recruiter/process-messages/start", {
+      method: "POST",
+      body: request.body,
+      timeoutMs: BOSS_TASK_START_TIMEOUT_MS,
+    });
+    const taskId = String(startPayload?.taskId || startPayload?.task?.taskId || "");
+    if (!taskId) {
+      throw new Error("BOSS background task did not return taskId");
+    }
+    await appendLog({
+      event: "round_task_started",
+      targetId: target.id,
+      targetLabel: target.label,
+      platform: target.platform,
+      platformLabel: target.platformLabel,
+      accountId: target.accountId,
+      accountName: target.accountName,
+      sourceKey: target.sourceKey,
+      round,
+      taskId,
+      alreadyRunning: Boolean(startPayload?.alreadyRunning),
+      message: `${chinaTimeText()} ${target.label} BOSS background task started (${taskId})`,
+    });
+    setTarget(target.id, {
+      status: "running",
+      lastMessage: startPayload?.alreadyRunning ? "Attached to running BOSS task" : "BOSS task started",
+    });
+    const result = await pollBossTaskResult(target, round, taskId);
+    return finishRoundFromPayload(target, round, result);
+  }
+
+  async function runRound(target, round) {
+    await pauseTarget(target, false, "24小时自动运转开始处理前自动解除暂停");
+    const request = targetProcessRequest(target);
+    if (isBossTarget(target)) {
+      return runBossRound(target, round, request);
+    }
+    const { payload } = await fetchAgentJson(target.sourceKey, request.path, {
+      method: "POST",
+      body: request.body,
+      timeoutMs: request.timeoutMs,
+    });
+    return finishRoundFromPayload(target, round, payload);
   }
 
   async function recoverInterruptedRound(target, round, roundStartedAt, error) {
@@ -1017,6 +1187,9 @@ function createAutomation24hScheduler({
   }
 
   async function runLoop() {
+    let finalStatus = "stopped";
+    let finalMessage = "24小时自动运转已停止";
+    let finalEvent = "scheduler_stopped";
     try {
       while (!state.stopRequested) {
         await waitForActiveWindow();
@@ -1052,9 +1225,22 @@ function createAutomation24hScheduler({
           continue;
         }
 
+        if (schedulerSettings.maxCycles > 0 && state.cycle >= schedulerSettings.maxCycles) {
+          finalStatus = "completed";
+          finalMessage = `已完成设置的 ${schedulerSettings.maxCycles} 轮自动运转`;
+          finalEvent = "scheduler_completed";
+          await appendLog({
+            event: "cycle_limit_reached",
+            cycle: state.cycle,
+            maxCycles: schedulerSettings.maxCycles,
+            message: `${chinaTimeText()} 已完成设置的 ${schedulerSettings.maxCycles} 轮自动运转`,
+          });
+          break;
+        }
+
         const delayMs = schedulerSettings.cycleDelayMs;
         state.status = "waiting";
-        state.message = `第${state.cycle}大轮完成，等待下一轮`;
+        state.message = `第${state.cycle}轮已经处理完毕，等待下一轮启动中`;
         state.nextRunAt = new Date(Date.now() + delayMs).toISOString();
         updateSummary();
         await appendLog({ event: "cycle_completed", cycle: state.cycle, delayMs });
@@ -1077,15 +1263,15 @@ function createAutomation24hScheduler({
       return;
     }
 
-    state.status = "stopped";
+    state.status = finalStatus;
     state.active = false;
     state.stopping = false;
     state.stopRequested = false;
     state.windowPauseRequested = false;
-    state.message = "24小时自动运转已停止";
+    state.message = finalMessage;
     state.nextRunAt = "";
     updateSummary();
-    await appendLog({ event: "scheduler_stopped", message: `${chinaTimeText()} 24小时自动运转已停止` });
+    await appendLog({ event: finalEvent, message: `${chinaTimeText()} ${finalMessage}` });
   }
 
   async function start() {

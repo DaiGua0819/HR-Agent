@@ -13,17 +13,24 @@
   border-top: 1px solid var(--line);
 }
 
+.automation-24h-button-wrap {
+  position: relative;
+}
+
 .automation-24h-button {
   min-height: 56px;
   width: 100%;
   border: 0;
   border-radius: 8px;
+  padding: 10px 16px;
   color: #fff;
   background: #2563eb;
   cursor: pointer;
   font-size: 18px;
   font-weight: 800;
+  line-height: 1.25;
   letter-spacing: 0;
+  white-space: normal;
   box-shadow: 0 12px 28px rgba(37, 99, 235, 0.22);
 }
 
@@ -43,9 +50,31 @@
   box-shadow: 0 12px 28px rgba(161, 98, 7, 0.2);
 }
 
+.automation-24h-countdown {
+  position: absolute;
+  top: -9px;
+  right: 10px;
+  z-index: 1;
+  min-width: 116px;
+  border: 1px solid #bbf7d0;
+  border-radius: 999px;
+  padding: 4px 9px;
+  color: #166534;
+  background: #f0fdf4;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  text-align: center;
+  box-shadow: 0 8px 18px rgba(22, 101, 52, 0.16);
+}
+
+.automation-24h-countdown[hidden] {
+  display: none;
+}
+
 .automation-24h-settings {
   display: grid;
-  grid-template-columns: minmax(160px, 1.1fr) minmax(120px, 0.8fr) minmax(100px, 0.7fr) auto;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   gap: 8px;
   align-items: center;
 }
@@ -80,6 +109,7 @@
 }
 
 .automation-24h-save {
+  width: 100%;
   min-height: 34px;
   border: 1px solid #bfdbfe;
   border-radius: 8px;
@@ -826,12 +856,13 @@ body.details-dialog-open {
   }
 
   .automation-24h-settings label {
-    justify-content: space-between;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .automation-24h-settings input[type="number"],
   .automation-24h-settings input[type="time"] {
-    width: min(160px, 52vw);
+    width: min(130px, 44vw);
   }
 
   .automation-24h-targets {

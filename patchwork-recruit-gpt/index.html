@@ -106,7 +106,10 @@
                   </button>
                 </div>
                 <section class="automation-24h-panel" id="automation24hPanel">
-                  <button class="automation-24h-button" type="button" id="automation24hToggleBtn">24小时自动运转</button>
+                  <div class="automation-24h-button-wrap">
+                    <button class="automation-24h-button" type="button" id="automation24hToggleBtn">24小时自动运转</button>
+                    <span class="automation-24h-countdown" id="automation24hCountdown" hidden></span>
+                  </div>
                   <div class="automation-24h-settings">
                     <label>
                       <span>等待间隔</span>
@@ -120,6 +123,11 @@
                     <label>
                       <span>至</span>
                       <input id="automation24hEndInput" type="time" value="23:00" />
+                    </label>
+                    <label>
+                      <span>总轮数</span>
+                      <input id="automation24hCyclesInput" type="number" min="0" max="999" step="1" value="0" />
+                      <span>轮</span>
                     </label>
                     <button class="automation-24h-save" type="button" id="automation24hSaveSettingsBtn">保存设置</button>
                   </div>
@@ -860,7 +868,7 @@
       };
     </script>
     <script src="./src/config/frontend-config.js?v=20260605-hr-trainee-proactive"></script>
-    <script src="./script.js?v=20260612-automation-24h-settings"></script>
+    <script src="./script.js?v=20260613-automation-24h-cycles"></script>
   </body>
 </html>
 
