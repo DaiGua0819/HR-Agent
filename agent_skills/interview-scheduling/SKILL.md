@@ -59,3 +59,12 @@ description: Use when inviting a resume-library candidate to interview through t
 - `chat_input_not_found`: 已找到候选人但没有找到单聊输入框。
 - `send_verification_failed`: 点击发送后没有校验到消息。
 - `captcha_or_login_required`: 页面要求登录、人机验证或账号异常。
+
+## 安全演示边界
+
+- `dryRun=true` 只能用于验证打开平台、搜索联系人、校验联系人和定位聊天输入框，不能视为“已输入待发送消息”。
+- 非 `dryRun` 分支会填入消息并点击发送，不能用于演示“填好但不发送”。
+- 如果用户要求演示到输入消息为止，必须先实现 `draftOnly` / `prepareOnly` 模式，并保证该模式填入消息后返回 `sent=false`。
+- `draftOnly` 必须跳过发送动作和发送成功校验，只能保留联系人确认、输入框定位和草稿填入结果。
+- 演示前必须确认目标平台账号处于 agent ready 状态：浏览器 ready、CDP ready、agent ready 三项都需要通过。
+
