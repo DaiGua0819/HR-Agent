@@ -101,6 +101,12 @@
 }
 
 .candidate-table th,
+.candidate-table td {
+  padding: 8px 9px;
+  line-height: 1.35;
+}
+
+.candidate-table th,
 .batch-table th,
 .rule-table th {
   color: var(--muted);

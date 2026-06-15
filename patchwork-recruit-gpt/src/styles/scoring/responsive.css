@@ -313,8 +313,8 @@
 
 .candidate-table th:last-child,
 .candidate-table td:last-child {
-  min-width: 220px;
-  width: 220px;
+  min-width: 176px;
+  width: 176px;
 }
 
 .rule-table th:last-child,
