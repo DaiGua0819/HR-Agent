@@ -1289,6 +1289,8 @@ async function startAutomationAgentProcess(target) {
   const command = [
     "$ErrorActionPreference = 'Stop'",
     "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+    "Remove-Item Env:\\PYTHONHOME -ErrorAction SilentlyContinue",
+    "Remove-Item Env:\\PYTHONPATH -ErrorAction SilentlyContinue",
     `New-Item -ItemType Directory -Force -Path ${powerShellSingleQuoted(logDir)} | Out-Null`,
     ...startCommands,
   ].join("; ");

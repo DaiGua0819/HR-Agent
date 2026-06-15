@@ -1507,6 +1507,7 @@ def verify_interview_contact_match(
     page_text = " ".join(text_parts)
     name_matched = interview_text_contains(page_text, search_name, min_len=2)
     position_matched = interview_text_contains(page_text, applied_position, min_len=4) if applied_position else False
+    no_result = bool(final_probe.get("noResult")) and not result_matches
     matched_messages = []
     for message in chat_evidence:
         text = str(message.get("text") or "")
@@ -1514,9 +1515,9 @@ def verify_interview_contact_match(
             matched_messages.append(safe_text(text, 120))
     single_result = len(result_matches) == 1
     has_aux_evidence = bool(applied_position or chat_evidence)
-    verified = bool(name_matched and (position_matched or matched_messages or single_result or not has_aux_evidence))
+    verified = bool((not no_result) and name_matched and (position_matched or matched_messages or single_result or not has_aux_evidence))
     reason = ""
-    if not name_matched:
+    if no_result or not name_matched:
         reason = "search_result_not_found"
     elif len(result_matches) > 1 and not (position_matched or matched_messages):
         reason = "multiple_candidates_unverified"
@@ -1561,6 +1562,8 @@ def interview_page_probe(page, target_id: str = "") -> dict:
             el.getAttribute('title'),
             el.getAttribute('data-testid'),
             el.getAttribute('class'),
+            el.parentElement ? el.parentElement.getAttribute('class') : '',
+            el.parentElement && el.parentElement.parentElement ? el.parentElement.parentElement.getAttribute('class') : '',
             el.innerText,
             el.textContent,
             el.parentElement ? el.parentElement.innerText : '',
@@ -1569,8 +1572,10 @@ def interview_page_probe(page, target_id: str = "") -> dict:
           const editableItems = editables.map((el, index) => {
             const label = labelFor(el);
             const lower = label.toLowerCase();
+            const searchClassLike = /chat-top-search|chat-job-search|search-input|conversation-search|search-box|im-search-modal|im-search-modal__search-input|side-panel-header__input/.test(lower);
             let searchScore = 0;
             if (/搜索|搜|search|候选|联系人|姓名|手机号|id|简历|人才/.test(label) || /search|candidate|contact|resume|talent/.test(lower)) searchScore += 80;
+            if (searchClassLike) searchScore += 90;
             if (/输入|回复|发送|开启对话|聊天|message|chat|reply/.test(label) || /drop-area|sender|textarea_self/.test(lower)) searchScore -= 120;
             if (el.tagName === 'INPUT') searchScore += 20;
             if (rect(el).x < window.innerWidth * 0.55) searchScore += 12;
@@ -1579,6 +1584,7 @@ def interview_page_probe(page, target_id: str = "") -> dict:
 
             let chatScore = 0;
             if (/输入|回复|发送|开启对话|聊天|message|chat|reply|drop-area|sender|textarea_self/.test(label) || /drop-area|sender|textarea_self/.test(lower)) chatScore += 90;
+            if (searchClassLike) chatScore -= 180;
             if (rect(el).y > window.innerHeight * 0.45) chatScore += 20;
             if (el.disabled || el.readOnly) chatScore -= 200;
             return { index, tag: el.tagName.toLowerCase(), label: label.slice(0, 180), rect: rect(el), searchScore, chatScore };
@@ -1594,8 +1600,11 @@ def interview_page_probe(page, target_id: str = "") -> dict:
 
           const allNodes = Array.from(document.querySelectorAll('body *'));
           const resultMatches = [];
-          let noResult = false;
+          let noResultSignals = 0;
           const target = normalize(targetId);
+          const pageUrl = String(location.href || '');
+          const is51job = /ehire\.51job\.com/i.test(pageUrl);
+          const isZhilian = /zhaopin\.com\/app\/im/i.test(pageUrl);
           const metaFor = el => normalize([
             el.id,
             el.getAttribute('class'),
@@ -1614,21 +1623,53 @@ def interview_page_probe(page, target_id: str = "") -> dict:
             if (el.closest('input, textarea, [contenteditable="true"]')) return true;
             return false;
           };
+          const resultScoreFor = (el, text, childText) => {
+            const className = String(el.className || '');
+            const lowerClass = className.toLowerCase();
+            const box = rect(el);
+            let score = 0;
+            if (!childText.includes(target)) score += 50;
+            else score -= Math.min(140, Math.max(20, Math.floor(text.length / 8)));
+            if (text.length <= 80) score += 45;
+            else if (text.length <= 220) score += 10;
+            else score -= 120;
+            if (box.h >= 28 && box.h <= 180) score += 25;
+            if (box.w > window.innerWidth * 0.75) score -= 120;
+            if (box.h > window.innerHeight * 0.5) score -= 120;
+            if (is51job) {
+              if (/(^|\s)(list-item|recommend-item|wrap-item|batch-chat-item|conversation-item)(\s|$)/i.test(className)) score += 260;
+              if (/username|user-name|(^|\s)name(\s|$)|resume-info-status/i.test(className)) score += 150;
+              if (el.closest('.conversation-list,.conversation-list-container,.batch-chat-list-wrap')) score += 70;
+              if (el.closest('.conversation-search,.search-box')) score -= 420;
+            }
+            if (isZhilian) {
+              if (/(^|\s)im-search-result(\s|$)/i.test(className)) score += 320;
+              if (/im-search-result__content|im-search-result__title-row|im-search-result__name/i.test(className)) score += 190;
+              if (/im-search-all-results__group-list/i.test(className)) score += 130;
+              if (el.closest('.im-search-modal')) score += 80;
+              if (/km-modal|im-search-modal__layout|im-search-modal__content|im-search-result__box|im-search-result__left-box|km-scrollbar/i.test(className) && childText.includes(target)) score -= 120;
+            }
+            if (/search-box|conversation-search|im-search-modal__search-input|input|keyword|query/i.test(metaFor(el))) score -= 260;
+            return score;
+          };
           if (target) {
             allNodes.forEach((el, index) => {
               if (!visible(el)) return;
               const text = normalize(el.innerText || el.textContent || '');
               if (!text || text.length > 800 || !text.includes(target)) return;
+              if (isSearchEcho(el, text)) return;
               if (looksNoResult(text)) {
-                noResult = true;
+                noResultSignals += 1;
                 return;
               }
-              if (isSearchEcho(el, text)) return;
               const childText = Array.from(el.children || []).map(child => normalize(child.innerText || child.textContent || '')).join(' ');
               if (childText.includes(target) && text.length > 180) return;
-              resultMatches.push({ domIndex: index, text: text.slice(0, 260), rect: rect(el), tag: el.tagName.toLowerCase(), className: String(el.className || '').slice(0, 120) });
+              const score = resultScoreFor(el, text, childText);
+              if (score < 20) return;
+              resultMatches.push({ domIndex: index, text: text.slice(0, 260), rect: rect(el), tag: el.tagName.toLowerCase(), className: String(el.className || '').slice(0, 120), score });
             });
           }
+          resultMatches.sort((a, b) => (b.score - a.score) || (a.rect.y - b.rect.y) || (a.rect.x - b.rect.x));
 
           const buttons = Array.from(document.querySelectorAll('button,a,[role="button"],.btn,.el-button'))
             .filter(visible)
@@ -1637,8 +1678,8 @@ def interview_page_probe(page, target_id: str = "") -> dict:
             .slice(0, 8);
 
           const pageText = normalize(document.body ? document.body.innerText || '' : '');
-          if (target && looksNoResult(pageText) && pageText.includes(target)) noResult = true;
-          const url = String(location.href || '');
+          const noResult = Boolean(noResultSignals && resultMatches.length === 0);
+          const url = pageUrl;
           const idInUrl = Boolean(target && url.includes(target));
           const idInBody = false;
           return {
@@ -1649,6 +1690,7 @@ def interview_page_probe(page, target_id: str = "") -> dict:
             sendButtons: buttons,
             resultMatches: resultMatches.slice(0, 8),
             noResult,
+            noResultSignals,
             idEvidence: { target, idInUrl, idInBody, matched: !noResult && (idInUrl || resultMatches.length > 0) },
             bodyPreview: pageText.slice(0, 3000),
           };
@@ -1677,6 +1719,106 @@ def open_interview_search_surface(page, platform: str = "") -> dict:
             const box = el.getBoundingClientRect();
             return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
           };
+          const publicItemFor = (el, score = 0, text = '') => ({
+            score,
+            text: normalize(text || el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || ''),
+            rect: rect(el),
+            tag: el.tagName.toLowerCase(),
+            className: String(el.className || '').slice(0, 120),
+            parentClassName: el.parentElement ? String(el.parentElement.className || '').slice(0, 120) : '',
+            grandClassName: el.parentElement && el.parentElement.parentElement ? String(el.parentElement.parentElement.className || '').slice(0, 120) : '',
+          });
+          if (platform === '51job') {
+            const selectors = [
+              '.conversation-search input[placeholder*="搜索姓名"]',
+              '.conversation-search .search-box',
+              '.conversation-search .el-icon-search',
+              '.search-box input[placeholder*="搜索姓名"]'
+            ];
+            let job51Best = null;
+            for (const selector of selectors) {
+              for (const el of Array.from(document.querySelectorAll(selector))) {
+                if (!visible(el)) continue;
+                if (el.closest('.eh_side_nav, .eh_side_nav_ul, .eh_menu_item')) continue;
+                const box = rect(el);
+                const inSearchHeader = box.x >= Math.max(480, window.innerWidth * 0.42)
+                  && box.y >= 90 && box.y <= 190;
+                if (!inSearchHeader) continue;
+                const item = publicItemFor(el, selector.includes('input') ? 300 : 260, '51job_contact_search_input');
+                if (selector.includes('conversation-search')) item.score += 40;
+                if (!job51Best || item.score > job51Best.score) job51Best = { ...item, el };
+              }
+              if (job51Best) break;
+            }
+            if (job51Best) {
+              job51Best.el.setAttribute('data-codex-interview-search', token);
+              const { el, ...publicItem } = job51Best;
+              return { clicked: true, target: publicItem, platform, strategy: '51job_contact_search_input' };
+            }
+          }
+          if (platform === 'zhilian') {
+            const modalInput = Array.from(document.querySelectorAll('.im-search-modal input, .im-search-modal__search-input input, input[placeholder*="搜索聊天记录"]'))
+              .find(el => visible(el));
+            if (modalInput) {
+              modalInput.setAttribute('data-codex-interview-search', token);
+              return { clicked: true, target: publicItemFor(modalInput, 320, 'zhilian_search_modal_input'), platform, strategy: 'zhilian_search_modal_input' };
+            }
+            const selectors = [
+              '.im-side-panel .side-panel-header__input-button',
+              '.side-panel-header__right .side-panel-header__input-button',
+              '.side-panel-header__input-button'
+            ];
+            let zhilianBest = null;
+            for (const selector of selectors) {
+              for (const el of Array.from(document.querySelectorAll(selector))) {
+                if (!visible(el)) continue;
+                if (el.closest('.app-menu, .app-menu__body, .app-menu-item')) continue;
+                const box = rect(el);
+                const inContactHeader = box.x >= 150 && box.x <= Math.min(760, window.innerWidth * 0.65)
+                  && box.y >= 55 && box.y <= 160;
+                if (!inContactHeader) continue;
+                const item = publicItemFor(el, 280, 'zhilian_contact_search_icon');
+                if (selector.includes('im-side-panel')) item.score += 40;
+                if (!zhilianBest || item.score > zhilianBest.score) zhilianBest = { ...item, el };
+              }
+              if (zhilianBest) break;
+            }
+            if (zhilianBest) {
+              zhilianBest.el.setAttribute('data-codex-interview-search', token);
+              const { el, ...publicItem } = zhilianBest;
+              return { clicked: true, target: publicItem, platform, strategy: 'zhilian_contact_search_icon' };
+            }
+          }
+          if (platform === 'boss') {
+            const selectors = [
+              '.chat-job-search .chat-search-btn',
+              '.chat-top-filter .chat-search-btn',
+              '.chat-user .chat-search-btn',
+              '.chat-container .chat-search-btn',
+              '.chat-search-btn'
+            ];
+            let bossBest = null;
+            for (const selector of selectors) {
+              for (const el of Array.from(document.querySelectorAll(selector))) {
+                if (!visible(el)) continue;
+                if (el.closest('.side-wrap, .side-wrap-v2, .menu-list, .menu-geeksearch')) continue;
+                const box = rect(el);
+                const inContactHeader = box.x >= 190 && box.x <= Math.min(680, window.innerWidth * 0.65)
+                  && box.y >= 80 && box.y <= 190;
+                if (!inContactHeader) continue;
+                const item = publicItemFor(el, 260, 'boss_contact_search_icon');
+                if (selector.includes('chat-job-search')) item.score += 40;
+                if (selector.includes('chat-top-filter')) item.score += 30;
+                if (!bossBest || item.score > bossBest.score) bossBest = { ...item, el };
+              }
+              if (bossBest) break;
+            }
+            if (bossBest) {
+              bossBest.el.setAttribute('data-codex-interview-search', token);
+              const { el, ...publicItem } = bossBest;
+              return { clicked: true, target: publicItem, platform, strategy: 'boss_contact_search_icon' };
+            }
+          }
           const nodes = Array.from(document.querySelectorAll('button,a,[role="button"],li,span,div'));
           let best = null;
           for (const el of nodes) {
@@ -1688,11 +1830,20 @@ def open_interview_search_surface(page, platform: str = "") -> dict:
             else if (/搜索|search/i.test(text)) score += 60;
             if (!score) continue;
             const box = rect(el);
-            if (platform === 'boss' && box.x < 220 && box.w > 80) continue;
+            if (platform === 'boss') {
+              if (box.x < 190) continue;
+              if (el.closest('.side-wrap, .side-wrap-v2, .menu-list, .menu-geeksearch')) continue;
+            } else if (platform === '51job') {
+              if (box.x < 220) continue;
+              if (el.closest('.eh_side_nav, .eh_side_nav_ul, .eh_menu_item')) continue;
+            } else if (platform === 'zhilian') {
+              if (box.x < 150) continue;
+              if (el.closest('.app-menu, .app-menu__body, .app-menu-item')) continue;
+            }
             if (box.y < 120) score += 40;
             if (box.x < 400) score += 15;
             if (/active|selected|current/i.test(String(el.className || ''))) score -= 20;
-            const item = { score, text, rect: box, tag: el.tagName.toLowerCase(), className: String(el.className || '').slice(0, 120) };
+            const item = publicItemFor(el, score, text);
             if (!best || item.score > best.score) best = { ...item, el };
           }
           if (!best) return { clicked: false, reason: 'search_entry_not_found', platform };
@@ -1760,14 +1911,17 @@ def click_interview_result_match(page, dom_index: int) -> dict:
     locator = page.locator("body *").nth(int(dom_index))
     info = locator.evaluate(
         """el => {
-          const box = el.getBoundingClientRect();
+          const clickable = el.closest('.im-search-result,.list-item,.recommend-item,.wrap-item,.batch-chat-item,.conversation-item,.im-session-item,.im-session-item__box') || el;
+          clickable.setAttribute('data-codex-interview-result-click', '1');
+          const box = clickable.getBoundingClientRect();
           return {
-            text: String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 220),
+            text: String(clickable.innerText || clickable.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 220),
+            className: String(clickable.className || '').slice(0, 120),
             x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height)
           };
         }"""
     )
-    locator.click(timeout=6000, force=True)
+    page.locator("[data-codex-interview-result-click='1']").first.click(timeout=6000, force=True)
     page.wait_for_timeout(random.randint(1000, 1600))
     return {"clicked": True, "result": info}
 
@@ -1821,6 +1975,11 @@ def service_interview_invite(self, payload: dict) -> dict:
         if result_matches:
             clicked = click_interview_result_match(page, int(result_matches[0].get("domIndex") or 0))
         final = interview_page_probe(page, search_name)
+        for _ in range(3):
+            if (final.get("chatInputs") if isinstance(final, dict) else []) or not clicked:
+                break
+            page.wait_for_timeout(random.randint(900, 1300))
+            final = interview_page_probe(page, search_name)
         verification = verify_interview_contact_match(
             final,
             search_name,
@@ -1867,6 +2026,8 @@ def service_interview_invite(self, payload: dict) -> dict:
                     "contact_not_verified": "未能确认当前会话是目标联系人",
                 }
                 base.update({"ok": False, "blocked": True, "reason": reason, "message": message_map.get(reason, "未能确认当前会话是目标联系人")})
+            elif not result_matches and not clicked and not chat_inputs:
+                base.update({"ok": False, "blocked": True, "reason": "search_result_not_found", "message": "已搜索但未找到可点击的目标联系人"})
             elif not chat_inputs:
                 base.update({"ok": False, "blocked": True, "reason": "chat_input_not_found", "message": "已确认目标联系人，但未找到聊天输入框"})
             return base

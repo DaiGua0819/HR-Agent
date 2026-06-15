@@ -1321,6 +1321,76 @@ function automationContactMetadataFromRecord(record = {}) {
   };
 }
 
+const AUTOMATION_CONTACT_BRIDGE_GENERIC_NAMES = new Set([
+  "all",
+  "allpositions",
+  "candidate",
+  "position",
+  "unread",
+  "\u5168\u90e8",
+  "\u5168\u90e8\u804c\u4f4d",
+  "\u5019\u9009\u4eba",
+  "\u804c\u4f4d",
+  "\u672a\u8bfb",
+]);
+
+function automationContactBridgeIdentityKey(record = {}, metadata = {}) {
+  const sourceKey = String(metadata.sourceKey || record.sourceKey || "").trim();
+  const name = compactResumeContactMatchText(metadata.platformContact?.displayName || record.candidateName || "");
+  const position = compactResumeContactMatchText(metadata.platformContact?.appliedPosition || record.appliedPosition || "");
+  if (sourceKey && name && position && name.length >= 2 && !AUTOMATION_CONTACT_BRIDGE_GENERIC_NAMES.has(name) && !/^\d+$/.test(name)) {
+    return `${sourceKey}|display|${name}|${position}`;
+  }
+  const conversationKey = String(metadata.conversationKey || record.conversationKey || "").trim();
+  if (sourceKey && conversationKey) return `${sourceKey}|conversation|${conversationKey}`;
+  const candidateIdentityKey = String(metadata.candidateIdentityKey || record.candidateIdentityKey || "").trim();
+  if (sourceKey && candidateIdentityKey) return `${sourceKey}|identity|${candidateIdentityKey}`;
+  const label = compactResumeContactMatchText(metadata.platformContact?.label || record.candidateLabel || "");
+  if (sourceKey && name && position && label) return `${sourceKey}|label|${name}|${position}|${label}`;
+  return "";
+}
+
+function automationContactBridgeEvidenceRank(item = {}) {
+  const candidate = item.candidate || {};
+  const metadata = item.metadata || automationContactMetadataFromRecord(candidate);
+  const evidenceCount = Array.isArray(metadata.platformContact?.chatEvidence) ? metadata.platformContact.chatEvidence.length : 0;
+  let rank = Number(item.score || 0) * 100;
+  rank += evidenceCount * 10;
+  if (metadata.conversationKey) rank += 8;
+  if (metadata.candidateIdentityKey) rank += 4;
+  if (candidate.action === "chat_memory") rank += 3;
+  if (candidate.candidateLabel) rank += 2;
+  return rank;
+}
+
+function dedupeAutomationContactBridgeMatches(ranked = []) {
+  const unique = [];
+  const byIdentity = new Map();
+  ranked.forEach((item, index) => {
+    const metadata = automationContactMetadataFromRecord(item.candidate);
+    const identityKey = automationContactBridgeIdentityKey(item.candidate, metadata) || `raw|${index}`;
+    const nextItem = { ...item, metadata, identityKey, duplicateCount: 1 };
+    const previous = byIdentity.get(identityKey);
+    if (!previous) {
+      byIdentity.set(identityKey, nextItem);
+      unique.push(nextItem);
+      return;
+    }
+    previous.duplicateCount = (previous.duplicateCount || 1) + 1;
+    if (automationContactBridgeEvidenceRank(nextItem) > automationContactBridgeEvidenceRank(previous)) {
+      Object.assign(previous, nextItem, { duplicateCount: previous.duplicateCount });
+    }
+  });
+  return unique.sort((left, right) => right.score - left.score);
+}
+
+function automationContactBridgeHasStableEvidence(item = {}) {
+  const candidate = item.candidate || {};
+  const metadata = item.metadata || automationContactMetadataFromRecord(candidate);
+  const evidence = Array.isArray(metadata.platformContact?.chatEvidence) ? metadata.platformContact.chatEvidence : [];
+  return Boolean(metadata.conversationKey || metadata.candidateIdentityKey || evidence.length);
+}
+
 async function getAutomationContactBackfillCandidates(cache, platform, accountId) {
   const key = `${platform}|${accountId}`;
   if (cache.has(key)) return cache.get(key);
@@ -1362,17 +1432,19 @@ async function findResumeContactBridge(record = {}, options = {}) {
     }))
     .filter((item) => item.score > 0)
     .sort((left, right) => right.score - left.score);
+  const uniqueRanked = dedupeAutomationContactBridgeMatches(ranked);
 
-  const best = ranked[0];
+  const best = uniqueRanked[0];
   if (!best || best.score < 110) {
     return { ok: false, reason: "bridge_no_high_confidence_match", message: "未找到高置信的平台联系人记录" };
   }
-  const second = ranked[1];
-  if (second && second.score >= 110 && best.score - second.score < 25) {
+  const second = uniqueRanked[1];
+  const secondCanCompete = second && automationContactBridgeHasStableEvidence(second);
+  if (secondCanCompete && second.score >= 110 && best.score - second.score < 25) {
     return { ok: false, reason: "bridge_ambiguous_match", message: "找到多个相似平台联系人，已停止避免约错人" };
   }
 
-  const metadata = automationContactMetadataFromRecord(best.candidate);
+  const metadata = best.metadata || automationContactMetadataFromRecord(best.candidate);
   if (!metadata.platformContact?.displayName) {
     return { ok: false, reason: "bridge_missing_display_name", message: "匹配到联系人记录，但缺少平台联系人显示名" };
   }

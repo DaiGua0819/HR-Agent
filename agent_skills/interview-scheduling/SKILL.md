@@ -49,6 +49,12 @@ description: Use when inviting a resume-library candidate to interview through t
 8. 点击发送。
 9. 校验最近我方消息已出现固定话术。
 
+## 搜索入口定位
+
+- BOSS：联系人列表上方的搜索图标，优先定位 `.chat-job-search .chat-search-btn` / `.chat-search-btn`，打开后在搜索输入框输入平台联系人显示名。
+- 51job：人才沟通页屏幕右上方的联系人搜索框，DOM 为 `.conversation-search .search-box input[placeholder*="搜索姓名"]`，直接聚焦输入平台联系人显示名；不要点击左侧 `人才管理` / `人才搜索` 导航。
+- 智联：与 BOSS 一样从左侧联系人列表头部进入搜索，优先点击 `.side-panel-header__input-button`，随后在 `.im-search-modal input[placeholder*="搜索聊天记录/姓名/职位/公司"]` 输入平台联系人显示名。
+
 ## 失败原因
 
 - `missing_platform_display_name`: 简历缺少平台联系人显示名。

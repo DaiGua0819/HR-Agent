@@ -90,8 +90,13 @@ async function handleCopyResumePdf(id, response) {
   }
 }
 
+function requestBaseUrl(request = {}) {
+  const host = String(request.headers?.host || "").trim();
+  return host ? `http://${host}` : `http://${HOST}:${PORT}`;
+}
+
 async function serveStatic(request, response) {
-  const url = new URL(request.url, `http://${request.headers.host}`);
+  const url = new URL(request.url, requestBaseUrl(request));
   const pathname = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
   const targetPath = path.normalize(path.join(ROOT, pathname));
   const rootWithSeparator = ROOT.endsWith(path.sep) ? ROOT : ROOT + path.sep;
@@ -423,7 +428,7 @@ async function handleAutomation24hSettings(request, response) {
 
 async function handleAutomation24hLogs(request, response) {
   try {
-    const url = new URL(request.url, `http://${request.headers.host}`);
+    const url = new URL(request.url, requestBaseUrl(request));
     sendJson(response, 200, await automation24hScheduler.readLogs(url.searchParams.get("date") || ""));
   } catch (error) {
     sendJson(response, 500, { ok: false, error: error.message || "读取24小时自动运转日志失败" });
@@ -431,7 +436,7 @@ async function handleAutomation24hLogs(request, response) {
 }
 
 const server = http.createServer((request, response) => {
-  const url = new URL(request.url, `http://${request.headers.host}`);
+  const url = new URL(request.url, requestBaseUrl(request));
   const resumeMatch = url.pathname.match(/^\/api\/resumes\/([^/]+)$/);
   const resumeReEvaluateMatch = url.pathname.match(/^\/api\/resumes\/([^/]+)\/re-evaluate$/);
   const resumeFeedbackMatch = url.pathname.match(/^\/api\/resumes\/([^/]+)\/feedback$/);

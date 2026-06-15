@@ -136,6 +136,8 @@ function Start-ProjectProcess {
 
   $logPath = Join-Path $LogDir "$Name.log"
   $commands = @('$ErrorActionPreference = "Stop"')
+  $commands += 'Remove-Item Env:\PYTHONHOME -ErrorAction SilentlyContinue'
+  $commands += 'Remove-Item Env:\PYTHONPATH -ErrorAction SilentlyContinue'
   foreach ($key in $Environment.Keys) {
     $commands += ('$env:{0} = {1}' -f $key, (Quote-PowerShellLiteral ([string]$Environment[$key])))
   }
