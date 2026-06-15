@@ -1533,6 +1533,20 @@ async function resolveResumeInterviewTarget(record = {}) {
   };
 }
 
+async function ensureResumeInterviewAgentReady(target = {}) {
+  if (typeof ensureAutomationBrowserAgentReady !== "function" || typeof getAutomationBrowserRuntimeTarget !== "function") return null;
+  const accountId = normalizeBossAutomationAccountId(target.accountId || "");
+  const accounts = typeof getBrowserAutomationAccounts === "function" ? getBrowserAutomationAccounts(accountId) : [];
+  const account = accounts.find((item) => normalizeBossAutomationAccountId(item.id) === accountId) || accounts[0];
+  if (!account) return null;
+  const runtimeTarget = getAutomationBrowserRuntimeTarget(account, target.platform);
+  return ensureAutomationBrowserAgentReady({
+    ...runtimeTarget,
+    sourceKey: target.sourceKey || runtimeTarget.sourceKey,
+    agentPort: runtimeTarget.agentPort,
+  });
+}
+
 async function handleResumeInterviewInvite(id, request, response) {
   try {
     const body = await readJsonBody(request);
@@ -1590,6 +1604,7 @@ async function handleResumeInterviewInvite(id, request, response) {
       message: INTERVIEW_INVITE_MESSAGE,
       dryRun,
     };
+    await ensureResumeInterviewAgentReady(target);
     const { payload, source } = await fetchAgentJson(target.sourceKey, "/api/interview-invite", {
       method: "POST",
       body: agentRequest,

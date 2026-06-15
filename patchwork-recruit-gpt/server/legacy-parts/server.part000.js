@@ -1510,7 +1510,8 @@ async function ensureDatabase() {
     backfillRuleSuggestionJobTypesIfNeeded();
     ensureAiV4AdoptedRulesIfNeeded();
     await backfillResumeSourceMetadata();
-    await backfillResumeContactMetadata();
+    // Contact bridge is intentionally resolved on demand from the invite endpoint.
+    // Running it across the whole resume library can load large automation logs and exhaust Node's heap.
     backfillPositionRuleScores();
     databaseInitialized = true;
   }
