@@ -1212,6 +1212,185 @@ function shouldUpdateResumeSource(record = {}, sourceMeta = {}) {
   return false;
 }
 
+function compactResumeContactMatchText(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[\s\u3000._\-—–/\\|,，.。:：;；!！?？"'“”‘’()[\]{}<>《》【】（）]+/g, "");
+}
+
+function resumeContactBackfillPlatform(record = {}) {
+  return normalizeAutomationPlatformId(
+    record.platform || record.sourcePlatform || record.importSource || record.sourceLabel || record.sourceName || record.source || ""
+  );
+}
+
+function resumeContactBackfillAccountId(record = {}) {
+  return normalizeBossAutomationAccountId(record.accountId || record.accountName || record.sourceLabel || record.sourceName || record.source || "");
+}
+
+function resumeContactBackfillJobKey(value = "", context = "") {
+  return compactResumeContactMatchText(normalizeJobType(value || "", context) || value);
+}
+
+function resumeContactBackfillDate(record = {}) {
+  return automationDateKeyFromValue(record.createdAt || record.updatedAt || "") || "";
+}
+
+function resumeNeedsContactBackfill(record = {}) {
+  const platform = resumeContactBackfillPlatform(record);
+  if (!["boss", "51job", "zhilian"].includes(platform)) return false;
+  const accountId = resumeContactBackfillAccountId(record);
+  if (!accountId || accountId === "all") return false;
+  const contact = record.platformContact && typeof record.platformContact === "object" ? record.platformContact : {};
+  return !record.sourceKey || !contact.displayName || !record.conversationKey;
+}
+
+function automationRecordContactEvidence(record = {}) {
+  const conversation = record.conversation && typeof record.conversation === "object" ? record.conversation : {};
+  const messages = Array.isArray(conversation.recentMessages) ? conversation.recentMessages : [];
+  return normalizePlatformContactChatEvidence({
+    conversation,
+    recentMessages: messages,
+  });
+}
+
+function scoreAutomationContactMatch(resume = {}, candidate = {}, expectedSourceKey = "") {
+  const resumeName = compactResumeContactMatchText(resume.name || "");
+  const candidateName = compactResumeContactMatchText(candidate.candidateName || "");
+  if (!resumeName || !candidateName) return 0;
+
+  const label = compactResumeContactMatchText(candidate.candidateLabel || candidate.conversation?.counterpart?.rawHeader || "");
+  let score = 0;
+  if (candidateName === resumeName) {
+    score += 120;
+  } else if ((candidateName.includes(resumeName) || resumeName.includes(candidateName)) && Math.min(candidateName.length, resumeName.length) >= 2) {
+    score += 75;
+  } else if (label.includes(resumeName)) {
+    score += 55;
+  } else {
+    return 0;
+  }
+
+  const resumeJob = resumeContactBackfillJobKey(resume.jobType || "", `${resume.fileName || ""} ${resume.name || ""}`);
+  const candidateJob = resumeContactBackfillJobKey(candidate.appliedPosition || "", `${candidate.candidateName || ""} ${candidate.candidateLabel || ""}`);
+  if (resumeJob && candidateJob) {
+    if (resumeJob === candidateJob) score += 40;
+    else if (resumeJob.includes(candidateJob) || candidateJob.includes(resumeJob)) score += 15;
+    else score -= 25;
+  }
+
+  const evidence = automationRecordContactEvidence(candidate);
+  if (evidence.length) score += 30;
+  if (candidate.action === "chat_memory") score += 20;
+  if (/resume_downloaded/i.test(String(candidate.action || "")) && !evidence.length) score -= 70;
+  if (expectedSourceKey && candidate.sourceKey === expectedSourceKey) score += 15;
+
+  const resumeDate = resumeContactBackfillDate(resume);
+  const candidateDate = automationDateKeyFromValue(candidate.updatedAt || "");
+  if (resumeDate && candidateDate) {
+    if (resumeDate === candidateDate) score += 10;
+    else score -= 5;
+  }
+
+  return score;
+}
+
+function automationContactMetadataFromRecord(record = {}) {
+  const conversation = record.conversation && typeof record.conversation === "object" ? record.conversation : {};
+  const current = conversation.currentRecord && typeof conversation.currentRecord === "object" ? conversation.currentRecord : {};
+  const conversationKey = String(current.conversationKey || record.conversationKey || "").trim();
+  const metadata = buildResumeAutomationIdentityMetadata({
+    sourceKey: record.sourceKey || "",
+    conversationKey,
+    candidateName: record.candidateName || "",
+    appliedPosition: record.appliedPosition || "",
+    candidateLabel: record.candidateLabel || "",
+    recentMessages: automationRecordContactEvidence(record),
+    conversation,
+    platformContact: {
+      displayName: record.candidateName || "",
+      label: record.candidateLabel || conversation.counterpart?.rawHeader || "",
+      appliedPosition: record.appliedPosition || "",
+      capturedAt: record.updatedAt || "",
+      chatEvidence: automationRecordContactEvidence(record),
+    },
+  });
+  return {
+    ...metadata,
+    conversationKey: metadata.conversationKey || conversationKey,
+  };
+}
+
+async function getAutomationContactBackfillCandidates(cache, platform, accountId) {
+  const key = `${platform}|${accountId}`;
+  if (cache.has(key)) return cache.get(key);
+  const records = await collectDeepAutomationDetailRecords(platform, accountId, "all");
+  const candidates = records.filter((record) => {
+    if (!record || record.type === "event") return false;
+    if (!record.candidateName || !record.sourceKey) return false;
+    const evidence = automationRecordContactEvidence(record);
+    if (evidence.length) return true;
+    return record.action !== "resume_downloaded" && Boolean(record.candidateLabel);
+  });
+  cache.set(key, candidates);
+  return candidates;
+}
+
+async function backfillResumeContactMetadata() {
+  const db = getDb();
+  const rows = db.prepare("SELECT id, payload FROM resumes").all();
+  const contactCache = new Map();
+  const updatedRecords = [];
+
+  for (const row of rows) {
+    const record = parsePayload(row.payload, {});
+    if (!record?.id || !resumeNeedsContactBackfill(record)) continue;
+    const platform = resumeContactBackfillPlatform(record);
+    const accountId = resumeContactBackfillAccountId(record);
+    const sourceKey = String(record.sourceKey || automationBrowserSourceKey(platform, accountId) || "").trim();
+    const candidates = await getAutomationContactBackfillCandidates(contactCache, platform, accountId);
+    let best = null;
+    let bestScore = 0;
+    for (const candidate of candidates) {
+      const score = scoreAutomationContactMatch(record, candidate, sourceKey);
+      if (score > bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+    if (!best || bestScore < 110) continue;
+
+    const metadata = automationContactMetadataFromRecord(best);
+    const existingContact = record.platformContact && typeof record.platformContact === "object" ? record.platformContact : {};
+    const nextContact = metadata.platformContact || null;
+    updatedRecords.push({
+      ...record,
+      platform: record.platform || platform,
+      accountId: record.accountId || accountId,
+      sourceKey: record.sourceKey || metadata.sourceKey || sourceKey,
+      conversationKey: record.conversationKey || metadata.conversationKey || "",
+      candidateIdentityKey: record.candidateIdentityKey || metadata.candidateIdentityKey || "",
+      platformContact: existingContact.displayName
+        ? {
+            ...nextContact,
+            ...existingContact,
+            chatEvidence: Array.isArray(existingContact.chatEvidence) && existingContact.chatEvidence.length
+              ? existingContact.chatEvidence
+              : nextContact?.chatEvidence || [],
+          }
+        : nextContact,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  if (!updatedRecords.length) return;
+  runSqlTransaction(() => {
+    updatedRecords.forEach(upsertResumeRow);
+  });
+  invalidateResumeListResponseCache();
+  console.log(`[${new Date().toISOString()}] [resume-contact] backfilled ${updatedRecords.length} resume contact records`);
+}
+
 async function backfillResumeSourceMetadata() {
   const db = getDb();
   const manifestIndexes = await buildImportManifestIndexes();
@@ -1289,6 +1468,7 @@ async function ensureDatabase() {
     backfillRuleSuggestionJobTypesIfNeeded();
     ensureAiV4AdoptedRulesIfNeeded();
     await backfillResumeSourceMetadata();
+    await backfillResumeContactMetadata();
     backfillPositionRuleScores();
     databaseInitialized = true;
   }
