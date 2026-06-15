@@ -747,6 +747,26 @@
                 file_size = file_size or file_path.stat().st_size
             except Exception:
                 file_size = file_size or 0
+        recent_messages = []
+        for message in (context.get("messages") if isinstance(context.get("messages"), list) else [])[-20:]:
+            if not isinstance(message, dict):
+                continue
+            text = safe_text(str(message.get("text") or message.get("rawText") or "").strip(), 260)
+            if not text:
+                continue
+            sender = str(message.get("sender") or "")
+            if sender not in {"me", "other", "system"}:
+                sender = "other"
+            if sender == "system":
+                continue
+            recent_messages.append({
+                "sender": sender,
+                "time": safe_text(str(message.get("time") or message.get("timestamp") or ""), 40),
+                "status": safe_text(str(message.get("status") or ""), 40),
+                "text": text,
+            })
+        recent_messages = recent_messages[-3:]
+        downloaded_at = time.strftime("%Y-%m-%d %H:%M:%S")
         item = {
             "platform": platform,
             "accountId": AGENT_ACCOUNT_ID,
@@ -760,7 +780,15 @@
             "fileHash": file_hash,
             "fileSize": file_size,
             "downloadMethod": str(result.get("downloadMethod") or ""),
-            "downloadedAt": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "downloadedAt": downloaded_at,
+            "recentMessages": recent_messages,
+            "platformContact": {
+                "displayName": candidate_name,
+                "label": candidate_label,
+                "appliedPosition": applied_position,
+                "capturedAt": downloaded_at,
+                "chatEvidence": recent_messages,
+            } if candidate_name else {},
         }
         index = load_json(RECRUITER_RESUME_DOWNLOADS_FILE, {})
         if not isinstance(index, dict):

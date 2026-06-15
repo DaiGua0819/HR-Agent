@@ -892,6 +892,7 @@ function publicRecord(record) {
     conversationKey: record.conversationKey || "",
     candidateIdentityKey: record.candidateIdentityKey || "",
     detailUrl: record.detailUrl || "",
+    platformContact: record.platformContact || null,
     interviewInvite: record.interviewInvite || null,
     hasPdf: Boolean(record.pdfPath),
     scoringVersion: record.scoringVersion || getCurrentScoringVersion(record.jobType),
@@ -2366,8 +2367,9 @@ function normalizeAutomationDetailDate(value = "") {
 function automationDetailDateMatches(value = "", selectedDate = automationChinaDateKey()) {
   if (selectedDate === "all") return true;
   const dates = automationDateListFromState(selectedDate);
-  if (dates.length) return dates.some((date) => String(value || "").startsWith(date));
-  return String(value || "").startsWith(selectedDate);
+  const dateKey = automationDateKeyFromValue(value);
+  if (dates.length) return dates.includes(dateKey);
+  return dateKey === selectedDate;
 }
 
 function automationDetailMetricPayload(items, platform, { accountId = "all", date = "" } = {}) {
@@ -2463,8 +2465,427 @@ function automationDetailFlags(statusGroup) {
 }
 
 function automationDateKeyFromValue(value = "") {
-  const match = String(value || "").match(/\d{4}-\d{2}-\d{2}/);
-  return match ? match[0] : "";
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const literalMatch = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  const hasExplicitTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(text);
+  if (hasExplicitTimezone) {
+    const parsed = Date.parse(text);
+    if (Number.isFinite(parsed)) return automationChinaDateKey(new Date(parsed));
+  }
+  if (literalMatch) {
+    return `${literalMatch[1]}-${String(literalMatch[2]).padStart(2, "0")}-${String(literalMatch[3]).padStart(2, "0")}`;
+  }
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? automationChinaDateKey(new Date(parsed)) : "";
+}
+
+function automationDateKeyToUtcMs(dateKey = "") {
+  const match = String(dateKey || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return 0;
+  return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+}
+
+function automationDateDiffDays(leftDateKey = "", rightDateKey = "") {
+  const leftMs = automationDateKeyToUtcMs(leftDateKey);
+  const rightMs = automationDateKeyToUtcMs(rightDateKey);
+  if (!leftMs || !rightMs) return null;
+  return Math.round((leftMs - rightMs) / 86400000);
+}
+
+function automationMetricCount(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
+}
+
+function automationMetricValue(metricsOrPayload = [], key = "") {
+  const metrics = Array.isArray(metricsOrPayload) ? metricsOrPayload : metricsOrPayload?.metrics;
+  const found = (Array.isArray(metrics) ? metrics : []).find((metric) => metric?.key === key);
+  return automationMetricCount(found?.value);
+}
+
+function automationPreviousDateKey(dateKey = "") {
+  const dateMs = automationDateKeyToUtcMs(dateKey);
+  return dateMs ? automationChinaDateKey(new Date(dateMs - 86400000)) : "";
+}
+
+function automation24hStatusSnapshot() {
+  try {
+    return automation24hScheduler && typeof automation24hScheduler.status === "function" ? automation24hScheduler.status() : null;
+  } catch {
+    return null;
+  }
+}
+
+function automation24hTargetMatchesRequest(target = {}, platform = "boss", accountId = "all") {
+  const normalizedPlatform = normalizeAutomationPlatformId(platform);
+  const normalizedAccount = normalizeBossAutomationAccountId(accountId);
+  if (normalizeAutomationPlatformId(target.platform || "") !== normalizedPlatform) return false;
+  if (normalizedAccount === "all") return true;
+  return normalizeBossAutomationAccountId(target.accountId || "") === normalizedAccount;
+}
+
+function automation24hTargetBelongsToDate(target = {}, selectedDate = automationChinaDateKey()) {
+  if (selectedDate === "all") return true;
+  const targetDate = automationDateKeyFromValue(target.updatedAt || target.timestamp || "");
+  if (!targetDate) return false;
+  const selectedDates = automationDateListFromState(selectedDate);
+  return selectedDates.length ? selectedDates.includes(targetDate) : targetDate === selectedDate;
+}
+
+function automation24hStatusProgressTargets(platform = "boss", accountId = "all", date = "") {
+  const selectedDate = normalizeAutomationDetailDate(date);
+  const status = automation24hStatusSnapshot();
+  if (!status || !Array.isArray(status.targets)) return [];
+  return status.targets
+    .filter((target) => automation24hTargetMatchesRequest(target, platform, accountId))
+    .filter((target) => automation24hTargetBelongsToDate(target, selectedDate))
+    .filter(
+      (target) =>
+        automationMetricCount(target.processed) ||
+        automationMetricCount(target.requestedResume) ||
+        automationMetricCount(target.downloadedResume)
+    )
+    .map((target) => ({
+      ...target,
+      progressKey: `${status.runId || "status"}|${status.cycle || 0}|${target.id || target.sourceKey || target.platform}`,
+    }));
+}
+
+function automation24hLogDateKeys(selectedDate = automationChinaDateKey()) {
+  const normalizedDate = normalizeAutomationDetailDate(selectedDate);
+  if (normalizedDate === "all") return [];
+  const dates = automationDateListFromState(normalizedDate);
+  return dates.length ? dates : [normalizedDate];
+}
+
+function readAutomation24hLogEntries(dateKey = "") {
+  const filePath = path.join(DATA_DIR, "automation-24h-logs", `${dateKey}.jsonl`);
+  if (!dateKey || !fsSync.existsSync(filePath)) return [];
+  try {
+    return fsSync
+      .readFileSync(filePath, "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function automation24hSumCounts(counts = {}, keys = []) {
+  if (!counts || typeof counts !== "object") return 0;
+  return keys.reduce((total, key) => total + automationMetricCount(counts[key]), 0);
+}
+
+function automation24hMessageCount(message = "", patterns = []) {
+  const text = String(message || "");
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) return automationMetricCount(match[1]);
+  }
+  return 0;
+}
+
+function automation24hRoundMetricTotals(entry = {}) {
+  const counts = entry.counts && typeof entry.counts === "object" ? entry.counts : {};
+  const message = String(entry.resultMessage || entry.message || "");
+  const sentCompanyInfo = Math.max(
+    automation24hSumCounts(counts, [
+      "sent_basic_conditions",
+      "sent_position_screening",
+      "knowledge_answered_and_sent_screening",
+    ]),
+    automation24hMessageCount(message, [/已发公司情况\/岗位筛选问题\s*(\d+)\s*人/])
+  );
+  const requestedResume = Math.max(
+    automation24hSumCounts(counts, [
+      "accepted_requested_resume",
+      "knowledge_answered_and_requested_resume",
+      "accepted_resume_already_requested",
+      "knowledge_answered_resume_already_requested",
+    ]),
+    automation24hMessageCount(message, [/接受并求简历\s*(\d+)\s*人/])
+  );
+  const savedResumes = Math.max(
+    automation24hSumCounts(counts, [
+      "accepted_resume_downloaded",
+      "knowledge_answered_resume_downloaded",
+      "resume_downloaded",
+    ]),
+    automation24hMessageCount(message, [/接受并下载简历\s*(\d+)\s*人/])
+  );
+  const knowledgeAnswered = Math.max(
+    automation24hSumCounts(counts, [
+      "knowledge_answered",
+      "knowledge_answered_and_sent_screening",
+      "knowledge_answered_and_requested_resume",
+      "knowledge_answered_resume_downloaded",
+    ]),
+    automation24hMessageCount(message, [/知识库答复\s*(\d+)\s*人/])
+  );
+  return {
+    sentCompanyInfo,
+    requestedResume,
+    savedResumes,
+    userQuestions: automation24hSumCounts(counts, ["candidate_question", "user_question", "knowledge_gap", "knowledge_unknown"]),
+    knowledgeAnswered,
+  };
+}
+
+function automation24hAddRoundMetrics(target = {}, metrics = {}) {
+  for (const key of ["sentCompanyInfo", "requestedResume", "savedResumes", "userQuestions", "knowledgeAnswered"]) {
+    target[key] = automationMetricCount(target[key]) + automationMetricCount(metrics[key]);
+  }
+}
+
+function automation24hLogProgressTargets(platform = "boss", accountId = "all", date = "") {
+  const selectedDate = normalizeAutomationDetailDate(date);
+  const finalEvents = new Set(["target_completed", "target_stopped", "target_interrupted"]);
+  const roundEvents = new Set(["round_completed"]);
+  const byTargetRun = new Map();
+  for (const dateKey of automation24hLogDateKeys(selectedDate)) {
+    for (const entry of readAutomation24hLogEntries(dateKey)) {
+      if (!entry || typeof entry !== "object") continue;
+      const event = String(entry.event || "");
+      if (!finalEvents.has(event) && !roundEvents.has(event)) continue;
+      const progressKey = `${entry.runId || dateKey}|${entry.cycle || 0}|${entry.targetId || entry.platform || ""}:${entry.accountId || ""}`;
+      const target = {
+        id: entry.targetId || `${entry.platform}:${entry.accountId}`,
+        platform: entry.platform,
+        platformLabel: entry.platformLabel,
+        accountId: entry.accountId,
+        accountName: entry.accountName,
+        sourceKey: entry.sourceKey,
+        label: entry.targetLabel || entry.platformLabel || entry.platform,
+        updatedAt: entry.timestamp || "",
+        timestamp: entry.timestamp || "",
+        progressKey,
+      };
+      if (!automation24hTargetMatchesRequest(target, platform, accountId)) continue;
+      if (!automation24hTargetBelongsToDate(target, selectedDate)) continue;
+      const current =
+        byTargetRun.get(progressKey) || {
+          ...target,
+          processed: 0,
+          requestedResume: 0,
+          downloadedResume: 0,
+          roundProcessed: 0,
+          roundRequestedResume: 0,
+          roundDownloadedResume: 0,
+          finalProcessed: 0,
+          finalRequestedResume: 0,
+          finalDownloadedResume: 0,
+          interruptedProcessed: 0,
+          interruptedRequestedResume: 0,
+          interruptedDownloadedResume: 0,
+          sentCompanyInfo: 0,
+          savedResumes: 0,
+          userQuestions: 0,
+          knowledgeAnswered: 0,
+        };
+      Object.assign(current, {
+        id: target.id || current.id,
+        platform: target.platform || current.platform,
+        platformLabel: target.platformLabel || current.platformLabel,
+        accountId: target.accountId || current.accountId,
+        accountName: target.accountName || current.accountName,
+        sourceKey: target.sourceKey || current.sourceKey,
+        label: target.label || current.label,
+      });
+      if (Date.parse(target.updatedAt || "") >= Date.parse(current.updatedAt || "")) {
+        current.updatedAt = target.updatedAt;
+        current.timestamp = target.timestamp;
+      }
+      if (event === "round_completed") {
+        current.roundProcessed += automationMetricCount(entry.processed);
+        current.roundRequestedResume += automationMetricCount(entry.requestedResume);
+        current.roundDownloadedResume += automationMetricCount(entry.downloadedResume);
+        automation24hAddRoundMetrics(current, automation24hRoundMetricTotals(entry));
+      } else if (event === "target_interrupted") {
+        current.interruptedProcessed += automationMetricCount(entry.partialProcessed || entry.processed);
+        current.interruptedRequestedResume += automationMetricCount(entry.partialRequestedResume || entry.requestedResume);
+        current.interruptedDownloadedResume += automationMetricCount(entry.partialDownloadedResume || entry.downloadedResume);
+        automation24hAddRoundMetrics(current, automation24hRoundMetricTotals(entry));
+      } else {
+        current.finalProcessed = automationMetricCount(entry.processed);
+        current.finalRequestedResume = automationMetricCount(entry.requestedResume);
+        current.finalDownloadedResume = automationMetricCount(entry.downloadedResume);
+      }
+      current.processed = Math.max(current.finalProcessed, current.roundProcessed + current.interruptedProcessed);
+      current.requestedResume = Math.max(
+        current.finalRequestedResume,
+        current.roundRequestedResume + current.interruptedRequestedResume,
+        automationMetricCount(current.requestedResume)
+      );
+      current.downloadedResume = Math.max(
+        current.finalDownloadedResume,
+        current.roundDownloadedResume + current.interruptedDownloadedResume,
+        automationMetricCount(current.downloadedResume),
+        automationMetricCount(current.savedResumes)
+      );
+      if (
+        automationMetricCount(current.processed) ||
+        automationMetricCount(current.requestedResume) ||
+        automationMetricCount(current.downloadedResume) ||
+        automationMetricCount(current.sentCompanyInfo) ||
+        automationMetricCount(current.knowledgeAnswered)
+      ) {
+        byTargetRun.set(progressKey, current);
+      }
+    }
+  }
+  return [...byTargetRun.values()];
+}
+
+function automation24hProgressTargets(platform = "boss", accountId = "all", date = "") {
+  const byKey = new Map();
+  for (const target of [
+    ...automation24hLogProgressTargets(platform, accountId, date),
+    ...automation24hStatusProgressTargets(platform, accountId, date),
+  ]) {
+    const key = target.progressKey || `${target.id || target.sourceKey || target.platform}:${target.accountId || ""}`;
+    const current = byKey.get(key);
+    if (!current || automationMetricCount(target.processed) >= automationMetricCount(current.processed)) {
+      byKey.set(key, target);
+    }
+  }
+  return [...byKey.values()];
+}
+
+function automation24hProgressSummary(platform = "boss", accountId = "all", date = "") {
+  const targets = automation24hProgressTargets(platform, accountId, date);
+  if (!targets.length) return null;
+  const totals = targets.reduce(
+    (acc, target) => {
+      acc.processed += automationMetricCount(target.processed);
+      acc.requestedResume += automationMetricCount(target.requestedResume);
+      acc.downloadedResume += automationMetricCount(target.downloadedResume);
+      acc.sentCompanyInfo += automationMetricCount(target.sentCompanyInfo);
+      acc.userQuestions += automationMetricCount(target.userQuestions);
+      acc.knowledgeAnswered += automationMetricCount(target.knowledgeAnswered);
+      return acc;
+    },
+    { processed: 0, requestedResume: 0, downloadedResume: 0, sentCompanyInfo: 0, userQuestions: 0, knowledgeAnswered: 0 }
+  );
+  if (
+    !totals.processed &&
+    !totals.requestedResume &&
+    !totals.downloadedResume &&
+    !totals.sentCompanyInfo &&
+    !totals.userQuestions &&
+    !totals.knowledgeAnswered
+  ) {
+    return null;
+  }
+  return {
+    targets,
+    totals,
+    metrics: [
+      { key: "processed", label: "处理人数", value: totals.processed },
+      { key: "sentCompanyInfo", label: "询问问题", value: totals.sentCompanyInfo },
+      { key: "requestedResume", label: "求简历", value: totals.requestedResume },
+      { key: "userQuestions", label: "候选人提问", value: totals.userQuestions },
+      { key: "savedResumes", label: "获取简历", value: totals.downloadedResume },
+      { key: "knowledgeAnswered", label: "已答疑", value: totals.knowledgeAnswered },
+      { key: "proactiveOpened", label: "点开人数", value: 0 },
+      { key: "proactiveGreeted", label: "主动打招呼", value: 0 },
+      { key: "proactiveReplied", label: "主动回复", value: 0 },
+      { key: "proactiveQualified", label: "主动符合", value: 0 },
+    ],
+  };
+}
+
+function applyAutomation24hProgressFallback(payload = {}, { platform = "boss", accountId = "all", date = "" } = {}) {
+  const recovered = automation24hProgressSummary(platform, accountId, date || payload.date || automationChinaDateKey());
+  if (!recovered) return payload;
+  let changed = false;
+  const currentMetrics = Array.isArray(payload.metrics) ? payload.metrics : [];
+  const recoveredByKey = new Map(recovered.metrics.map((metric) => [metric.key, metric]));
+  const metricKeys = new Set([...currentMetrics.map((metric) => metric.key), ...recoveredByKey.keys()]);
+  const metrics = [...metricKeys].map((key) => {
+    const current = currentMetrics.find((metric) => metric.key === key) || recoveredByKey.get(key) || { key, label: key, value: 0 };
+    const recoveredMetric = recoveredByKey.get(key);
+    if (recoveredMetric && automationMetricCount(recoveredMetric.value) > automationMetricCount(current.value)) {
+      changed = true;
+      return { ...current, value: automationMetricCount(recoveredMetric.value) };
+    }
+    return current;
+  });
+  if (!changed) return payload;
+  return {
+    ...payload,
+    metrics,
+    recoveredFrom24hStatus: true,
+    recoverySource: "automation24h_progress",
+    recoveryNote: "当前日期没有明细记录，已使用24小时自动运转最近一轮进度兜底展示。",
+    recent: recovered.targets.slice(0, 12).map((target) => ({
+      time: String(target.updatedAt || "").slice(0, 19),
+      text: `${target.label || target.platformLabel || "自动化"}：处理 ${automationMetricCount(target.processed)}，获取 ${automationMetricCount(target.downloadedResume)}，求简历 ${automationMetricCount(target.requestedResume)}`,
+    })),
+  };
+}
+
+function automation24hFallbackDetailRecords(platform = "boss", accountId = "all", date = "", currentMetrics = []) {
+  const targets = automation24hProgressTargets(platform, accountId, date);
+  const records = [];
+  let remainingSkip = automationMetricValue(currentMetrics, "processed");
+  targets.forEach((target) => {
+    const processed = automationMetricCount(target.processed);
+    const requestedResume = automationMetricCount(target.requestedResume);
+    const downloadedResume = automationMetricCount(target.downloadedResume);
+    for (let index = 0; index < processed; index += 1) {
+      if (remainingSkip > 0) {
+        remainingSkip -= 1;
+        continue;
+      }
+      const statusGroup =
+        index < downloadedResume ? "savedResumes" : index < downloadedResume + requestedResume ? "requestedResume" : "processed";
+      records.push({
+        id: `automation-24h-${target.id || target.sourceKey || target.platform}-${index + 1}`,
+        type: "candidate",
+        typeLabel: "24h汇总",
+        platform: normalizeAutomationPlatformId(target.platform || platform),
+        sourceKey: target.sourceKey || "",
+        candidateName: `${target.label || target.platformLabel || "24h"} 汇总 ${index + 1}`,
+        appliedPosition: "未识别岗位",
+        status: "automation24h_fallback",
+        statusGroup,
+        statusLabel: automationDetailStatusLabel(statusGroup, "automation24h_fallback", ""),
+        updatedAt: target.updatedAt || "",
+        updatedAtTs: automationDetailTimestamp(target.updatedAt || ""),
+        source: target.label || target.platformLabel || "24小时自动运转",
+        candidateLabel: `${target.label || "24h自动运转"} 汇总记录`,
+        phrase: "24小时自动运转已关闭 agent，使用本轮进度兜底展示。",
+        question: "",
+        answer: "",
+        action: "automation24h_fallback",
+        flags: automationDetailFlags(statusGroup),
+        resumeFiles: [],
+        conversation: {
+          summary: `${target.label || "24h自动运转"} 最近一轮处理 ${processed} 条消息，获取 ${downloadedResume} 个简历，求简历 ${requestedResume} 个。`,
+          counterpart: {
+            name: `${target.label || "24h"} 汇总 ${index + 1}`,
+            organization: "",
+            role: "未识别岗位",
+            appliedPosition: "未识别岗位",
+            rawHeader: `${target.label || "24h自动运转"} 汇总记录`,
+          },
+          recentMessages: [],
+          currentRecord: target,
+        },
+        recoveredFrom24hStatus: true,
+      });
+    }
+  });
+  return records;
 }
 
 function normalizeAutomationName(value = "") {

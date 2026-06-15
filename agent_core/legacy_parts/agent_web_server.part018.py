@@ -1444,6 +1444,97 @@ def normalize_interview_platform(value: str) -> str:
     return "boss"
 
 
+def normalize_interview_chat_evidence(messages) -> list[dict]:
+    if not isinstance(messages, list):
+        return []
+    normalized: list[dict] = []
+    for message in messages[-8:]:
+        if not isinstance(message, dict):
+            continue
+        text = safe_text(str(message.get("text") or message.get("rawText") or "").strip(), 220)
+        if not text:
+            continue
+        sender = str(message.get("sender") or "")
+        if sender not in {"me", "other", "system"}:
+            sender = "other"
+        if sender == "system":
+            continue
+        normalized.append({
+            "sender": sender,
+            "time": safe_text(str(message.get("time") or message.get("timestamp") or ""), 40),
+            "status": safe_text(str(message.get("status") or ""), 40),
+            "text": text,
+        })
+    return normalized[-3:]
+
+
+def compact_interview_match_text(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or "")).lower()
+
+
+def interview_text_contains(haystack: str, needle: str, min_len: int = 2) -> bool:
+    left = compact_interview_match_text(haystack)
+    right = compact_interview_match_text(needle)
+    if len(right) < min_len:
+        return False
+    if right in left:
+        return True
+    if len(right) >= 10 and right[:10] in left:
+        return True
+    if len(right) >= 14 and right[-12:] in left:
+        return True
+    return False
+
+
+def verify_interview_contact_match(
+    final_probe: dict,
+    search_name: str,
+    applied_position: str = "",
+    chat_evidence: list[dict] | None = None,
+    result_matches: list[dict] | None = None,
+    clicked: dict | None = None,
+) -> dict:
+    final_probe = final_probe if isinstance(final_probe, dict) else {}
+    result_matches = result_matches if isinstance(result_matches, list) else []
+    chat_evidence = chat_evidence if isinstance(chat_evidence, list) else []
+    clicked = clicked if isinstance(clicked, dict) else {}
+    text_parts = [
+        final_probe.get("title") or "",
+        final_probe.get("url") or "",
+        final_probe.get("bodyPreview") or "",
+        str((clicked.get("result") or {}).get("text") or "") if isinstance(clicked.get("result"), dict) else "",
+    ]
+    page_text = " ".join(text_parts)
+    name_matched = interview_text_contains(page_text, search_name, min_len=2)
+    position_matched = interview_text_contains(page_text, applied_position, min_len=4) if applied_position else False
+    matched_messages = []
+    for message in chat_evidence:
+        text = str(message.get("text") or "")
+        if interview_text_contains(page_text, text, min_len=6):
+            matched_messages.append(safe_text(text, 120))
+    single_result = len(result_matches) == 1
+    has_aux_evidence = bool(applied_position or chat_evidence)
+    verified = bool(name_matched and (position_matched or matched_messages or single_result or not has_aux_evidence))
+    reason = ""
+    if not name_matched:
+        reason = "search_result_not_found"
+    elif len(result_matches) > 1 and not (position_matched or matched_messages):
+        reason = "multiple_candidates_unverified"
+    elif has_aux_evidence and not (position_matched or matched_messages or single_result):
+        reason = "chat_evidence_not_matched"
+    elif not verified:
+        reason = "contact_not_verified"
+    return {
+        "verified": verified,
+        "nameMatched": name_matched,
+        "positionMatched": position_matched,
+        "matchedMessages": matched_messages[:3],
+        "singleResult": single_result,
+        "resultCount": len(result_matches),
+        "reason": reason,
+    }
+
+
 def interview_page_probe(page, target_id: str = "") -> dict:
     return page.evaluate(
         r"""targetId => {
@@ -1559,7 +1650,7 @@ def interview_page_probe(page, target_id: str = "") -> dict:
             resultMatches: resultMatches.slice(0, 8),
             noResult,
             idEvidence: { target, idInUrl, idInBody, matched: !noResult && (idInUrl || resultMatches.length > 0) },
-            bodyPreview: pageText.slice(0, 800),
+            bodyPreview: pageText.slice(0, 3000),
           };
         }""",
         str(target_id or ""),
@@ -1684,11 +1775,14 @@ def click_interview_result_match(page, dom_index: int) -> dict:
 def service_interview_invite(self, payload: dict) -> dict:
     payload = payload if isinstance(payload, dict) else {}
     platform = normalize_interview_platform(payload.get("platform") or payload.get("sourceKey") or "")
-    target_id = safe_text(str(payload.get("platformCandidateId") or payload.get("candidateId") or "").strip(), 180)
+    platform_contact = payload.get("platformContact") if isinstance(payload.get("platformContact"), dict) else {}
+    search_name = safe_text(str(payload.get("searchName") or platform_contact.get("displayName") or "").strip(), 180)
+    applied_position = safe_text(str(payload.get("appliedPosition") or platform_contact.get("appliedPosition") or "").strip(), 120)
+    chat_evidence = normalize_interview_chat_evidence(platform_contact.get("chatEvidence") or payload.get("chatEvidence") or [])
     message = str(payload.get("message") or INTERVIEW_INVITE_DEFAULT_MESSAGE).strip()
     dry_run = bool(payload.get("dryRun"))
-    if not target_id:
-        return {"ok": False, "blocked": True, "reason": "missing_platform_candidate_id", "message": "缺少平台候选人ID，未执行搜索"}
+    if not search_name:
+        return {"ok": False, "blocked": True, "reason": "missing_platform_display_name", "message": "缺少平台联系人显示名，未执行搜索"}
 
     def run_with_terminal(terminal: BrowserTerminal) -> dict:
         page = terminal.current_page()
@@ -1699,12 +1793,12 @@ def service_interview_invite(self, payload: dict) -> dict:
         elif platform == "zhilian":
             self.zhilian_dismiss_interruptions(terminal, reason="interview_invite_probe")
 
-        before = interview_page_probe(page, target_id)
+        before = interview_page_probe(page, search_name)
         search_inputs = before.get("searchInputs") if isinstance(before, dict) else []
         opened_search = {}
         if not search_inputs:
             opened_search = open_interview_search_surface(page, platform)
-            before = interview_page_probe(page, target_id)
+            before = interview_page_probe(page, search_name)
             search_inputs = before.get("searchInputs") if isinstance(before, dict) else []
         if not search_inputs:
             return {
@@ -1718,26 +1812,40 @@ def service_interview_invite(self, payload: dict) -> dict:
                 "before": before,
             }
 
-        search = fill_interview_search_box(page, int(search_inputs[0].get("index") or 0), target_id)
-        after_search = interview_page_probe(page, target_id)
+        search = fill_interview_search_box(page, int(search_inputs[0].get("index") or 0), search_name)
+        after_search = interview_page_probe(page, search_name)
         result_matches = after_search.get("resultMatches") if isinstance(after_search, dict) else []
         if isinstance(after_search, dict) and after_search.get("noResult"):
             result_matches = []
         clicked = {}
         if result_matches:
             clicked = click_interview_result_match(page, int(result_matches[0].get("domIndex") or 0))
-        final = interview_page_probe(page, target_id)
-        final_evidence = final.get("idEvidence") if isinstance(final, dict) else {}
-        search_evidence = after_search.get("idEvidence") if isinstance(after_search, dict) else {}
-        id_matched = bool((final_evidence or {}).get("matched") or (search_evidence or {}).get("matched"))
+        final = interview_page_probe(page, search_name)
+        verification = verify_interview_contact_match(
+            final,
+            search_name,
+            applied_position=applied_position,
+            chat_evidence=chat_evidence,
+            result_matches=result_matches,
+            clicked=clicked,
+        )
+        contact_verified = bool(verification.get("verified"))
         chat_inputs = final.get("chatInputs") if isinstance(final, dict) else []
         send_buttons = final.get("sendButtons") if isinstance(final, dict) else []
         base = {
-            "ok": bool(id_matched and chat_inputs),
+            "ok": bool(contact_verified and chat_inputs),
             "platform": platform,
-            "platformCandidateId": target_id,
+            "searchName": search_name,
+            "platformContact": {
+                "displayName": search_name,
+                "label": safe_text(str(platform_contact.get("label") or ""), 180),
+                "appliedPosition": applied_position,
+                "capturedAt": safe_text(str(platform_contact.get("capturedAt") or ""), 40),
+                "chatEvidence": chat_evidence,
+            },
             "dryRun": dry_run,
-            "idMatched": id_matched,
+            "contactVerified": contact_verified,
+            "verification": verification,
             "inputReady": bool(chat_inputs),
             "sendButtonReady": bool(send_buttons),
             "message": "约面试 dry-run 已定位到候选人输入框" if dry_run else "约面试候选人已定位",
@@ -1750,13 +1858,27 @@ def service_interview_invite(self, payload: dict) -> dict:
             "final": final,
         }
         if dry_run:
-            if not id_matched:
-                base.update({"ok": False, "blocked": True, "reason": "candidate_id_not_verified", "message": "已搜索但未能核对平台ID一致"})
+            if not contact_verified:
+                reason = str(verification.get("reason") or "chat_evidence_not_matched")
+                message_map = {
+                    "search_result_not_found": "已搜索但未找到可确认的目标联系人",
+                    "multiple_candidates_unverified": "搜索结果存在多个同名联系人，未能用岗位或聊天证据确认",
+                    "chat_evidence_not_matched": "已搜索但未能匹配岗位或聊天证据，停止发送",
+                    "contact_not_verified": "未能确认当前会话是目标联系人",
+                }
+                base.update({"ok": False, "blocked": True, "reason": reason, "message": message_map.get(reason, "未能确认当前会话是目标联系人")})
             elif not chat_inputs:
-                base.update({"ok": False, "blocked": True, "reason": "chat_input_not_found", "message": "已核对平台ID，但未找到聊天输入框"})
+                base.update({"ok": False, "blocked": True, "reason": "chat_input_not_found", "message": "已确认目标联系人，但未找到聊天输入框"})
             return base
-        if not id_matched:
-            base.update({"ok": False, "blocked": True, "reason": "candidate_id_not_verified", "message": "搜索结果未核对到同一平台ID，未发送"})
+        if not contact_verified:
+            reason = str(verification.get("reason") or "chat_evidence_not_matched")
+            message_map = {
+                "search_result_not_found": "搜索后未找到可确认的目标联系人，未发送",
+                "multiple_candidates_unverified": "搜索结果存在多个同名联系人，未能用岗位或聊天证据确认，未发送",
+                "chat_evidence_not_matched": "未能匹配岗位或聊天证据，未发送",
+                "contact_not_verified": "未能确认当前会话是目标联系人，未发送",
+            }
+            base.update({"ok": False, "blocked": True, "reason": reason, "message": message_map.get(reason, "未能确认当前会话是目标联系人，未发送")})
             return base
         if not chat_inputs:
             base.update({"ok": False, "blocked": True, "reason": "chat_input_not_found", "message": "未找到聊天输入框，未发送"})

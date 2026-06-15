@@ -510,8 +510,10 @@ function createAutomation24hScheduler({
 
   function targetMaxTotalPerRound(target) {
     if (target.platform === "zhilian") {
-      const zhilianLimit = normalizeCount(process.env.AUTOMATION_24H_ZHILIAN_MAX_TOTAL, 3);
-      return Math.max(1, Math.min(maxTotalPerRound, zhilianLimit));
+      const configuredLimit = Number(process.env.AUTOMATION_24H_ZHILIAN_MAX_TOTAL || 0);
+      if (Number.isFinite(configuredLimit) && configuredLimit > 0) {
+        return Math.max(1, Math.min(maxTotalPerRound, Math.floor(configuredLimit)));
+      }
     }
     return maxTotalPerRound;
   }

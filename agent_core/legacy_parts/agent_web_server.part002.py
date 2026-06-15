@@ -1279,6 +1279,61 @@
             "answered": False,
         }
 
+    def job51_close_stale_non_chat_pages(self, terminal: BrowserTerminal, origin_page=None, reason: str = "") -> dict:
+        origin_page = origin_page or terminal.current_page()
+        closed_pages: list[dict] = []
+        try:
+            pages = list(terminal.all_pages())
+        except Exception:
+            try:
+                pages = list(origin_page.context.pages)
+            except Exception:
+                pages = []
+        for page in pages:
+            if page == origin_page:
+                continue
+            try:
+                url = str(getattr(page, "url", "") or "")
+                title = page.title()
+            except Exception:
+                url = ""
+                title = ""
+            if (
+                "ehire.51job.com" not in url
+                or "/Revision/chat" in url
+                or "/Revision/talent/management" not in url
+            ):
+                continue
+            try:
+                page.close()
+                closed_pages.append({"url": safe_text(url, 180), "title": safe_text(title, 80)})
+            except Exception as error:
+                closed_pages.append({
+                    "url": safe_text(url, 180),
+                    "title": safe_text(title, 80),
+                    "error": safe_text(str(error), 120),
+                })
+        try:
+            origin_page.bring_to_front()
+        except Exception:
+            pass
+        return {"closedPages": closed_pages, "count": len(closed_pages), "reason": reason}
+
+    def job51_find_chat_page(self, terminal: BrowserTerminal):
+        try:
+            pages = list(terminal.all_pages())
+        except Exception:
+            return None
+        chat_pages = []
+        for page in pages:
+            try:
+                url = str(getattr(page, "url", "") or "")
+            except Exception:
+                url = ""
+            if "://ehire.51job.com" in url and "/Revision/chat" in url:
+                chat_pages.append(page)
+        return chat_pages[0] if chat_pages else None
+
     def _run_job51_terminal_sync(self, callback):
         terminal_obj = BrowserTerminal(
             JOB51_CDP_URL,
@@ -1308,6 +1363,14 @@
             if job51_pages:
                 job51_pages.sort(key=lambda item: item[0])
                 terminal.page = job51_pages[0][1]
+                try:
+                    self.job51_close_stale_non_chat_pages(terminal, origin_page=terminal.page, reason="terminal_select")
+                except Exception:
+                    pass
+                try:
+                    terminal.page.bring_to_front()
+                except Exception:
+                    pass
             return callback(terminal)
         finally:
             if terminal is not None:
@@ -1442,8 +1505,23 @@
     def job51_open_chat_page(self, terminal: BrowserTerminal) -> dict:
         page = terminal.current_page()
         self.job51_dismiss_interruptions(terminal, reason="before_open_chat")
+        existing_chat_page = self.job51_find_chat_page(terminal)
+        if existing_chat_page is not None:
+            terminal.page = existing_chat_page
+            page = existing_chat_page
+            close_result = self.job51_close_stale_non_chat_pages(terminal, origin_page=page, reason="open_chat_existing")
+            try:
+                page.bring_to_front()
+            except Exception:
+                pass
+            return {"opened": True, "url": page.url, "title": page.title(), "source": "existing_chat", "closeResult": close_result}
         if "ehire.51job.com" in str(page.url) and "/Revision/chat" in str(page.url):
-            return {"opened": True, "url": page.url, "title": page.title(), "source": "current"}
+            close_result = self.job51_close_stale_non_chat_pages(terminal, origin_page=page, reason="open_chat_current")
+            try:
+                page.bring_to_front()
+            except Exception:
+                pass
+            return {"opened": True, "url": page.url, "title": page.title(), "source": "current", "closeResult": close_result}
         nav = page.locator("#sensor_talentcommunicate").first
         try:
             if nav.count():
@@ -1454,12 +1532,14 @@
                 if terminal.humanize:
                     terminal.pause_like_person("post_action")
                 page.wait_for_timeout(random.randint(1200, 1800))
-                return {"opened": True, "url": page.url, "title": page.title(), "source": "left_nav"}
+                close_result = self.job51_close_stale_non_chat_pages(terminal, origin_page=page, reason="open_chat_left_nav")
+                return {"opened": True, "url": page.url, "title": page.title(), "source": "left_nav", "closeResult": close_result}
         except Exception:
             pass
         page.goto(JOB51_CHAT_URL, wait_until="domcontentloaded", timeout=15000)
         page.wait_for_timeout(random.randint(1200, 1800))
-        return {"opened": True, "url": page.url, "title": page.title(), "source": "goto"}
+        close_result = self.job51_close_stale_non_chat_pages(terminal, origin_page=page, reason="open_chat_goto")
+        return {"opened": True, "url": page.url, "title": page.title(), "source": "goto", "closeResult": close_result}
 
     def job51_select_all_positions(self, terminal: BrowserTerminal) -> dict:
         page = terminal.current_page()

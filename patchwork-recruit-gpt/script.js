@@ -8,7 +8,7 @@
     "./src/client/batch/imports.js",
     "./src/client/core/init.js",
   ];
-  const VERSION = "20260613-automation-24h-cycles";
+  const VERSION = "20260615-stats-date-fix";
   const statusNode = document.querySelector("#statusPill");
 
   async function loadClient() {

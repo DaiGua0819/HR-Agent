@@ -461,6 +461,7 @@ async function markFolderImportCompleted(item, result = {}) {
     emailSourceKind: payload.emailSourceKind || previousEntry.emailSourceKind || "",
     sourceLabel: payload.sourceLabel || previousEntry.sourceLabel || "",
     sourcePlatform: payload.sourcePlatform || previousEntry.sourcePlatform || "",
+    platformContact: payload.platformContact || previousEntry.platformContact || null,
     accounts,
   });
 
@@ -508,6 +509,88 @@ async function listBossResumePdfFiles() {
   return listFolderResumePdfFiles(FOLDER_IMPORT_SOURCES.boss);
 }
 
+function folderImportSourcePlatform(source = {}) {
+  if (source.id === FOLDER_IMPORT_SOURCES.job51.id) return "51job";
+  if (source.id === FOLDER_IMPORT_SOURCES.zhilian.id) return "zhilian";
+  return "boss";
+}
+
+function normalizeImportFileLookupKey(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  try {
+    return path.resolve(text).toLowerCase();
+  } catch {
+    return text.toLowerCase();
+  }
+}
+
+function isBetterDownloadMetadata(current = null, next = {}) {
+  if (!current) return true;
+  const currentTime = Date.parse(current.downloadedAt || current.updatedAt || current.createdAt || "") || 0;
+  const nextTime = Date.parse(next.downloadedAt || next.updatedAt || next.createdAt || "") || 0;
+  return nextTime >= currentTime;
+}
+
+function addDownloadMetadataLookup(map, key, item) {
+  if (!key || !item) return;
+  if (isBetterDownloadMetadata(map.get(key), item)) map.set(key, item);
+}
+
+async function buildFolderResumeDownloadMetadataIndex(source = {}) {
+  const sourcePlatform = folderImportSourcePlatform(source);
+  const byHash = new Map();
+  const byPath = new Map();
+  const byFilename = new Map();
+  let filenames = [];
+  try {
+    filenames = await fs.readdir(AUTOMATION_WORKSPACE);
+  } catch {
+    return { byHash, byPath, byFilename };
+  }
+
+  for (const filename of filenames) {
+    if (!/^(recruiter_resume_downloads|job51_resume_downloads)\b.*\.json$/i.test(filename)) continue;
+    const payload = await readAutomationJsonFile(filename);
+    const rows = payload && typeof payload === "object" && !Array.isArray(payload) ? Object.values(payload) : [];
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      const rowPlatform = normalizeAutomationPlatformId(row.platform || row.accountId || sourcePlatform);
+      if (rowPlatform !== sourcePlatform) continue;
+      const sourceKey = String(row.accountId || row.sourceKey || "").trim();
+      const platformContact = buildResumePlatformContactMetadata(row);
+      const item = {
+        platform: rowPlatform,
+        sourceKey,
+        accountId: sourceKey || "",
+        accountName: row.accountName || "",
+        accountLabel: row.accountName || "",
+        candidateName: row.candidateName || "",
+        candidateLabel: row.candidateLabel || "",
+        appliedPosition: row.appliedPosition || "",
+        conversationKey: row.conversationKey || "",
+        recentMessages: Array.isArray(row.recentMessages) ? row.recentMessages : [],
+        messages: Array.isArray(row.recentMessages) ? row.recentMessages : [],
+        downloadedAt: row.downloadedAt || "",
+        platformContact: platformContact.displayName ? platformContact : row.platformContact || null,
+      };
+      addDownloadMetadataLookup(byHash, String(row.fileHash || "").trim(), item);
+      addDownloadMetadataLookup(byPath, normalizeImportFileLookupKey(row.filePath), item);
+      addDownloadMetadataLookup(byFilename, String(row.filename || "").trim().toLowerCase(), item);
+    }
+  }
+  return { byHash, byPath, byFilename };
+}
+
+function findFolderResumeDownloadMetadata(index, { hash = "", filePath = "", filename = "" } = {}) {
+  return (
+    index.byHash.get(String(hash || "").trim()) ||
+    index.byPath.get(normalizeImportFileLookupKey(filePath)) ||
+    index.byFilename.get(String(filename || "").trim().toLowerCase()) ||
+    null
+  );
+}
+
 async function collectFolderResumeImportCandidates(
   source,
   { limit = 30, stopAtLimit = false, minFileAgeMs = 0 } = {}
@@ -515,6 +598,7 @@ async function collectFolderResumeImportCandidates(
   const files = await listFolderResumePdfFiles(source);
   const manifest = await readFolderImportManifest(source);
   const knownHashes = getCompletedFolderImportHashes(source, manifest);
+  const downloadMetadataIndex = await buildFolderResumeDownloadMetadataIndex(source);
   const candidates = [];
   let skippedImported = 0;
   let skippedInvalid = 0;
@@ -539,8 +623,10 @@ async function collectFolderResumeImportCandidates(
       skippedImported += 1;
       continue;
     }
+    const downloadMetadata = findFolderResumeDownloadMetadata(downloadMetadataIndex, { hash, filePath, filename });
 
     candidates.push({
+      ...(downloadMetadata || {}),
       filename,
       sourcePath: filePath,
       pdfBuffer,
@@ -916,11 +1002,10 @@ async function createFolderImportBatchJobFromCandidates(
           emailSourceKind: candidate.emailSourceKind || sourceMeta.emailSourceKind || "",
           sourceLabel: sourceMeta.sourceLabel || "",
           sourcePlatform: sourceMeta.sourcePlatform || "",
-          platformCandidateId: identityMeta.platformCandidateId || "",
           conversationKey: identityMeta.conversationKey || "",
           candidateIdentityKey: identityMeta.candidateIdentityKey || "",
           sourceKey: identityMeta.sourceKey || candidate.sourceKey || "",
-          detailUrl: identityMeta.detailUrl || "",
+          platformContact: identityMeta.platformContact || candidate.platformContact || null,
         }),
         now,
         now
@@ -1383,6 +1468,21 @@ function normalizeResumeInviteAccount(record = {}) {
   return normalizeBossAutomationAccountId(record.accountId || record.accountName || record.sourceLabel || record.sourceName || "");
 }
 
+function resolveResumeInvitePlatformContact(record = {}) {
+  const contact = buildResumePlatformContactMetadata(record);
+  if (contact.displayName) return contact;
+  const existing = record.platformContact && typeof record.platformContact === "object" ? record.platformContact : {};
+  const displayName = String(existing.displayName || "").trim();
+  if (!displayName) return null;
+  return {
+    displayName: clipText(displayName, 80),
+    label: clipText(existing.label || "", 220),
+    appliedPosition: clipText(existing.appliedPosition || record.jobType || "", 120),
+    capturedAt: clipText(existing.capturedAt || "", 40),
+    chatEvidence: normalizePlatformContactChatEvidence({ platformContact: existing }),
+  };
+}
+
 function resolveResumeInterviewTarget(record = {}) {
   const platform = normalizeResumeInvitePlatform(record);
   if (!platform || platform === "email") {
@@ -1396,19 +1496,19 @@ function resolveResumeInterviewTarget(record = {}) {
   if (!sourceKey) {
     return { ok: false, reason: "missing_source_key", message: "未能解析自动化服务 sourceKey" };
   }
-  const platformCandidateId = String(record.platformCandidateId || "").trim();
-  if (!platformCandidateId) {
-    return { ok: false, reason: "missing_platform_candidate_id", message: "历史简历缺少平台ID，无法按ID搜索约面试" };
+  const platformContact = resolveResumeInvitePlatformContact(record);
+  if (!platformContact?.displayName) {
+    return { ok: false, reason: "missing_platform_display_name", message: "该简历缺少平台联系人显示名，无法按平台联系人搜索约面试" };
   }
   return {
     ok: true,
     platform,
     accountId,
     sourceKey,
-    platformCandidateId,
+    platformContact,
+    searchName: platformContact.displayName,
     conversationKey: String(record.conversationKey || "").trim(),
     candidateIdentityKey: String(record.candidateIdentityKey || "").trim(),
-    detailUrl: String(record.detailUrl || "").trim(),
   };
 }
 
@@ -1455,6 +1555,10 @@ async function handleResumeInterviewInvite(id, request, response) {
       ...target,
       resumeId: record.id,
       candidateName: record.name || "",
+      searchName: target.searchName,
+      platformContact: target.platformContact,
+      chatEvidence: target.platformContact.chatEvidence || [],
+      appliedPosition: target.platformContact.appliedPosition || record.jobType || "",
       message: INTERVIEW_INVITE_MESSAGE,
       dryRun,
     };
@@ -1470,7 +1574,7 @@ async function handleResumeInterviewInvite(id, request, response) {
       platform: record.platform || target.platform,
       accountId: record.accountId || target.accountId,
       sourceKey: record.sourceKey || target.sourceKey,
-      platformCandidateId: record.platformCandidateId || target.platformCandidateId,
+      platformContact: record.platformContact?.displayName ? record.platformContact : target.platformContact,
       interviewInvite: {
         status,
         message: payload.message || (success ? "约面试消息已发送" : "约面试处理失败"),
@@ -1478,7 +1582,8 @@ async function handleResumeInterviewInvite(id, request, response) {
         accountId: target.accountId,
         sourceKey: target.sourceKey,
         sourceLabel: source?.label || "",
-        platformCandidateId: target.platformCandidateId,
+        platformContact: target.platformContact,
+        searchName: target.searchName,
         dryRun,
         sentAt: !dryRun && success ? new Date().toISOString() : existingInvite.sentAt || "",
         updatedAt: new Date().toISOString(),

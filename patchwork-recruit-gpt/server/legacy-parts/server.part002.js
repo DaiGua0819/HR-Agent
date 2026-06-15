@@ -886,24 +886,35 @@ async function buildAutomationDetailsPayload(platform, sourceKeys, options = {})
       items = [];
     }
   }
-  const baseRecords = deepRecords.length ? deepRecords : automationDetailRecordsFromSummaries(items, selectedDate);
+  let baseRecords = deepRecords.length ? deepRecords : automationDetailRecordsFromSummaries(items, selectedDate);
+  const baseMetrics = automationMetricPayloadFromRecords(baseRecords, { includeDate: selectedDate !== "all" });
   const records = filterAutomationDetailRecordsForRequest(baseRecords, options);
   const jobs = [...new Set(records.map((record) => record.appliedPosition).filter(Boolean))].sort((a, b) =>
     a.localeCompare(b, "zh-CN")
   );
   const useRecordMetrics = automationDateListFromState(selectedDate).length > 1;
+  const sourceMetrics =
+    deepRecords.length || useRecordMetrics || agentOffline
+      ? baseMetrics
+      : automationDetailMetricPayload(items, platform, {
+          accountId: options.accountId,
+          date: selectedDate,
+        });
+  const metricsPayload = applyAutomation24hProgressFallback(
+    { metrics: sourceMetrics, date: selectedDate },
+    { platform, accountId, date: selectedDate }
+  );
   return {
     platform,
     date: selectedDate,
     today: automationChinaDateKey(),
     updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
-    metrics: deepRecords.length || useRecordMetrics || agentOffline
-      ? automationMetricPayloadFromRecords(baseRecords, { includeDate: selectedDate !== "all" })
-      : automationDetailMetricPayload(items, platform, {
-          accountId: options.accountId,
-          date: selectedDate,
-        }),
+    metrics: metricsPayload.metrics || sourceMetrics,
     records,
+    recoveredFrom24hStatus: Boolean(metricsPayload.recoveredFrom24hStatus),
+    recoveryNote: metricsPayload.recoveredFrom24hStatus
+      ? "当前统计含24小时自动运转进度兜底；兜底只补充摘要数字，不生成候选人明细，也不参与岗位扇形图。"
+      : "",
     agentOffline,
     error: agentError,
     filters: {

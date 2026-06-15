@@ -92,7 +92,8 @@ function renderBossAutomationSummary(payload = {}) {
   }
 
   if (elements.bossAutomationUpdatedAt) {
-    elements.bossAutomationUpdatedAt.textContent = payload.updatedAt ? `更新 ${payload.updatedAt}` : "";
+    const recoveryText = payload.recoveredFrom24hStatus ? " · 24h进度兜底" : "";
+    elements.bossAutomationUpdatedAt.textContent = payload.updatedAt ? `更新 ${payload.updatedAt}${recoveryText}` : "";
   }
   elements.bossAutomationSummaryPanel.hidden = false;
   refreshDailyPieChart().catch((error) => console.warn(error));
@@ -331,7 +332,9 @@ async function refreshDailyPieChart({ force = false } = {}) {
         )}&metric=${encodeURIComponent(metric)}&accountId=${encodeURIComponent(accountId)}`;
         requests.push(
           requestJson(endpoint).then((payload) =>
-            (Array.isArray(payload.records) ? payload.records : []).map((record) => ({
+            (Array.isArray(payload.records) ? payload.records : [])
+              .filter((record) => !record?.recoveredFrom24hStatus)
+              .map((record) => ({
               ...record,
               platform: normalizeAutomationPlatform(record.platform || platform),
               accountId,

@@ -431,8 +431,13 @@ function getResumeInviteSourceText(resume = {}) {
   return getResumeSourceDisplay(resume);
 }
 
+function getResumePlatformContactDisplayName(resume = {}) {
+  const contact = resume.platformContact && typeof resume.platformContact === "object" ? resume.platformContact : {};
+  return String(contact.displayName || "").trim();
+}
+
 function getResumeInviteUnavailableReason(resume = {}) {
-  if (!resume.platformCandidateId) return "历史简历缺少平台ID，无法按ID搜索约面试";
+  if (!getResumePlatformContactDisplayName(resume)) return "历史简历缺少平台联系人显示名，无法自动搜索约面试";
   const sourceText = getResumeInviteSourceText(resume);
   if (/邮箱|email|未知/i.test(sourceText)) return "该简历不是自动化平台来源，无法约面试";
   return "";
@@ -455,7 +460,7 @@ async function startResumeInterviewInvite(resume, button = null) {
     [
       `确认给 ${resume.name || resume.fileName || "该候选人"} 发送约面试消息？`,
       `来源：${getResumeInviteSourceText(resume)}`,
-      `平台ID：${resume.platformCandidateId}`,
+      `平台联系人：${getResumePlatformContactDisplayName(resume)}`,
       `发送内容：${INTERVIEW_INVITE_TEXT}`,
     ].join("\n")
   );
@@ -568,7 +573,7 @@ function renderResumeTable(resumes) {
       inviteButton.disabled = true;
       inviteButton.title = unavailable;
     } else {
-      inviteButton.title = `按平台ID搜索并发送：${INTERVIEW_INVITE_TEXT}`;
+      inviteButton.title = `按平台联系人名搜索并发送：${INTERVIEW_INVITE_TEXT}`;
       inviteButton.addEventListener("click", () => startResumeInterviewInvite(resume, inviteButton));
     }
     actionGroup.appendChild(inviteButton);

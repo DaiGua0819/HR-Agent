@@ -239,8 +239,34 @@
             except Exception:
                 box = None
             if box:
-                x = float(box["x"]) + float(box["width"]) * random.uniform(0.42, 0.58)
-                y = float(box["y"]) + float(box["height"]) * random.uniform(0.42, 0.58)
+                click_box = None
+                click_locator = None
+                click_area = "row_left_safe_area"
+                try:
+                    name_locator = locator.locator(".username.at").first
+                    if name_locator.count():
+                        name_box = name_locator.bounding_box(timeout=1200)
+                        if name_box and float(name_box.get("width") or 0) > 4 and float(name_box.get("height") or 0) > 4:
+                            click_box = name_box
+                            click_locator = name_locator
+                            click_area = "candidate_name"
+                except Exception:
+                    click_box = None
+                    click_locator = None
+                if click_box:
+                    x = float(click_box["x"]) + float(click_box["width"]) * random.uniform(0.42, 0.58)
+                    y = float(click_box["y"]) + float(click_box["height"]) * random.uniform(0.42, 0.58)
+                    target_box = click_box
+                else:
+                    row_x = float(box["x"])
+                    row_y = float(box["y"])
+                    row_width = max(1.0, float(box["width"]))
+                    row_height = max(1.0, float(box["height"]))
+                    left_offset = min(max(row_width * 0.24, 54.0), max(18.0, row_width - 42.0))
+                    x = row_x + left_offset + random.uniform(-8.0, 8.0)
+                    x = max(row_x + 12.0, min(row_x + row_width - 24.0, x))
+                    y = row_y + row_height * random.uniform(0.34, 0.48)
+                    target_box = box
                 box_info = {
                     "x": round(float(box["x"])),
                     "y": round(float(box["y"])),
@@ -248,12 +274,20 @@
                     "height": round(float(box["height"])),
                     "clickX": round(x),
                     "clickY": round(y),
+                    "clickArea": click_area,
                 }
+                if click_box:
+                    box_info["nameBox"] = {
+                        "x": round(float(click_box["x"])),
+                        "y": round(float(click_box["y"])),
+                        "width": round(float(click_box["width"])),
+                        "height": round(float(click_box["height"])),
+                    }
                 try:
-                    humanized_point_click(terminal, x, y, target_box=box)
-                    method = "humanized_point_click"
+                    humanized_point_click(terminal, x, y, target_box=target_box)
+                    method = f"humanized_point_click_{click_area}"
                 except Exception as point_error:
-                    humanized_locator_click(terminal, locator, force=True)
+                    humanized_locator_click(terminal, click_locator or locator, force=True)
                     method = "humanized_locator_click_after_point_error"
                     box_info["pointError"] = safe_text(str(point_error), 160)
             else:

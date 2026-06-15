@@ -496,7 +496,10 @@ async function handleBossAutomationSummary(request, response) {
     }
     const deepRecords = await collectDeepAutomationDetailRecords("boss", accountId, date || automationChinaDateKey());
     if (deepRecords.length) {
-      const payload = buildAutomationSummaryPayloadFromRecords(deepRecords, { platform: "boss", accountId, date });
+      const payload = applyAutomation24hProgressFallback(
+        buildAutomationSummaryPayloadFromRecords(deepRecords, { platform: "boss", accountId, date }),
+        { platform: "boss", accountId, date }
+      );
       setAutomationSummaryResponseCache(cacheKey, payload);
       sendJson(response, 200, payload);
       return;
@@ -512,6 +515,7 @@ async function handleBossAutomationSummary(request, response) {
         error: error.message || "BOSS 自动化 agent 未启动",
       };
     }
+    payload = applyAutomation24hProgressFallback(payload, { platform: "boss", accountId, date });
     setAutomationSummaryResponseCache(cacheKey, payload);
     sendJson(response, 200, payload);
   } catch (error) {
@@ -534,10 +538,13 @@ async function handlePlatformAutomationSummary(request, response) {
     }
     const deepRecords = await collectDeepAutomationDetailRecords(platform, accountId, date || automationChinaDateKey());
     if (deepRecords.length) {
-      const payload = {
-        ...buildAutomationSummaryPayloadFromRecords(deepRecords, { platform, accountId, date }),
-        sourceKeys: platformAutomationSources(platform, accountId),
-      };
+      const payload = applyAutomation24hProgressFallback(
+        {
+          ...buildAutomationSummaryPayloadFromRecords(deepRecords, { platform, accountId, date }),
+          sourceKeys: platformAutomationSources(platform, accountId),
+        },
+        { platform, accountId, date }
+      );
       setAutomationSummaryResponseCache(cacheKey, payload);
       sendJson(response, 200, payload);
       return;
@@ -559,6 +566,7 @@ async function handlePlatformAutomationSummary(request, response) {
         error: error.message || "自动化 agent 未启动",
       };
     }
+    payload = applyAutomation24hProgressFallback(payload, { platform, accountId, date });
     setAutomationSummaryResponseCache(cacheKey, payload);
     sendJson(response, 200, payload);
   } catch (error) {
@@ -1522,6 +1530,98 @@ function firstNonEmptyString(...values) {
   return "";
 }
 
+function normalizePlatformContactChatEvidence(input = {}) {
+  const contact = input.platformContact && typeof input.platformContact === "object" ? input.platformContact : {};
+  const conversation = input.conversation && typeof input.conversation === "object" ? input.conversation : {};
+  const candidateIdentity = input.candidateIdentity && typeof input.candidateIdentity === "object" ? input.candidateIdentity : {};
+  const sources = [
+    contact.chatEvidence,
+    input.chatEvidence,
+    input.recentMessages,
+    input.messages,
+    conversation.recentMessages,
+    candidateIdentity.recentMessages,
+  ];
+
+  for (const source of sources) {
+    if (!Array.isArray(source)) continue;
+    const messages = source
+      .filter((message) => message && typeof message === "object")
+      .map((message) => {
+        const text = clipText(message.text || message.rawText || "", 260);
+        if (!text) return null;
+        const sender = String(message.sender || "").trim();
+        return {
+          sender: ["me", "other", "system"].includes(sender) ? sender : "other",
+          time: clipText(message.time || message.timestamp || message.createdAt || "", 40),
+          status: clipText(message.status || "", 40),
+          text,
+        };
+      })
+      .filter(Boolean)
+      .slice(-3);
+    if (messages.length) return messages;
+  }
+  return [];
+}
+
+function buildResumePlatformContactMetadata(input = {}) {
+  const contact = input.platformContact && typeof input.platformContact === "object" ? input.platformContact : {};
+  const identity = input.candidateIdentity && typeof input.candidateIdentity === "object" ? input.candidateIdentity : {};
+  const conversation = input.conversation && typeof input.conversation === "object" ? input.conversation : {};
+  const counterpart =
+    conversation.counterpart && typeof conversation.counterpart === "object" ? conversation.counterpart : {};
+  const applicant = input.applicant && typeof input.applicant === "object" ? input.applicant : {};
+
+  const displayName = firstNonEmptyString(
+    contact.displayName,
+    input.platformDisplayName,
+    input.contactDisplayName,
+    input.candidateName,
+    applicant.name,
+    identity.candidateName,
+    counterpart.name
+  );
+  if (!displayName) return {};
+
+  const label = firstNonEmptyString(
+    contact.label,
+    input.platformContactLabel,
+    input.candidateLabel,
+    input.label,
+    applicant.label,
+    identity.listLabel,
+    counterpart.rawHeader
+  );
+  const appliedPosition = firstNonEmptyString(
+    contact.appliedPosition,
+    input.appliedPosition,
+    input.position,
+    input.job,
+    applicant.appliedPosition,
+    identity.appliedPosition,
+    counterpart.appliedPosition,
+    counterpart.role
+  );
+  const capturedAt = firstNonEmptyString(
+    contact.capturedAt,
+    input.capturedAt,
+    input.downloadedAt,
+    input.time,
+    input.createdAt,
+    input.updatedAt
+  );
+  const chatEvidence = normalizePlatformContactChatEvidence(input);
+
+  return {
+    displayName: clipText(displayName, 80),
+    label: clipText(label, 220),
+    appliedPosition: clipText(appliedPosition, 120),
+    capturedAt: clipText(capturedAt || new Date().toISOString(), 40),
+    chatEvidence,
+  };
+}
+
 function extractPlatformCandidateIdFromUrl(value = "") {
   const text = String(value || "").trim();
   if (!/^https?:\/\//i.test(text)) return "";
@@ -1582,13 +1682,13 @@ function buildResumeAutomationIdentityMetadata(input = {}) {
   const candidateIdentityKey = firstNonEmptyString(input.candidateIdentityKey, identity.identityKey);
   const conversationKey = firstNonEmptyString(input.conversationKey, identity.conversationKey);
   const sourceKey = firstNonEmptyString(input.sourceKey, input.automationSourceKey);
+  const platformContact = buildResumePlatformContactMetadata(input);
 
   const meta = {};
-  if (platformCandidateId) meta.platformCandidateId = platformCandidateId;
   if (conversationKey) meta.conversationKey = conversationKey;
   if (candidateIdentityKey) meta.candidateIdentityKey = candidateIdentityKey;
   if (sourceKey) meta.sourceKey = sourceKey;
-  if (detailUrl) meta.detailUrl = detailUrl;
+  if (platformContact.displayName) meta.platformContact = platformContact;
   if (identity && Object.keys(identity).length) {
     meta.candidateIdentity = {
       identityKey: firstNonEmptyString(identity.identityKey),
