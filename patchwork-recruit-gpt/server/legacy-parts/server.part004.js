@@ -1483,7 +1483,7 @@ function resolveResumeInvitePlatformContact(record = {}) {
   };
 }
 
-function resolveResumeInterviewTarget(record = {}) {
+async function resolveResumeInterviewTarget(record = {}) {
   const platform = normalizeResumeInvitePlatform(record);
   if (!platform || platform === "email") {
     return { ok: false, reason: "unsupported_source", message: "该简历不是可自动约面试的平台来源" };
@@ -1492,13 +1492,31 @@ function resolveResumeInterviewTarget(record = {}) {
   if (!accountId || accountId === "all") {
     return { ok: false, reason: "missing_account", message: "该简历缺少来源账号，无法确定要用哪个平台账号发送" };
   }
-  const sourceKey = String(record.sourceKey || automationBrowserSourceKey(platform, accountId) || "").trim();
+  let sourceKey = String(record.sourceKey || automationBrowserSourceKey(platform, accountId) || "").trim();
   if (!sourceKey) {
     return { ok: false, reason: "missing_source_key", message: "未能解析自动化服务 sourceKey" };
   }
-  const platformContact = resolveResumeInvitePlatformContact(record);
+  let workingRecord = record;
+  let platformContact = resolveResumeInvitePlatformContact(workingRecord);
+  let bridge = null;
+  const contactNeedsBridge =
+    !platformContact?.displayName ||
+    !String(workingRecord.conversationKey || "").trim() ||
+    !(Array.isArray(platformContact.chatEvidence) && platformContact.chatEvidence.length);
+  if (contactNeedsBridge) {
+    bridge = await findResumeContactBridge(workingRecord);
+    if (bridge.ok) {
+      workingRecord = applyResumeContactBridge(workingRecord, bridge);
+      sourceKey = String(workingRecord.sourceKey || bridge.sourceKey || sourceKey).trim();
+      platformContact = resolveResumeInvitePlatformContact(workingRecord);
+    }
+  }
   if (!platformContact?.displayName) {
-    return { ok: false, reason: "missing_platform_display_name", message: "该简历缺少平台联系人显示名，无法按平台联系人搜索约面试" };
+    return {
+      ok: false,
+      reason: bridge?.reason || "missing_platform_display_name",
+      message: bridge?.message || "该简历缺少平台联系人显示名，无法按平台联系人搜索约面试",
+    };
   }
   return {
     ok: true,
@@ -1507,8 +1525,11 @@ function resolveResumeInterviewTarget(record = {}) {
     sourceKey,
     platformContact,
     searchName: platformContact.displayName,
-    conversationKey: String(record.conversationKey || "").trim(),
-    candidateIdentityKey: String(record.candidateIdentityKey || "").trim(),
+    conversationKey: String(workingRecord.conversationKey || "").trim(),
+    candidateIdentityKey: String(workingRecord.candidateIdentityKey || "").trim(),
+    bridged: Boolean(bridge?.ok),
+    bridgeScore: bridge?.score || 0,
+    bridgedRecord: bridge?.ok ? workingRecord : null,
   };
 }
 
@@ -1533,7 +1554,7 @@ async function handleResumeInterviewInvite(id, request, response) {
       return;
     }
 
-    const target = resolveResumeInterviewTarget(record);
+    const target = await resolveResumeInterviewTarget(record);
     if (!target.ok) {
       records[index] = {
         ...record,
@@ -1550,15 +1571,22 @@ async function handleResumeInterviewInvite(id, request, response) {
       return;
     }
 
+    const recordForInvite = target.bridgedRecord || record;
+    if (target.bridgedRecord) {
+      records[index] = recordForInvite;
+      await writeDatabase(records);
+    }
+
+    const { bridgedRecord: _bridgedRecord, ...targetPayload } = target;
     const dryRun = Boolean(body.dryRun);
     const agentRequest = {
-      ...target,
-      resumeId: record.id,
-      candidateName: record.name || "",
+      ...targetPayload,
+      resumeId: recordForInvite.id,
+      candidateName: recordForInvite.name || "",
       searchName: target.searchName,
       platformContact: target.platformContact,
       chatEvidence: target.platformContact.chatEvidence || [],
-      appliedPosition: target.platformContact.appliedPosition || record.jobType || "",
+      appliedPosition: target.platformContact.appliedPosition || recordForInvite.jobType || "",
       message: INTERVIEW_INVITE_MESSAGE,
       dryRun,
     };
@@ -1570,11 +1598,11 @@ async function handleResumeInterviewInvite(id, request, response) {
     const success = dryRun ? Boolean(payload.ok && !payload.blocked) : Boolean(payload.sent || payload.verified);
     const status = dryRun ? (success ? "probed" : "failed") : success ? "sent" : "failed";
     const nextRecord = {
-      ...record,
-      platform: record.platform || target.platform,
-      accountId: record.accountId || target.accountId,
-      sourceKey: record.sourceKey || target.sourceKey,
-      platformContact: record.platformContact?.displayName ? record.platformContact : target.platformContact,
+      ...recordForInvite,
+      platform: recordForInvite.platform || target.platform,
+      accountId: recordForInvite.accountId || target.accountId,
+      sourceKey: recordForInvite.sourceKey || target.sourceKey,
+      platformContact: recordForInvite.platformContact?.displayName ? recordForInvite.platformContact : target.platformContact,
       interviewInvite: {
         status,
         message: payload.message || (success ? "约面试消息已发送" : "约面试处理失败"),
@@ -1585,6 +1613,8 @@ async function handleResumeInterviewInvite(id, request, response) {
         platformContact: target.platformContact,
         searchName: target.searchName,
         dryRun,
+        bridged: Boolean(target.bridged),
+        bridgeScore: target.bridgeScore || 0,
         sentAt: !dryRun && success ? new Date().toISOString() : existingInvite.sentAt || "",
         updatedAt: new Date().toISOString(),
         result: payload,

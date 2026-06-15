@@ -732,7 +732,9 @@ const server = http.createServer((request, response) => {
   }
 
   if (resumeInterviewInviteMatch && request.method === "POST") {
-    handleResumeInterviewInvite(resumeInterviewInviteMatch[1], request, response);
+    handleResumeInterviewInvite(resumeInterviewInviteMatch[1], request, response).catch((error) => {
+      sendJson(response, error.statusCode || 500, { ok: false, error: error.message || "约面试失败" });
+    });
     return;
   }
 

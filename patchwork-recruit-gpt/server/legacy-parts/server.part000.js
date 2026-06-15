@@ -1336,6 +1336,81 @@ async function getAutomationContactBackfillCandidates(cache, platform, accountId
   return candidates;
 }
 
+async function findResumeContactBridge(record = {}, options = {}) {
+  if (!record?.id && !record?.name) {
+    return { ok: false, reason: "invalid_resume", message: "简历记录无效，无法查找平台联系人" };
+  }
+  const platform = resumeContactBackfillPlatform(record);
+  if (!["boss", "51job", "zhilian"].includes(platform)) {
+    return { ok: false, reason: "unsupported_source", message: "该简历不是可自动约面试的平台来源" };
+  }
+  const accountId = resumeContactBackfillAccountId(record);
+  if (!accountId || accountId === "all") {
+    return { ok: false, reason: "missing_account", message: "该简历缺少来源账号，无法查找平台联系人" };
+  }
+  const sourceKey = String(record.sourceKey || automationBrowserSourceKey(platform, accountId) || "").trim();
+  if (!sourceKey) {
+    return { ok: false, reason: "missing_source_key", message: "未能解析自动化服务 sourceKey" };
+  }
+
+  const cache = options.cache instanceof Map ? options.cache : new Map();
+  const candidates = await getAutomationContactBackfillCandidates(cache, platform, accountId);
+  const ranked = candidates
+    .map((candidate) => ({
+      candidate,
+      score: scoreAutomationContactMatch(record, candidate, sourceKey),
+    }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score);
+
+  const best = ranked[0];
+  if (!best || best.score < 110) {
+    return { ok: false, reason: "bridge_no_high_confidence_match", message: "未找到高置信的平台联系人记录" };
+  }
+  const second = ranked[1];
+  if (second && second.score >= 110 && best.score - second.score < 25) {
+    return { ok: false, reason: "bridge_ambiguous_match", message: "找到多个相似平台联系人，已停止避免约错人" };
+  }
+
+  const metadata = automationContactMetadataFromRecord(best.candidate);
+  if (!metadata.platformContact?.displayName) {
+    return { ok: false, reason: "bridge_missing_display_name", message: "匹配到联系人记录，但缺少平台联系人显示名" };
+  }
+  return {
+    ok: true,
+    platform,
+    accountId,
+    sourceKey,
+    score: best.score,
+    metadata,
+    candidate: best.candidate,
+  };
+}
+
+function applyResumeContactBridge(record = {}, bridge = {}) {
+  const metadata = bridge.metadata && typeof bridge.metadata === "object" ? bridge.metadata : {};
+  const existingContact = record.platformContact && typeof record.platformContact === "object" ? record.platformContact : {};
+  const nextContact = metadata.platformContact || null;
+  return {
+    ...record,
+    platform: record.platform || bridge.platform || "",
+    accountId: record.accountId || bridge.accountId || "",
+    sourceKey: record.sourceKey || metadata.sourceKey || bridge.sourceKey || "",
+    conversationKey: record.conversationKey || metadata.conversationKey || "",
+    candidateIdentityKey: record.candidateIdentityKey || metadata.candidateIdentityKey || "",
+    platformContact: existingContact.displayName
+      ? {
+          ...nextContact,
+          ...existingContact,
+          chatEvidence: Array.isArray(existingContact.chatEvidence) && existingContact.chatEvidence.length
+            ? existingContact.chatEvidence
+            : nextContact?.chatEvidence || [],
+        }
+      : nextContact,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 async function backfillResumeContactMetadata() {
   const db = getDb();
   const rows = db.prepare("SELECT id, payload FROM resumes").all();
@@ -1345,42 +1420,9 @@ async function backfillResumeContactMetadata() {
   for (const row of rows) {
     const record = parsePayload(row.payload, {});
     if (!record?.id || !resumeNeedsContactBackfill(record)) continue;
-    const platform = resumeContactBackfillPlatform(record);
-    const accountId = resumeContactBackfillAccountId(record);
-    const sourceKey = String(record.sourceKey || automationBrowserSourceKey(platform, accountId) || "").trim();
-    const candidates = await getAutomationContactBackfillCandidates(contactCache, platform, accountId);
-    let best = null;
-    let bestScore = 0;
-    for (const candidate of candidates) {
-      const score = scoreAutomationContactMatch(record, candidate, sourceKey);
-      if (score > bestScore) {
-        best = candidate;
-        bestScore = score;
-      }
-    }
-    if (!best || bestScore < 110) continue;
-
-    const metadata = automationContactMetadataFromRecord(best);
-    const existingContact = record.platformContact && typeof record.platformContact === "object" ? record.platformContact : {};
-    const nextContact = metadata.platformContact || null;
-    updatedRecords.push({
-      ...record,
-      platform: record.platform || platform,
-      accountId: record.accountId || accountId,
-      sourceKey: record.sourceKey || metadata.sourceKey || sourceKey,
-      conversationKey: record.conversationKey || metadata.conversationKey || "",
-      candidateIdentityKey: record.candidateIdentityKey || metadata.candidateIdentityKey || "",
-      platformContact: existingContact.displayName
-        ? {
-            ...nextContact,
-            ...existingContact,
-            chatEvidence: Array.isArray(existingContact.chatEvidence) && existingContact.chatEvidence.length
-              ? existingContact.chatEvidence
-              : nextContact?.chatEvidence || [],
-          }
-        : nextContact,
-      updatedAt: new Date().toISOString(),
-    });
+    const bridge = await findResumeContactBridge(record, { cache: contactCache });
+    if (!bridge.ok) continue;
+    updatedRecords.push(applyResumeContactBridge(record, bridge));
   }
 
   if (!updatedRecords.length) return;
