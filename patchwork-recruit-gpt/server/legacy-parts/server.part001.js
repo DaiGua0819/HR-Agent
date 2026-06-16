@@ -890,6 +890,7 @@ function publicRecord(record) {
     id: record.id,
     name: record.name,
     phone: record.phone,
+    gender: record.gender || "",
     jobType: normalizeJobType(record.jobType, `${record.fileName || ""} ${record.name || ""} ${record.school || ""}`),
     school: record.school,
     major: record.major || "",
@@ -920,6 +921,84 @@ function publicRecord(record) {
     scoringVersion: record.scoringVersion || getCurrentScoringVersion(record.jobType),
     scoringVersionMeta: getScoringVersionMeta(record.scoringVersion || getCurrentScoringVersion(record.jobType), record.jobType),
     feedback: record.feedback || null,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
+function publicResumeListRecord(record) {
+  const contact = record.platformContact && typeof record.platformContact === "object" ? record.platformContact : null;
+  const invite = record.interviewInvite && typeof record.interviewInvite === "object" ? record.interviewInvite : null;
+  const feedback = record.feedback && typeof record.feedback === "object" ? record.feedback : null;
+  const parseQuality = record.parseQuality && typeof record.parseQuality === "object" ? record.parseQuality : null;
+  return {
+    id: record.id,
+    name: record.name,
+    phone: record.phone,
+    gender: record.gender || "",
+    jobType: normalizeJobType(record.jobType, `${record.fileName || ""} ${record.name || ""} ${record.school || ""}`),
+    school: record.school,
+    major: record.major || "",
+    schoolLevel: normalizeSchoolLevel(record.schoolLevel, record.school),
+    graduation: record.graduation,
+    matchScore: record.matchScore ?? "",
+    fileName: record.fileName || "",
+    parseMode: record.parseMode || "",
+    source: record.source || "",
+    sourceLabel: record.sourceLabel || "",
+    sourceName: record.sourceName || "",
+    sourcePlatform: record.sourcePlatform || "",
+    platform: record.platform || "",
+    importSource: record.importSource || "",
+    accountId: record.accountId || "",
+    accountName: record.accountName || "",
+    sourceKey: record.sourceKey || "",
+    platformCandidateId: record.platformCandidateId || "",
+    conversationKey: record.conversationKey || "",
+    candidateIdentityKey: record.candidateIdentityKey || "",
+    detailUrl: record.detailUrl || "",
+    platformContact: contact
+      ? {
+          displayName: contact.displayName || "",
+          label: contact.label || "",
+          appliedPosition: contact.appliedPosition || "",
+          capturedAt: contact.capturedAt || "",
+          chatEvidenceCount: Array.isArray(contact.chatEvidence) ? contact.chatEvidence.length : 0,
+        }
+      : null,
+    interviewInvite: invite
+      ? {
+          status: invite.status || "",
+          message: invite.message || "",
+          reason: invite.reason || "",
+          platform: invite.platform || "",
+          accountId: invite.accountId || "",
+          sourceKey: invite.sourceKey || "",
+          sourceLabel: invite.sourceLabel || "",
+          searchName: invite.searchName || "",
+          dryRun: Boolean(invite.dryRun),
+          bridged: Boolean(invite.bridged),
+          sentAt: invite.sentAt || "",
+          updatedAt: invite.updatedAt || "",
+        }
+      : null,
+    hasPdf: Boolean(record.pdfPath),
+    parseQuality: parseQuality
+      ? {
+          needsManualReview: Boolean(parseQuality.needsManualReview),
+          confidence: parseQuality.confidence ?? "",
+          warningCount: Array.isArray(parseQuality.warnings) ? parseQuality.warnings.length : 0,
+          missingFieldCount: Array.isArray(parseQuality.missingFields) ? parseQuality.missingFields.length : 0,
+        }
+      : null,
+    feedback: feedback
+      ? {
+          decision: feedback.decision || "pending",
+          reason: feedback.reason || "",
+          affectsScoring: Boolean(feedback.affectsScoring),
+          updatedAt: feedback.updatedAt || "",
+        }
+      : null,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };

@@ -1166,7 +1166,7 @@ async function handleListResumes(_request, response) {
 
   const records = await readDatabase();
   const resumes = getUniqueCandidateRecords(records)
-    .map(publicRecord)
+    .map(publicResumeListRecord)
     .sort((left, right) => {
       const scoreDiff = getNumericScore(right) - getNumericScore(left);
       if (scoreDiff !== 0) return scoreDiff;
@@ -1441,7 +1441,7 @@ async function handleGetResumeConversation(id, response) {
   }
 }
 
-const INTERVIEW_INVITE_ACTION = "点击平台内置换微信";
+const INTERVIEW_INVITE_ACTION = "点击平台内置换微信并发送加我微信沟通";
 
 function normalizeResumeInvitePlatform(record = {}) {
   const text = [
@@ -1621,7 +1621,7 @@ async function handleResumeInterviewInvite(id, request, response) {
       platformContact: recordForInvite.platformContact?.displayName ? recordForInvite.platformContact : target.platformContact,
       interviewInvite: {
         status,
-        message: payload.message || (success ? "已发起换微信" : "约面试处理失败"),
+        message: payload.message || (success ? "已完成换微信并发送加我微信沟通" : "约面试处理失败"),
         platform: target.platform,
         accountId: target.accountId,
         sourceKey: target.sourceKey,
@@ -1707,7 +1707,7 @@ async function handleDeleteResume(id, response) {
     sendJson(response, 200, {
       deleted: true,
       id,
-      resumes: getUniqueCandidateRecords(nextRecords).map(publicRecord),
+      resumes: getUniqueCandidateRecords(nextRecords).map(publicResumeListRecord),
     });
   } catch (error) {
     sendJson(response, 500, { error: error.message || "删除简历失败" });

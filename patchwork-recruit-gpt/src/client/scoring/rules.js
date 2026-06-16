@@ -425,7 +425,7 @@ async function runJdMatch() {
   }
 }
 
-const INTERVIEW_INVITE_ACTION_TEXT = "点击平台内置“换微信”";
+const INTERVIEW_INVITE_ACTION_TEXT = "点击平台内置“换微信”，确认后发送“加我微信沟通”";
 
 function getResumeInviteSourceText(resume = {}) {
   return getResumeSourceDisplay(resume);
@@ -477,7 +477,7 @@ async function startResumeInterviewInvite(resume, button = null) {
   }
   const confirmed = window.confirm(
     [
-      `确认给 ${resume.name || resume.fileName || "该候选人"} 发起换微信？`,
+      `确认给 ${resume.name || resume.fileName || "该候选人"} 发起约面试动作？`,
       `来源：${getResumeInviteSourceText(resume)}`,
       getResumePlatformContactDisplayName(resume)
         ? `平台联系人：${getResumePlatformContactDisplayName(resume)}`
@@ -505,7 +505,7 @@ async function startResumeInterviewInvite(resume, button = null) {
       renderResumeTable(getFilteredResumes(resumeCache));
     }
     if (payload.ok) {
-      setStatus(payload.message || "已发起换微信", "is-done");
+      setStatus(payload.message || "已完成换微信并发送加我微信沟通", "is-done");
     } else {
       setStatus(payload.error || payload.message || "约面试失败", "is-error");
       window.alert(payload.error || payload.message || "约面试失败");
@@ -589,7 +589,7 @@ function renderResumeTable(resumes) {
     if (resume.interviewInvite?.status === "sent") {
       inviteButton.disabled = true;
       inviteButton.classList.add("is-done");
-      inviteButton.title = "该候选人已发起过换微信";
+      inviteButton.title = "该候选人已执行过约面试动作";
     } else if (unavailable) {
       inviteButton.disabled = true;
       inviteButton.title = unavailable;
@@ -770,7 +770,7 @@ async function openResumeConversation(id, triggerButton = null) {
   }
 }
 
-const RESUME_LIST_SESSION_CACHE_KEY = "resumeAgent.resumeList.session.v1";
+const RESUME_LIST_SESSION_CACHE_KEY = "resumeAgent.resumeList.session.v2";
 const RESUME_LIST_SESSION_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 let resumeListCacheSignature = "";
 

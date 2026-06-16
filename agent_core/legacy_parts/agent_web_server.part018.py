@@ -1436,6 +1436,7 @@ INTERVIEW_INVITE_SEND_DISABLED_FOR_TESTING = (
     str(os.environ.get("INTERVIEW_INVITE_SEND_DISABLED_FOR_TESTING", "0")).strip().lower()
     not in {"0", "false", "no", "off"}
 )
+INTERVIEW_INVITE_FOLLOWUP_MESSAGE = "加我微信沟通"
 
 
 def normalize_interview_platform(value: str) -> str:
@@ -2511,14 +2512,49 @@ def service_interview_invite(self, payload: dict) -> dict:
             return base
 
         exchange = click_interview_wechat_exchange(terminal, platform, candidate_label=search_name)
-        verified = bool(exchange.get("verified") or exchange.get("sent"))
+        exchange_verified = bool(exchange.get("verified") or exchange.get("sent"))
+        if not exchange_verified:
+            base.update({
+                "ok": False,
+                "sent": False,
+                "verified": False,
+                "wechatVerified": False,
+                "wechatExchange": exchange,
+                "followupMessage": INTERVIEW_INVITE_FOLLOWUP_MESSAGE,
+                "message": exchange.get("message") or "已点击换微信，但未校验到交换请求",
+                "blocked": True,
+            })
+            return base
+
+        fill_followup: dict = {}
+        try:
+            self.smart_fill(terminal, "聊天", INTERVIEW_INVITE_FOLLOWUP_MESSAGE)
+            page.wait_for_timeout(random.randint(260, 520))
+            fill_followup = {"ok": True}
+        except Exception as error:
+            fill_followup = {"ok": False, "error": safe_text(str(error), 220)}
+        followup_send = self.send_current_chat_reply_with_verification(
+            terminal,
+            INTERVIEW_INVITE_FOLLOWUP_MESSAGE,
+            max_attempts=2,
+        )
+        followup_verified = bool(
+            isinstance(followup_send, dict)
+            and isinstance(followup_send.get("verification"), dict)
+            and followup_send["verification"].get("verified")
+        )
         base.update({
-            "ok": verified,
-            "sent": verified,
-            "verified": verified,
+            "ok": followup_verified,
+            "sent": followup_verified,
+            "verified": followup_verified,
+            "wechatVerified": True,
             "wechatExchange": exchange,
-            "message": exchange.get("message") or ("已点击换微信并校验" if verified else "已点击换微信，但未校验到交换请求"),
-            "blocked": not verified,
+            "followupMessage": INTERVIEW_INVITE_FOLLOWUP_MESSAGE,
+            "followupFill": fill_followup,
+            "followupSend": followup_send,
+            "message": "已完成换微信并发送加我微信沟通" if followup_verified else "已完成换微信，但加我微信沟通发送失败",
+            "reason": "" if followup_verified else "interview_followup_send_failed",
+            "blocked": not followup_verified,
         })
         return base
 

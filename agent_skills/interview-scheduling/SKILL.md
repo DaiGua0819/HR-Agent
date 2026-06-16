@@ -7,9 +7,7 @@ description: Use when inviting a resume-library candidate to interview through t
 
 ## 目标
 
-从简历库对候选人发起约面试沟通。系统必须回到候选人简历来源的平台账号，按当时聊天联系人使用的平台显示名搜索，再用岗位和少量聊天证据确认是同一个联系人，然后点击平台内置的“换微信”动作。
-
-约面试不再输入或发送固定文本话术。
+从简历库对候选人发起约面试沟通。系统必须回到候选人简历来源的平台账号，按当时聊天联系人使用的平台显示名搜索，再用岗位和少量聊天证据确认是同一个联系人，然后点击平台内置的“换微信”动作；如平台出现确认弹窗，需要点击确认。换微信校验成功后，再在当前聊天输入框发送固定消息“加我微信沟通”。
 
 ## 强制规则
 
@@ -18,6 +16,7 @@ description: Use when inviting a resume-library candidate to interview through t
 - 搜索不到、同名多人无法用证据确认、缺少平台联系人名、账号未登录、人机验证、页面异常时立即停止并返回原因。
 - 点击“换微信”前必须确认已经打开目标候选人的单聊页面，并定位到对应平台的换微信动作入口。
 - 点击后必须校验页面出现交换微信请求、已交换微信、微信号可查看/复制等状态；校验不到则返回失败。
+- 换微信校验成功后必须发送“加我微信沟通”；该消息发送失败时，本次约面试动作按失败记录，并返回 `interview_followup_send_failed`。
 - 同一候选人已经发起过约面试/换微信时默认不重复执行。
 
 ## Function Call 设计
@@ -48,6 +47,7 @@ description: Use when inviting a resume-library candidate to interview through t
 7. 定位平台内置“换微信”动作。
 8. 点击“换微信”，如出现确认弹窗则点击“确定/确认/发送/发起交换”。
 9. 校验页面出现交换微信请求、已交换微信、微信号可查看/复制等状态。
+10. 在当前聊天输入框发送“加我微信沟通”，并校验最近己方消息中出现该文本。
 
 ## 换微信入口定位
 
@@ -66,6 +66,7 @@ description: Use when inviting a resume-library candidate to interview through t
 - `wechat_exchange_button_disabled`: 换微信按钮不可用。
 - `wechat_exchange_confirm_failed`: 换微信确认弹窗点击失败。
 - `wechat_exchange_verification_failed`: 点击后没有校验到交换微信请求或微信状态。
+- `interview_followup_send_failed`: 换微信成功，但“加我微信沟通”发送或校验失败。
 - `captcha_or_login_required`: 页面要求登录、人机验证或账号异常。
 
 ## 安全演示边界
