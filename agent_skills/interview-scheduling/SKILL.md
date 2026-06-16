@@ -16,6 +16,7 @@ description: Use when inviting a resume-library candidate to interview through t
 - 搜索不到、同名多人无法用证据确认、缺少平台联系人名、账号未登录、人机验证、页面异常时立即停止并返回原因。
 - 点击“换微信”前必须确认已经打开目标候选人的单聊页面，并定位到对应平台的换微信动作入口。
 - 点击后必须校验页面出现交换微信请求、已交换微信、微信号可查看/复制等状态；校验不到则返回失败。
+- 如果页面出现“确定与对方交换微信吗？”等确认弹窗，必须点击确认按钮；弹窗仍存在时不能判定换微信成功，也不能继续发送后续消息。
 - 换微信校验成功后必须发送“加我微信沟通”；该消息发送失败时，本次约面试动作按失败记录，并返回 `interview_followup_send_failed`。
 - 同一候选人已经发起过约面试/换微信时默认不重复执行。
 
@@ -65,6 +66,7 @@ description: Use when inviting a resume-library candidate to interview through t
 - `wechat_exchange_button_not_found`: 已确认联系人，但没有找到可点击的换微信按钮。
 - `wechat_exchange_button_disabled`: 换微信按钮不可用。
 - `wechat_exchange_confirm_failed`: 换微信确认弹窗点击失败。
+- `wechat_exchange_confirm_required`: 换微信确认弹窗仍存在，未完成确认发送。
 - `wechat_exchange_verification_failed`: 点击后没有校验到交换微信请求或微信状态。
 - `interview_followup_send_failed`: 换微信成功，但“加我微信沟通”发送或校验失败。
 - `captcha_or_login_required`: 页面要求登录、人机验证或账号异常。

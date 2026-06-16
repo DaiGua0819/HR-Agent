@@ -2022,8 +2022,6 @@ def find_interview_wechat_exchange_button(page, platform: str = "") -> dict:
               ].join(',');
               const exchangeLabel = text => /(^|\s)(换微信|交换微信)(\s|$)/.test(text) || text === '换微信' || text === '交换微信';
               const existingLabel = text => /查看微信|微信号|复制微信号/.test(text);
-              const alreadyText = normalize(document.body ? document.body.innerText || '' : '');
-              const alreadyExchanged = /已交换微信|对方已同意交换微信|已同意交换微信|微信号[:：]|复制微信号|查看微信/.test(alreadyText);
               const candidates = [];
               const seen = new Set();
               for (const root of roots) {
@@ -2088,9 +2086,9 @@ def find_interview_wechat_exchange_button(page, platform: str = "") -> dict:
               if (!best) {
                 return {
                   found: false,
-                  alreadyExchanged,
-                  action: alreadyExchanged ? 'already_exchanged' : '',
-                  reason: alreadyExchanged ? 'wechat_exchange_already_visible' : 'wechat_exchange_button_not_found'
+                  alreadyExchanged: false,
+                  action: '',
+                  reason: 'wechat_exchange_button_not_found'
                 };
               }
               best.target.setAttribute('data-codex-interview-wechat', token);
@@ -2099,7 +2097,7 @@ def find_interview_wechat_exchange_button(page, platform: str = "") -> dict:
                 token,
                 action: best.action,
                 label: best.label,
-                alreadyExchanged: alreadyExchanged || best.action === 'already_exchanged',
+                alreadyExchanged: best.action === 'already_exchanged',
                 disabled: best.disabled,
                 reason: best.reason,
                 meta: best.meta,
@@ -2153,6 +2151,8 @@ def find_interview_wechat_exchange_confirm_button(page, platform: str = "") -> d
                 return /微信|交换/.test(text) && box.w <= Math.max(720, window.innerWidth * 0.72) && box.h <= Math.max(520, window.innerHeight * 0.78);
               });
               const labels = ['确定', '确认', '发送', '发起交换', '申请交换', '交换微信', '换微信', '确认发送'];
+              const positiveLabel = value => /确定|确认|发送|发起交换|申请交换|确认发送/.test(value);
+              const negativeLabel = value => /取消|关闭|稍后|再想想/.test(value);
               let best = null;
               let bestScore = -9999;
               for (const container of containers) {
@@ -2160,14 +2160,23 @@ def find_interview_wechat_exchange_confirm_button(page, platform: str = "") -> d
                 const buttons = Array.from(container.querySelectorAll('button,a,[role="button"],.boss-btn,.el-button,.km-button,span,div')).filter(visible);
                 for (const node of buttons) {
                   const label = textOf(node);
-                  if (!labels.includes(label)) continue;
-                  if (/取消|关闭|稍后/.test(label)) continue;
                   const box = rect(node);
+                  const exact = labels.includes(label);
+                  const positive = positiveLabel(label);
+                  const negative = negativeLabel(label);
+                  if (!exact && !positive) continue;
+                  if (negative && !positive) continue;
+                  if (negative && box.w > 220) continue;
                   let score = 100;
                   const meta = metaOf(node);
+                  if (exact) score += 80;
+                  if (positive) score += 35;
+                  if (/确定与对方交换微信|是否.{0,12}交换微信/.test(label) && !exact) score -= 120;
                   if (/primary|boss-btn|el-button|km-button|button|btn/i.test(meta)) score += 80;
                   if (box.w >= 36 && box.w <= 180 && box.h >= 20 && box.h <= 70) score += 35;
+                  if (box.w > 220 || box.h > 110) score -= 90;
                   if (box.x > window.innerWidth * 0.35) score += 12;
+                  if (box.x > rect(container).x + rect(container).w * 0.45) score += 25;
                   if (label === '确定' || label === '确认') score += 20;
                   if (score > bestScore) {
                     bestScore = score;
@@ -2203,13 +2212,15 @@ def inspect_interview_wechat_exchange_state(page, platform: str = "") -> dict:
             r"""platform => {
               const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
               const text = normalize(document.body ? document.body.innerText || '' : '');
-              const alreadyExchanged = /已交换微信|对方已同意交换微信|已同意交换微信|微信号[:：]|复制微信号|查看微信/.test(text);
+              const confirmVisible = /确定与对方交换微信|是否.{0,12}交换微信|确认.{0,12}交换微信/.test(text);
+              const alreadyExchanged = /对方已同意交换微信|已同意交换微信|微信号[:：]|复制微信号|查看微信/.test(text);
               const requestVisible = /我想.{0,12}交换微信|交换微信.{0,18}方便沟通|等待.{0,12}同意|已.{0,8}申请.{0,8}微信|已.{0,8}发起.{0,8}微信/.test(text);
               const actionStillAvailable = /换微信|交换微信/.test(text);
               return {
                 platform,
                 alreadyExchanged,
                 requestVisible,
+                confirmVisible,
                 actionStillAvailable,
                 summary: text.slice(Math.max(0, text.length - 500))
               };
@@ -2335,7 +2346,21 @@ def click_interview_wechat_exchange(terminal: BrowserTerminal, platform: str = "
                 confirm_error = safe_text(f"{confirm_error}; fallback={fallback_error}", 260)
 
     state = inspect_interview_wechat_exchange_state(page, platform)
-    verified = bool(state.get("alreadyExchanged") or state.get("requestVisible"))
+    verified = (not state.get("confirmVisible")) and bool(state.get("alreadyExchanged") or state.get("requestVisible"))
+    if state.get("confirmVisible"):
+        return {
+            "ok": False,
+            "blocked": True,
+            "sent": False,
+            "verified": False,
+            "reason": "wechat_exchange_confirm_required",
+            "message": "换微信确认弹窗仍存在，未完成确认发送",
+            "button": cleaned_button,
+            "confirm": {k: v for k, v in confirm.items() if k != "locator"} if isinstance(confirm, dict) else {"found": False},
+            "confirmClicked": confirm_clicked,
+            "state": state,
+            "error": confirm_error,
+        }
     if not verified and isinstance(confirm, dict) and confirm.get("found") and not confirm_clicked:
         return {
             "ok": False,
