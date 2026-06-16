@@ -890,6 +890,181 @@
             "unclearQuestions": unclear_questions[:30],
         }
 
+    @timed_agent_stage("collect_operation_resumes", "补采运营岗位简历")
+    def collect_operation_resume_contacts(self, terminal: BrowserTerminal, max_total: int = 80) -> dict:
+        target_limit = max(1, min(200, int(max_total or 80)))
+        page = terminal.current_page()
+        current_url = str(getattr(page, "url", "") or "")
+        if "zhipin.com" not in current_url or "/web/chat" not in current_url:
+            self.measure_current_timing_stage(
+                "open_boss_chat_page",
+                "BOSS 打开聊天页",
+                lambda: page.goto("https://www.zhipin.com/web/chat/index", wait_until="domcontentloaded", timeout=20000),
+            )
+            page.wait_for_timeout(random.randint(1400, 2200))
+        prepare_state = self.measure_current_timing_stage(
+            "prepare_recruiter_all_filter",
+            "BOSS 切换全部联系人",
+            lambda: prepare_recruiter_all_candidate_list(terminal),
+        )
+        scroll_recruiter_candidate_list_to_top(terminal)
+        terminal.current_page().wait_for_timeout(random.randint(520, 900))
+
+        results: list[dict] = []
+        filtered: list[dict] = []
+        counts: dict[str, int] = {}
+        scan_trace: list[dict] = []
+        excluded_labels: list[str] = []
+        processed_keys: set[str] = set()
+        no_target_attempts = 0
+        max_scan_attempts = max(40, min(220, target_limit * 5))
+
+        while len(results) < target_limit and no_target_attempts < max_scan_attempts:
+            self.check_pause()
+            target = self.measure_current_timing_stage(
+                "find_recent_operation_candidate",
+                "BOSS 查找运营岗位联系人",
+                lambda: find_recruiter_recent_candidate(terminal, exclude_labels=excluded_labels),
+            )
+            if not target:
+                scrolled = scroll_recruiter_candidate_list(terminal)
+                no_target_attempts += 1
+                scan_trace.append({
+                    "step": len(scan_trace) + 1,
+                    "event": "no_target_scroll",
+                    "processed": len(results),
+                    "filtered": len(filtered),
+                    "scrolled": bool(scrolled.get("scrolled")),
+                    "reason": safe_text(str(scrolled.get("reason") or ""), 80),
+                    "atEnd": bool(scrolled.get("atEnd")),
+                })
+                if scrolled.get("scrolled") and no_target_attempts < max_scan_attempts:
+                    terminal.current_page().wait_for_timeout(random.randint(560, 980))
+                    continue
+                break
+
+            target_label = str(target.get("label") or "")
+            label_key = compact_conversation_label(target_label)
+            if label_key:
+                excluded_labels.append(label_key)
+                if label_key in processed_keys:
+                    continue
+                processed_keys.add(label_key)
+            target_name = recruiter_candidate_name_from_label(target_label)
+            if target_name:
+                excluded_labels.append(target_name)
+
+            locator = target.get("locator")
+            if locator is None:
+                counts["open_candidate_failed"] = counts.get("open_candidate_failed", 0) + 1
+                filtered.append({
+                    "label": safe_text(target_label, 140),
+                    "reason": "missing_locator",
+                })
+                continue
+
+            try:
+                if terminal.humanize:
+                    terminal.pause_like_person("pre_action")
+                    highlight_target(locator)
+                humanized_locator_click(terminal, locator, force=True)
+                if terminal.humanize:
+                    terminal.pause_like_person("post_action")
+                terminal.current_page().wait_for_timeout(random.randint(900, 1450))
+            except Exception as error:
+                counts["open_candidate_failed"] = counts.get("open_candidate_failed", 0) + 1
+                filtered.append({
+                    "label": safe_text(target_label, 140),
+                    "reason": "open_candidate_failed",
+                    "message": safe_text(str(error), 180),
+                })
+                continue
+
+            maybe_human_reading_pause(terminal, reason="operation_resume_candidate_open", text_hint=target_label)
+            candidate = read_recruiter_selected_candidate(terminal)
+            candidate_label = str(candidate.get("label") or target_label)
+            candidate_key = compact_conversation_label(candidate_label)
+            if candidate_key:
+                excluded_labels.append(candidate_key)
+                processed_keys.add(candidate_key)
+
+            context_before = self.read_chat_context(terminal)
+            position_reply = context_before.get("positionReply") if isinstance(context_before.get("positionReply"), dict) else {}
+            position_text = " ".join([
+                str(context_before.get("appliedPosition") or ""),
+                str((context_before.get("applicant") or {}).get("appliedPosition") if isinstance(context_before.get("applicant"), dict) else ""),
+                str(candidate_label or ""),
+                str(target_label or ""),
+            ])
+            if not is_direct_resume_operations_position(context_before, position_reply) and not direct_resume_operations_position_matches(position_text):
+                filtered.append({
+                    "label": safe_text(candidate_label or target_label, 140),
+                    "reason": "operation_position_mismatch",
+                    "appliedPosition": safe_text(str(context_before.get("appliedPosition") or ""), 80),
+                })
+                continue
+
+            result = self.measure_current_timing_stage(
+                "process_operation_resume_candidate",
+                "BOSS 直求运营岗位简历",
+                lambda: self.screen_recruiter_basic_conditions(
+                    terminal,
+                    open_unreplied=False,
+                    target_candidate="",
+                    max_attempts=1,
+                ),
+            )
+            action = classify_recruiter_screen_result_action(result)
+            counts[action] = counts.get(action, 0) + 1
+            screening = result.get("screening") if isinstance(result.get("screening"), dict) else {}
+            resume = result.get("resume") if isinstance(result.get("resume"), dict) else {}
+            results.append({
+                "index": len(results) + 1,
+                "label": safe_text(candidate_label or target_label, 140),
+                "candidateName": safe_text(str(((context_before.get("applicant") or {}) if isinstance(context_before.get("applicant"), dict) else {}).get("name") or recruiter_candidate_name_from_label(candidate_label or target_label)), 80),
+                "appliedPosition": safe_text(str(context_before.get("appliedPosition") or ""), 80),
+                "resumeJobType": direct_resume_operations_job_type(context_before, position_reply),
+                "conversationKey": safe_text(str(context_before.get("conversationKey") or ""), 120),
+                "action": action,
+                "screeningStatus": safe_text(str(screening.get("status") or ""), 40),
+                "message": safe_text(str(result.get("message") or ""), 260),
+                "resume": compact_recruiter_resume_result(resume),
+            })
+            maybe_human_batch_pause(terminal, len(results))
+
+        message = f"BOSS 运营岗位简历补采完成：处理 {len(results)} 人，跳过非目标/不可处理 {len(filtered)} 人。"
+        if counts:
+            message += " 动作统计：" + "；".join(f"{key} {value}" for key, value in sorted(counts.items()))
+        if len(results) >= target_limit:
+            message += f" 已达到本次上限 {target_limit} 人。"
+        self.add_event("chat", message)
+        state = {
+            "platform": "boss",
+            "processedPeople": len(results),
+            "filteredOut": len(filtered),
+            "counts": counts,
+            "targetPositions": list(direct_resume_operations_target_positions()),
+            "prepareState": prepare_state,
+            "scanTraceCount": len(scan_trace),
+        }
+        batch_report = append_recruiter_batch_report({
+            "type": "collect_operation_resume_contacts",
+            "message": safe_text(message, 800),
+            "state": state,
+            "results": results,
+            "filteredOut": filtered[:160],
+            "scanTrace": scan_trace[-160:],
+        })
+        return {
+            "message": message,
+            "results": results,
+            "counts": counts,
+            "filteredOut": filtered[:60],
+            "state": state,
+            "scanTrace": scan_trace[-80:],
+            "batchReportId": batch_report.get("runId"),
+        }
+
     def screen_recent_recruiter_basic_contacts(self, terminal: BrowserTerminal, max_contacts: int = 15) -> dict:
         target_count = max(1, min(30, int(max_contacts or 15)))
         results: list[dict] = []

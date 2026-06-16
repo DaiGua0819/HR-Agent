@@ -1441,7 +1441,7 @@ async function handleGetResumeConversation(id, response) {
   }
 }
 
-const INTERVIEW_INVITE_MESSAGE = "加我微信沟通，carhhxh";
+const INTERVIEW_INVITE_ACTION = "点击平台内置换微信";
 
 function normalizeResumeInvitePlatform(record = {}) {
   const text = [
@@ -1601,7 +1601,8 @@ async function handleResumeInterviewInvite(id, request, response) {
       platformContact: target.platformContact,
       chatEvidence: target.platformContact.chatEvidence || [],
       appliedPosition: target.platformContact.appliedPosition || recordForInvite.jobType || "",
-      message: INTERVIEW_INVITE_MESSAGE,
+      action: "exchange_wechat",
+      actionLabel: INTERVIEW_INVITE_ACTION,
       dryRun,
     };
     await ensureResumeInterviewAgentReady(target);
@@ -1620,7 +1621,7 @@ async function handleResumeInterviewInvite(id, request, response) {
       platformContact: recordForInvite.platformContact?.displayName ? recordForInvite.platformContact : target.platformContact,
       interviewInvite: {
         status,
-        message: payload.message || (success ? "约面试消息已发送" : "约面试处理失败"),
+        message: payload.message || (success ? "已发起换微信" : "约面试处理失败"),
         platform: target.platform,
         accountId: target.accountId,
         sourceKey: target.sourceKey,

@@ -206,13 +206,39 @@ function automationRecordContactKey(record = {}, metricKey = "processed", option
   return [platform, date, metricKey, identity].join("|");
 }
 
+function automationRecordHasSavedResumeEvidence(record = {}) {
+  const files = Array.isArray(record.resumeFiles) ? record.resumeFiles : [];
+  if (files.some((file) => file && String(file.fileName || file.name || "").trim())) return true;
+  const current = record.conversation?.currentRecord || {};
+  const evidenceText = [
+    record.phrase,
+    record.candidateLabel,
+    current.filename,
+    current.fileName,
+    current.resumeFileName,
+    current.filePath,
+    current.path,
+    current.localPath,
+    current.message,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return /\.(?:pdf|docx?|wps)\b/i.test(evidenceText) || /PDF\s*已保存|在线简历\s*PDF\s*已保存|简历.*已保存/.test(evidenceText);
+}
+
 function automationMetricPayloadFromRecords(records = [], options = {}) {
   const items = Array.isArray(records) ? records : [];
   const includeDate = options.includeDate !== false;
   const countFlag = (key) =>
     new Set(
       items
-        .filter((record) => record.type !== "event" && automationRecordHasCandidateIdentity(record) && Boolean(record.flags?.[key] || record.statusGroup === key))
+        .filter(
+          (record) =>
+            record.type !== "event" &&
+            automationRecordHasCandidateIdentity(record) &&
+            Boolean(record.flags?.[key] || record.statusGroup === key) &&
+            (key !== "savedResumes" || automationRecordHasSavedResumeEvidence(record))
+        )
         .map((record) => automationRecordContactKey(record, key, { includeDate }))
     ).size;
   const processed = new Set(
@@ -283,7 +309,14 @@ function automationDetailRecordFromResult(result, report, item, index) {
   const action = String(result.action || result.nextAction || "");
   const status = String(result.screeningStatus || result.status || "");
   const reportType = String(report.type || "");
-  const statusGroup = normalizeAutomationDetailStatusGroup(action, status, reportType);
+  let statusGroup = normalizeAutomationDetailStatusGroup(action, status, reportType);
+  const resultMessage = String(result.message || result.error || "");
+  if (
+    statusGroup === "savedResumes" &&
+    /跳过重复下载|已记忆.*简历下载记录|already.*(?:download|resume)/i.test(resultMessage)
+  ) {
+    statusGroup = "processed";
+  }
   const updatedAt = String(result.updatedAt || result.createdAt || result.time || report.createdAt || "");
   const appliedPosition = String(result.appliedPosition || result.position || result.job || result.candidateIdentity?.appliedPosition || "").trim();
   const candidateLabel = clipText(result.label || result.candidateLabel || result.pageTextPreview || result.message || report.message || "", 220);
@@ -866,7 +899,12 @@ function filterAutomationDetailRecordsForRequest(records, options = {}) {
               record.statusGroup === "proactiveGreeted"
           )
       )
-    : baseRecords.filter((record) => automationRecordHasCandidateIdentity(record) && Boolean(record.flags?.[metric] || record.statusGroup === metric));
+    : baseRecords.filter(
+        (record) =>
+          automationRecordHasCandidateIdentity(record) &&
+          Boolean(record.flags?.[metric] || record.statusGroup === metric) &&
+          (metric !== "savedResumes" || automationRecordHasSavedResumeEvidence(record))
+      );
   return dedupeAutomationDetailRecords(filteredRecords, metric || "processed", { includeDate });
 }
 

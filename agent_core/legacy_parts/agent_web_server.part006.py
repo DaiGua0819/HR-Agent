@@ -79,6 +79,59 @@
             except Exception:
                 pass
 
+    def zhilian_prepare_all_messages_filter(self, terminal: BrowserTerminal) -> dict:
+        page = terminal.current_page()
+        self.zhilian_dismiss_interruptions(terminal, reason="before_all_messages_filter")
+        token = f"codex_zhilian_all_messages_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+        result = safe_eval(page, """token => {
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const visible = el => {
+            if (!el || !el.isConnected) return false;
+            const box = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return box.width > 4 && box.height > 4 && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+          };
+          const candidates = Array.from(document.querySelectorAll(
+            '.side-panel-header__checkbox, .km-checkbox, [role="checkbox"], label'
+          )).filter(visible).map(el => {
+            const text = normalize(el.innerText || el.textContent || '');
+            const cls = String(el.className || '');
+            const input = el.querySelector('input[type="checkbox"], input');
+            const checked = input ? Boolean(input.checked) : /active|checked|selected|is-checked/i.test(cls);
+            let score = 0;
+            if (text === '未读') score += 900;
+            else if (text.includes('未读') && text.length <= 8) score += 520;
+            if (/side-panel-header__checkbox|checkbox/i.test(cls)) score += 160;
+            if (input) score += 120;
+            return { el, text, cls, checked, score };
+          }).filter(item => item.score > 0).sort((a, b) => b.score - a.score);
+          const best = candidates[0];
+          if (!best) return { found: false, reason: 'unread_filter_not_found' };
+          best.el.setAttribute('data-codex-zhilian-all-messages', token);
+          return { found: true, label: best.text, className: best.cls, checked: Boolean(best.checked) };
+        }""", token)
+        if not isinstance(result, dict) or not result.get("found"):
+            return result if isinstance(result, dict) else {"found": False, "reason": "unread_filter_not_found"}
+        locator = page.locator(f"[data-codex-zhilian-all-messages='{token}']").first
+        try:
+            if result.get("checked"):
+                if terminal.humanize:
+                    terminal.pause_like_person("pre_action")
+                    highlight_target(locator)
+                humanized_locator_click(terminal, locator, force=True)
+                if terminal.humanize:
+                    terminal.pause_like_person("post_action")
+                page.wait_for_timeout(random.randint(900, 1400))
+                return {**result, "clicked": True}
+            return {**result, "clicked": False}
+        except Exception as error:
+            return {"found": False, "reason": safe_text(str(error), 160), "state": result}
+        finally:
+            try:
+                page.locator("[data-codex-zhilian-all-messages]").evaluate_all("els => els.forEach(el => el.removeAttribute('data-codex-zhilian-all-messages'))")
+            except Exception:
+                pass
+
     def zhilian_select_all_positions(self, terminal: BrowserTerminal) -> dict:
         page = terminal.current_page()
         result = safe_eval(page, """() => {
@@ -239,12 +292,23 @@
     def zhilian_scroll_conversation_list(self, terminal: BrowserTerminal) -> dict:
         page = terminal.current_page()
         result = safe_eval(page, """() => {
-          const el = document.querySelector('.im-session-list, .im-session-list__virtual');
+          const candidates = Array.from(document.querySelectorAll('.im-session-list__virtual, .im-session-list, [class*="im-session-list"]'));
+          const el = candidates.find(node =>
+            node.querySelectorAll && node.querySelectorAll('.im-session-item__box').length > 0
+            && (node.scrollHeight || 0) - (node.clientHeight || 0) > 8
+          ) || candidates.find(node => node.querySelectorAll && node.querySelectorAll('.im-session-item__box').length > 0);
           if (!el) return { scrolled: false, reason: 'missing_list' };
           const before = el.scrollTop || 0;
           el.scrollTop = before + Math.max(260, Math.floor((el.clientHeight || 500) * 0.85));
           el.dispatchEvent(new Event('scroll', { bubbles: true }));
-          return { scrolled: Math.abs((el.scrollTop || 0) - before) > 2, before, after: el.scrollTop || 0 };
+          return {
+            scrolled: Math.abs((el.scrollTop || 0) - before) > 2,
+            before,
+            after: el.scrollTop || 0,
+            className: String(el.className || ''),
+            scrollHeight: el.scrollHeight || 0,
+            clientHeight: el.clientHeight || 0
+          };
         }""")
         page.wait_for_timeout(random.randint(520, 860))
         return result if isinstance(result, dict) else {"scrolled": False}
@@ -856,8 +920,8 @@
                 '简历请求已发送'
               ];
               const filePattern = /[\\u4e00-\\u9fffA-Za-z0-9_\\-（）()]+简历[^\\s]{0,24}\\.(pdf|docx?|PDF|DOCX?)/;
-              const matchedAttachmentTerms = attachmentTerms.filter(term => chatText.includes(term) || bodyText.includes(term));
-              const matchedRequestedTerms = requestedTerms.filter(term => chatText.includes(term) || bodyText.includes(term));
+              const matchedAttachmentTerms = attachmentTerms.filter(term => chatText.includes(term));
+              const matchedRequestedTerms = requestedTerms.filter(term => chatText.includes(term));
               const attachmentButtons = Array.from(document.querySelectorAll('button,a,[role=button],span,div'))
                 .filter(el => visible(el) && normalize(el.innerText || el.textContent || el.getAttribute('title') || el.getAttribute('aria-label') || '') === '查看附件简历')
                 .map(el => ({ text: '查看附件简历', className: String(el.className || '').slice(0, 120), rect: rect(el) }));
@@ -957,9 +1021,19 @@
         info["locator"] = page.locator(f"[data-codex-zhilian-request-resume='{info.get('token')}']").first
         return info
 
-    def zhilian_request_resume_from_current_conversation(self, terminal: BrowserTerminal) -> dict:
+    def zhilian_request_resume_from_current_conversation(
+        self,
+        terminal: BrowserTerminal,
+        opened: dict | None = None,
+        context: dict | None = None,
+    ) -> dict:
         page = terminal.current_page()
-        context = self.zhilian_read_chat_context(terminal, history={"loaded": False, "reason": "zhilian_visible_dom_only"})
+        if not isinstance(context, dict):
+            context = self.zhilian_read_chat_context(
+                terminal,
+                history={"loaded": False, "reason": "zhilian_visible_dom_only"},
+                opened=opened,
+            )
         candidate = context.get("applicant") if isinstance(context.get("applicant"), dict) else {}
         candidate_label = str(candidate.get("label") or candidate.get("name") or "")
         identity_warnings = candidate.get("identityWarnings") if isinstance(candidate.get("identityWarnings"), list) else []
@@ -1262,7 +1336,7 @@
                     terminal.current_page().wait_for_timeout(random.randint(650, 1150))
             if zhilian_knowledge_result_blocks_resume_flow(knowledge_result):
                 return {**knowledge_result, "candidate": context.get("applicant", {}), "screening": analysis, "positionScreening": True}
-            resume_result = self.zhilian_request_resume_from_current_conversation(terminal)
+            resume_result = self.zhilian_request_resume_from_current_conversation(terminal, context=context)
             resume_skipped = bool(resume_result.get("skipped") and resume_result.get("skipReason") in {"already_requested", "resume_attachment_received"})
             resume_downloaded = bool(resume_result.get("downloaded") or (isinstance(resume_result.get("resume"), dict) and resume_result["resume"].get("downloaded")))
             status = "position_screening_accepted_resume_downloaded" if resume_downloaded else (
@@ -1313,12 +1387,30 @@
         context = self.zhilian_read_chat_context(terminal, history=history, opened=opened)
         candidate = context.get("applicant") if isinstance(context.get("applicant"), dict) else {}
         candidate_label = str(candidate.get("label") or candidate.get("name") or "")
+        identity_warnings = candidate.get("identityWarnings") if isinstance(candidate.get("identityWarnings"), list) else []
+        if identity_warnings:
+            return {
+                "blocked": True,
+                "message": "智联当前会话身份与刚打开的联系人不一致，已停止处理，避免点错人。",
+                "candidate": candidate,
+                "identityWarnings": identity_warnings,
+            }
         position_reply = context.get("positionReply") if isinstance(context.get("positionReply"), dict) else {}
         knowledge_base = context.get("companyKnowledgeBase") if isinstance(context.get("companyKnowledgeBase"), dict) else {}
         position_screening = knowledge_base.get("screening") if isinstance(knowledge_base.get("screening"), dict) else {}
         conversation_key = str(context.get("conversationKey") or "")
         candidate_state_key = self.zhilian_candidate_state_key(context, candidate_label)
         previous_state = self.zhilian_previous_chat_state(context, candidate_label, conversation_key, candidate_state_key)
+        if is_direct_resume_operations_position(context, position_reply):
+            return self.handle_direct_resume_operations_candidate(
+                terminal,
+                context,
+                candidate_label,
+                conversation_key,
+                candidate_state_key,
+                platform="zhilian",
+                request_resume=lambda: self.zhilian_request_resume_from_current_conversation(terminal, opened=opened, context=context),
+            )
         if should_use_position_screening_flow(context, position_reply):
             return self.zhilian_screen_position_rules(terminal, context, candidate_label, conversation_key, candidate_state_key, previous_state)
         if is_unconfigured_recruiter_position(context, position_reply, position_screening):
@@ -1400,7 +1492,7 @@
             ) if (recent_unanswered_question_messages(context, previous_state) or match_company_knowledge_silent_question(context)) else {}
             if zhilian_knowledge_result_blocks_resume_flow(knowledge_result):
                 return {**knowledge_result, "candidate": candidate, "screening": screening}
-            resume_result = self.zhilian_request_resume_from_current_conversation(terminal)
+            resume_result = self.zhilian_request_resume_from_current_conversation(terminal, context=context)
             resume_skipped = bool(resume_result.get("skipped") and resume_result.get("skipReason") in {"already_requested", "resume_attachment_received"})
             resume_downloaded = bool(resume_result.get("downloaded") or (isinstance(resume_result.get("resume"), dict) and resume_result["resume"].get("downloaded")))
             status = "basic_conditions_accepted_resume_downloaded" if resume_downloaded else (
@@ -1487,12 +1579,23 @@
 
         def scroll_zhilian_list_to_top() -> dict:
             result = safe_eval(terminal.current_page(), """() => {
-              const el = document.querySelector('.im-session-list, .im-session-list__virtual');
+              const candidates = Array.from(document.querySelectorAll('.im-session-list__virtual, .im-session-list, [class*="im-session-list"]'));
+              const el = candidates.find(node =>
+                node.querySelectorAll && node.querySelectorAll('.im-session-item__box').length > 0
+                && (node.scrollHeight || 0) - (node.clientHeight || 0) > 8
+              ) || candidates.find(node => node.querySelectorAll && node.querySelectorAll('.im-session-item__box').length > 0);
               if (!el) return { scrolled: false, reason: 'missing_list' };
               const before = el.scrollTop || 0;
               el.scrollTop = 0;
               el.dispatchEvent(new Event('scroll', { bubbles: true }));
-              return { scrolled: Math.abs((el.scrollTop || 0) - before) > 2, before, after: el.scrollTop || 0 };
+              return {
+                scrolled: Math.abs((el.scrollTop || 0) - before) > 2,
+                before,
+                after: el.scrollTop || 0,
+                className: String(el.className || ''),
+                scrollHeight: el.scrollHeight || 0,
+                clientHeight: el.clientHeight || 0
+              };
             }""")
             terminal.current_page().wait_for_timeout(random.randint(520, 860))
             return result if isinstance(result, dict) else {"scrolled": False}
@@ -1814,6 +1917,237 @@
             "unclearQuestions": unclear_questions[:120],
         })
         return {"message": message, "results": results, "counts": counts, "filteredOut": skipped_filter[:30], "state": state, "batchReportId": batch_report.get("runId")}
+
+    @timed_agent_stage("zhilian_collect_operation_resumes", "智联补采运营岗位简历")
+    def zhilian_collect_operation_resume_contacts(
+        self,
+        terminal: BrowserTerminal,
+        max_total: int = 80,
+    ) -> dict:
+        target_limit = max(1, min(200, int(max_total or 80)))
+        self.zhilian_open_chat_page(terminal)
+        all_messages_filter = self.measure_current_timing_stage(
+            "zhilian_prepare_all_messages_filter",
+            "智联取消未读筛选",
+            lambda: self.zhilian_prepare_all_messages_filter(terminal),
+        )
+        all_position_filter = self.measure_current_timing_stage(
+            "zhilian_select_all_positions",
+            "智联切换全部岗位",
+            lambda: self.zhilian_select_all_positions(terminal),
+        )
+        allowed_positions = direct_resume_operations_target_positions()
+
+        def scroll_zhilian_list_to_top() -> dict:
+            result = safe_eval(terminal.current_page(), """() => {
+              const candidates = Array.from(document.querySelectorAll('.im-session-list__virtual, .im-session-list, [class*="im-session-list"]'));
+              const el = candidates.find(node =>
+                node.querySelectorAll && node.querySelectorAll('.im-session-item__box').length > 0
+                && (node.scrollHeight || 0) - (node.clientHeight || 0) > 8
+              ) || candidates.find(node => node.querySelectorAll && node.querySelectorAll('.im-session-item__box').length > 0);
+              if (!el) return { scrolled: false, reason: 'missing_list' };
+              const before = el.scrollTop || 0;
+              el.scrollTop = 0;
+              el.dispatchEvent(new Event('scroll', { bubbles: true }));
+              return {
+                scrolled: Math.abs((el.scrollTop || 0) - before) > 2,
+                before,
+                after: el.scrollTop || 0,
+                className: String(el.className || ''),
+                scrollHeight: el.scrollHeight || 0,
+                clientHeight: el.clientHeight || 0
+              };
+            }""")
+            terminal.current_page().wait_for_timeout(random.randint(520, 860))
+            return result if isinstance(result, dict) else {"scrolled": False}
+
+        scroll_zhilian_list_to_top()
+        terminal.current_page().wait_for_timeout(random.randint(650, 1150))
+
+        results: list[dict] = []
+        filtered: list[dict] = []
+        filtered_keys: set[str] = set()
+        counts: dict[str, int] = {}
+        scan_trace: list[dict] = []
+        excluded: list[str] = []
+        no_target = 0
+        max_scan_attempts = max(40, min(220, target_limit * 5))
+        batch_halted = False
+
+        while len(results) < target_limit and no_target < max_scan_attempts and not batch_halted:
+            self.check_pause()
+            target = self.measure_current_timing_stage(
+                "zhilian_find_operation_thread",
+                "智联查找运营岗位联系人",
+                lambda: self.zhilian_find_next_thread(
+                    terminal,
+                    exclude_labels=excluded,
+                    allowed_positions=allowed_positions,
+                    require_unread=False,
+                    filtered_out=filtered,
+                    filtered_keys=filtered_keys,
+                ),
+            )
+            if not target:
+                scrolled = self.measure_current_timing_stage(
+                    "zhilian_scroll_conversation_list",
+                    "智联滚动联系人列表",
+                    lambda: self.zhilian_scroll_conversation_list(terminal),
+                )
+                no_target += 1
+                scan_trace.append({
+                    "step": len(scan_trace) + 1,
+                    "event": "no_target_scroll",
+                    "processed": len(results),
+                    "filtered": len(filtered),
+                    "scrolled": bool(scrolled.get("scrolled")),
+                    "reason": safe_text(str(scrolled.get("reason") or ""), 80),
+                    "before": scrolled.get("before"),
+                    "after": scrolled.get("after"),
+                })
+                if scrolled.get("scrolled") and no_target < max_scan_attempts:
+                    terminal.current_page().wait_for_timeout(random.randint(560, 980))
+                    continue
+                break
+
+            label = str(target.get("label") or "")
+            label_key = compact_conversation_label(label)
+            if label_key:
+                excluded.append(label_key)
+            target_name = safe_text(str(target.get("name") or recruiter_candidate_name_from_label(label)), 80)
+            if target_name:
+                excluded.append(target_name)
+            locator = target.get("locator")
+            if locator is None:
+                counts["open_candidate_failed"] = counts.get("open_candidate_failed", 0) + 1
+                filtered.append({"label": safe_text(label, 140), "reason": "missing_locator"})
+                continue
+
+            try:
+                click_started = time.time()
+                if terminal.humanize:
+                    self.measure_current_timing_stage("zhilian_open_candidate_pre_pause", "智联打开联系人前停顿", lambda: terminal.pause_like_person("pre_action"))
+                    highlight_target(locator)
+                self.measure_current_timing_stage("zhilian_open_candidate_click", "智联点击联系人", lambda: humanized_locator_click(terminal, locator, force=True))
+                if terminal.humanize:
+                    self.measure_current_timing_stage("zhilian_open_candidate_post_pause", "智联打开联系人后停顿", lambda: terminal.pause_like_person("post_action"))
+                self.measure_current_timing_stage("zhilian_open_candidate_wait_detail", "智联等待联系人详情", lambda: terminal.current_page().wait_for_timeout(random.randint(900, 1450)))
+                ready = self.zhilian_wait_chat_ready(terminal, timeout_ms=4500)
+                self.record_current_timing_stage("zhilian_open_candidate", "智联打开联系人", click_started, ok=True, extra={"candidate": safe_text(label, 80)})
+                if not ready:
+                    counts["open_candidate_failed"] = counts.get("open_candidate_failed", 0) + 1
+                    filtered.append({"label": safe_text(label, 140), "reason": "chat_input_not_ready"})
+                    continue
+                maybe_human_reading_pause(terminal, reason="zhilian_operation_resume_candidate_open", text_hint=label)
+            except Exception as error:
+                self.record_current_timing_stage("zhilian_open_candidate", "智联打开联系人", click_started, ok=False, error=str(error), extra={"candidate": safe_text(label, 80)})
+                counts["open_candidate_failed"] = counts.get("open_candidate_failed", 0) + 1
+                filtered.append({
+                    "label": safe_text(label, 140),
+                    "reason": "open_candidate_failed",
+                    "message": safe_text(str(error), 180),
+                })
+                terminal.current_page().wait_for_timeout(random.randint(420, 760))
+                continue
+
+            context_before = self.zhilian_read_chat_context(terminal, opened=target)
+            position_reply = context_before.get("positionReply") if isinstance(context_before.get("positionReply"), dict) else {}
+            applicant = context_before.get("applicant") if isinstance(context_before.get("applicant"), dict) else {}
+            identity_warnings = applicant.get("identityWarnings") if isinstance(applicant.get("identityWarnings"), list) else []
+            if identity_warnings:
+                counts["identity_mismatch_skipped"] = counts.get("identity_mismatch_skipped", 0) + 1
+                filtered.append({
+                    "label": safe_text(label, 140),
+                    "reason": "identity_mismatch_after_open",
+                    "identityWarnings": identity_warnings[:4],
+                })
+                continue
+            candidate_label = str(applicant.get("label") or label)
+            candidate_key = compact_conversation_label(candidate_label)
+            if candidate_key:
+                excluded.append(candidate_key)
+            applicant_name = safe_text(str(applicant.get("name") or recruiter_candidate_name_from_label(candidate_label)), 80)
+            if applicant_name:
+                excluded.append(applicant_name)
+            position_text = " ".join([
+                str(context_before.get("appliedPosition") or ""),
+                str(applicant.get("appliedPosition") or ""),
+                str(candidate_label or ""),
+                str(target.get("job") or ""),
+            ])
+            if not is_direct_resume_operations_position(context_before, position_reply) and not direct_resume_operations_position_matches(position_text):
+                filtered.append({
+                    "label": safe_text(candidate_label or label, 140),
+                    "reason": "operation_position_mismatch_after_open",
+                    "appliedPosition": safe_text(str(context_before.get("appliedPosition") or target.get("job") or ""), 80),
+                })
+                continue
+
+            result = self.measure_current_timing_stage(
+                "zhilian_process_operation_resume_candidate",
+                "智联直求运营岗位简历",
+                lambda: self.zhilian_process_current_position(terminal, opened=target),
+            )
+            action = classify_recruiter_screen_result_action(result)
+            counts[action] = counts.get(action, 0) + 1
+            screening = result.get("screening") if isinstance(result.get("screening"), dict) else {}
+            resume = result.get("resume") if isinstance(result.get("resume"), dict) else {}
+            results.append({
+                "index": len(results) + 1,
+                "label": safe_text(candidate_label or label, 140),
+                "candidateName": safe_text(str(applicant.get("name") or recruiter_candidate_name_from_label(label)), 80),
+                "appliedPosition": safe_text(str(context_before.get("appliedPosition") or target.get("job") or ""), 80),
+                "resumeJobType": direct_resume_operations_job_type(context_before, position_reply),
+                "conversationKey": safe_text(str(context_before.get("conversationKey") or ""), 120),
+                "action": action,
+                "screeningStatus": safe_text(str(screening.get("status") or ""), 40),
+                "message": safe_text(str(result.get("message") or ""), 260),
+                "resume": compact_recruiter_resume_result(resume),
+            })
+            if self.zhilian_result_has_unsent_draft(result):
+                results[-1]["haltedBatch"] = True
+                results[-1]["haltReason"] = "unsent_draft_after_send_attempt"
+                counts["halted_unsent_draft"] = counts.get("halted_unsent_draft", 0) + 1
+                batch_halted = True
+                break
+            maybe_human_batch_pause(terminal, len(results))
+
+        message = f"智联运营岗位简历补采完成：处理 {len(results)} 人，跳过非目标/不可处理 {len(filtered)} 人。"
+        if counts:
+            message += " 动作统计：" + "；".join(f"{key} {value}" for key, value in sorted(counts.items()))
+        if len(results) >= target_limit:
+            message += f" 已达到本次上限 {target_limit} 人。"
+        if batch_halted:
+            message += " 检测到未发送草稿，已停止本批次。"
+        self.add_event("chat", message)
+        state = {
+            "platform": "zhilian",
+            "processedPeople": len(results),
+            "filteredOut": len(filtered),
+            "counts": counts,
+            "targetPositions": list(allowed_positions),
+            "allMessagesFilter": all_messages_filter,
+            "allPositionFilter": all_position_filter,
+            "scanTraceCount": len(scan_trace),
+            "batchHalted": batch_halted,
+        }
+        batch_report = append_recruiter_batch_report({
+            "type": "zhilian_collect_operation_resume_contacts",
+            "message": safe_text(message, 800),
+            "state": state,
+            "results": results,
+            "filteredOut": filtered[:160],
+            "scanTrace": scan_trace[-160:],
+        })
+        return {
+            "message": message,
+            "results": results,
+            "counts": counts,
+            "filteredOut": filtered[:60],
+            "state": state,
+            "scanTrace": scan_trace[-80:],
+            "batchReportId": batch_report.get("runId"),
+        }
 
     def zhilian_open_recommend_page(self, terminal: BrowserTerminal) -> dict:
         page = terminal.current_page()

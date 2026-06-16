@@ -361,6 +361,108 @@ def prepare_recruiter_unread_candidate_list(terminal: BrowserTerminal) -> dict:
     return info
 
 
+def prepare_recruiter_all_candidate_list(terminal: BrowserTerminal) -> dict:
+    page = terminal.current_page()
+    token = f"codex_recruiter_all_tab_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    try:
+        info = page.evaluate(
+            r"""({ token }) => {
+              const all = "\u5168\u90e8";
+              const unread = "\u672a\u8bfb";
+              const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
+              const visible = (el) => {
+                if (!el) return false;
+                const box = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return box.width > 0 && box.height > 0 && box.bottom > 0 && box.y < window.innerHeight
+                  && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+              };
+              const isAllLabel = (text) => {
+                if (!text) return false;
+                if (text === all) return true;
+                if (text.startsWith(all) && text.length <= 12 && !text.includes(unread)) return true;
+                return new RegExp(`^${all}\\s*[锛(]?\\s*\\d{0,4}\\s*[锛)]?$`).test(text);
+              };
+              const candidates = Array.from(document.querySelectorAll([
+                ".chat-message-filter-left span",
+                ".chat-message-filter-left div",
+                ".chat-message-filter span",
+                ".chat-message-filter div",
+                "[role='tab']",
+                "li",
+                "button",
+                "a"
+              ].join(",")));
+              let best = null;
+              let bestScore = -9999;
+              for (const node of candidates) {
+                if (!visible(node)) continue;
+                const text = normalize(node.innerText || node.textContent || node.getAttribute("aria-label") || node.getAttribute("title") || "");
+                if (!isAllLabel(text)) continue;
+                const box = node.getBoundingClientRect();
+                if (box.y > 280 || box.x > Math.min(760, window.innerWidth * 0.58) || box.width > 220 || box.height > 80) continue;
+                const target = node.closest("button,a,li,[role='tab']") || node;
+                const targetClass = String(target.className || "");
+                const nodeClass = String(node.className || "");
+                let score = 1000 - box.y;
+                if (/chat-message-filter|filter|tab/i.test(targetClass + " " + nodeClass)) score += 260;
+                if (box.x < 420) score += 80;
+                if (/active|selected|current|cur/.test(targetClass + " " + nodeClass)) score += 30;
+                if (score > bestScore) {
+                  bestScore = score;
+                  best = { node, target, text, box: target.getBoundingClientRect(), className: targetClass };
+                }
+              }
+              if (!best) return { found: false, reason: "all_tab_not_found" };
+              best.target.setAttribute("data-codex-recruiter-all-tab", token);
+              const selected = /active|selected|current|cur/.test(best.className)
+                || /active|selected|current|cur/.test(String(best.node.className || ""));
+              return {
+                found: true,
+                selected,
+                label: best.text,
+                box: {
+                  x: Math.round(best.box.x),
+                  y: Math.round(best.box.y),
+                  w: Math.round(best.box.width),
+                  h: Math.round(best.box.height)
+                }
+              };
+            }""",
+            {"token": token},
+        )
+    except Exception as error:
+        return {"found": False, "error": str(error)}
+    if not isinstance(info, dict) or not info.get("found"):
+        return info if isinstance(info, dict) else {"found": False}
+    try:
+        locator = page.locator(f"[data-codex-recruiter-all-tab='{token}']").first
+        if not info.get("selected"):
+            if terminal.humanize:
+                terminal.pause_like_person("pre_action")
+                highlight_target(locator)
+            humanized_locator_click(terminal, locator, force=True)
+            if terminal.humanize:
+                terminal.pause_like_person("post_action")
+            page.wait_for_timeout(random.randint(700, 1150))
+            info["clicked"] = True
+        else:
+            info["clicked"] = False
+        top_result = scroll_recruiter_candidate_list_to_top(terminal)
+        info["scrollTop"] = top_result
+    except Exception as error:
+        info.update({
+            "clicked": False,
+            "error": safe_text(str(error), 160),
+        })
+    finally:
+        try:
+            page.locator("[data-codex-recruiter-all-tab]").evaluate_all("els => els.forEach(el => el.removeAttribute('data-codex-recruiter-all-tab'))")
+        except Exception:
+            pass
+    return info
+
+
 def scroll_recruiter_candidate_list(terminal: BrowserTerminal, direction: int = 1) -> dict:
     page = terminal.current_page()
     token = f"codex_recruiter_scroll_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"

@@ -425,7 +425,7 @@ async function runJdMatch() {
   }
 }
 
-const INTERVIEW_INVITE_TEXT = "加我微信沟通，carhhxh";
+const INTERVIEW_INVITE_ACTION_TEXT = "点击平台内置“换微信”";
 
 function getResumeInviteSourceText(resume = {}) {
   return getResumeSourceDisplay(resume);
@@ -477,12 +477,12 @@ async function startResumeInterviewInvite(resume, button = null) {
   }
   const confirmed = window.confirm(
     [
-      `确认给 ${resume.name || resume.fileName || "该候选人"} 发送约面试消息？`,
+      `确认给 ${resume.name || resume.fileName || "该候选人"} 发起换微信？`,
       `来源：${getResumeInviteSourceText(resume)}`,
       getResumePlatformContactDisplayName(resume)
         ? `平台联系人：${getResumePlatformContactDisplayName(resume)}`
         : "平台联系人：系统将先从自动化记录中高置信查找",
-      `发送内容：${INTERVIEW_INVITE_TEXT}`,
+      `执行动作：${INTERVIEW_INVITE_ACTION_TEXT}`,
     ].join("\n")
   );
   if (!confirmed) return;
@@ -505,7 +505,7 @@ async function startResumeInterviewInvite(resume, button = null) {
       renderResumeTable(getFilteredResumes(resumeCache));
     }
     if (payload.ok) {
-      setStatus(payload.message || "约面试消息已发送", "is-done");
+      setStatus(payload.message || "已发起换微信", "is-done");
     } else {
       setStatus(payload.error || payload.message || "约面试失败", "is-error");
       window.alert(payload.error || payload.message || "约面试失败");
@@ -589,14 +589,14 @@ function renderResumeTable(resumes) {
     if (resume.interviewInvite?.status === "sent") {
       inviteButton.disabled = true;
       inviteButton.classList.add("is-done");
-      inviteButton.title = "该候选人已发送过约面试消息";
+      inviteButton.title = "该候选人已发起过换微信";
     } else if (unavailable) {
       inviteButton.disabled = true;
       inviteButton.title = unavailable;
     } else {
       inviteButton.title = resumeNeedsInterviewContactBridge(resume)
-        ? "先从自动化记录查找平台联系人，再发送约面试消息"
-        : `按平台联系人名搜索并发送：${INTERVIEW_INVITE_TEXT}`;
+        ? "先从自动化记录查找平台联系人，再点击平台换微信"
+        : `按平台联系人名搜索并执行：${INTERVIEW_INVITE_ACTION_TEXT}`;
       inviteButton.addEventListener("click", () => startResumeInterviewInvite(resume, inviteButton));
     }
     actionGroup.appendChild(inviteButton);

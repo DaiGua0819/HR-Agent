@@ -1432,7 +1432,10 @@ def parse_json_object(content: str) -> dict:
         return json.loads(match.group(0))
 
 
-INTERVIEW_INVITE_DEFAULT_MESSAGE = "加我微信沟通，carhhxh"
+INTERVIEW_INVITE_SEND_DISABLED_FOR_TESTING = (
+    str(os.environ.get("INTERVIEW_INVITE_SEND_DISABLED_FOR_TESTING", "0")).strip().lower()
+    not in {"0", "false", "no", "off"}
+)
 
 
 def normalize_interview_platform(value: str) -> str:
@@ -1615,8 +1618,17 @@ def interview_page_probe(page, target_id: str = "") -> dict:
             el.parentElement ? el.parentElement.getAttribute('class') : '',
             el.parentElement && el.parentElement.parentElement ? el.parentElement.parentElement.getAttribute('class') : '',
           ].filter(Boolean).join(' ')).toLowerCase();
+          const is51SearchResultNode = el => {
+            if (!is51job || !el) return false;
+            if (el.closest('input, textarea, [contenteditable="true"]')) return false;
+            const row = el.closest('.search-content .searchlist-item, .search-content .name-res.result, .search-content .conversation-item');
+            if (!row) return false;
+            if (row.closest('.el-input, .search-input')) return false;
+            return true;
+          };
           const isSearchEcho = (el, text) => {
             if (!target) return false;
+            if (is51SearchResultNode(el)) return false;
             if (normalize(text) === target) return true;
             const meta = metaFor(el);
             if (/(keyword|input|filter|condition|query|tag|search-box|conversation-search|el-input|suggest)/i.test(meta)) return true;
@@ -1637,10 +1649,13 @@ def interview_page_probe(page, target_id: str = "") -> dict:
             if (box.w > window.innerWidth * 0.75) score -= 120;
             if (box.h > window.innerHeight * 0.5) score -= 120;
             if (is51job) {
+              const isSearchResult = is51SearchResultNode(el);
+              if (isSearchResult) score += 680;
+              if (/(^|\s)(searchlist-item|name-res|result)(\s|$)/i.test(className)) score += 260;
               if (/(^|\s)(list-item|recommend-item|wrap-item|batch-chat-item|conversation-item)(\s|$)/i.test(className)) score += 260;
               if (/username|user-name|(^|\s)name(\s|$)|resume-info-status/i.test(className)) score += 150;
               if (el.closest('.conversation-list,.conversation-list-container,.batch-chat-list-wrap')) score += 70;
-              if (el.closest('.conversation-search,.search-box')) score -= 420;
+              if (el.closest('.conversation-search,.search-box') && !isSearchResult) score -= 420;
             }
             if (isZhilian) {
               if (/(^|\s)im-search-result(\s|$)/i.test(className)) score += 320;
@@ -1649,7 +1664,7 @@ def interview_page_probe(page, target_id: str = "") -> dict:
               if (el.closest('.im-search-modal')) score += 80;
               if (/km-modal|im-search-modal__layout|im-search-modal__content|im-search-result__box|im-search-result__left-box|km-scrollbar/i.test(className) && childText.includes(target)) score -= 120;
             }
-            if (/search-box|conversation-search|im-search-modal__search-input|input|keyword|query/i.test(metaFor(el))) score -= 260;
+            if (/search-box|conversation-search|im-search-modal__search-input|input|keyword|query/i.test(metaFor(el)) && !(is51job && is51SearchResultNode(el))) score -= 260;
             return score;
           };
           if (target) {
@@ -1911,7 +1926,7 @@ def click_interview_result_match(page, dom_index: int) -> dict:
     locator = page.locator("body *").nth(int(dom_index))
     info = locator.evaluate(
         """el => {
-          const clickable = el.closest('.im-search-result,.list-item,.recommend-item,.wrap-item,.batch-chat-item,.conversation-item,.im-session-item,.im-session-item__box') || el;
+          const clickable = el.closest('.search-content .searchlist-item,.search-content .conversation-item,.im-search-result,.list-item,.recommend-item,.wrap-item,.batch-chat-item,.conversation-item,.im-session-item,.im-session-item__box') || el;
           clickable.setAttribute('data-codex-interview-result-click', '1');
           const box = clickable.getBoundingClientRect();
           return {
@@ -1926,6 +1941,428 @@ def click_interview_result_match(page, dom_index: int) -> dict:
     return {"clicked": True, "result": info}
 
 
+def find_interview_wechat_exchange_button(page, platform: str = "") -> dict:
+    token = f"codex_interview_wechat_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    try:
+        info = page.evaluate(
+            r"""({ token, platform }) => {
+              const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+              const visible = el => {
+                if (!el || !el.isConnected) return false;
+                const box = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return box.width > 2 && box.height > 2
+                  && box.bottom > 0 && box.right > 0
+                  && box.top < window.innerHeight && box.left < window.innerWidth
+                  && style.display !== 'none'
+                  && style.visibility !== 'hidden'
+                  && style.opacity !== '0';
+              };
+              const rect = el => {
+                const box = el.getBoundingClientRect();
+                return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
+              };
+              const cls = el => typeof el.className === 'string' ? el.className : String((el.className && el.className.baseVal) || '');
+              const textOf = el => normalize([
+                el.innerText,
+                el.textContent,
+                el.getAttribute('title'),
+                el.getAttribute('aria-label')
+              ].filter(Boolean).join(' '));
+              const metaOf = el => normalize([
+                el.tagName,
+                el.id,
+                cls(el),
+                el.getAttribute('role'),
+                el.getAttribute('title'),
+                el.getAttribute('aria-label'),
+                el.getAttribute('data-testid')
+              ].filter(Boolean).join(' '));
+              const chainText = el => {
+                const parts = [];
+                let cur = el;
+                for (let depth = 0; cur && depth < 5; depth += 1, cur = cur.parentElement) {
+                  parts.push(normalize([cur.tagName, cur.id, cls(cur), cur.getAttribute('disabled'), cur.getAttribute('aria-disabled'), cur.innerText || cur.textContent || ''].join(' ')));
+                }
+                return parts.join(' | ');
+              };
+              const platformRoots = {
+                boss: [
+                  '.conversation-operate .operate-exchange-left',
+                  '.conversation-operate .toolbar-box-right',
+                  '.conversation-operate',
+                  '.toolbar-box'
+                ],
+                '51job': [
+                  '.custom-operate',
+                  '.chat-operate',
+                  '.conversation-operate'
+                ],
+                zhilian: [
+                  '.im-session-detail-footer .session-new-action',
+                  '.im-session-detail-footer',
+                  '.km-footer'
+                ]
+              };
+              const rootSelectors = platformRoots[platform] || platformRoots.boss;
+              let roots = rootSelectors.flatMap(selector => Array.from(document.querySelectorAll(selector))).filter(visible);
+              if (!roots.length) roots = [document.body].filter(Boolean);
+              const directSelectors = [
+                '.exchange-wx-btn',
+                '.exchange-wx-wrap',
+                '.im-ask-for-wx',
+                '.operate-icon-item',
+                '.operate-btn',
+                'button',
+                'a',
+                '[role="button"]',
+                'span',
+                'div'
+              ].join(',');
+              const exchangeLabel = text => /(^|\s)(换微信|交换微信)(\s|$)/.test(text) || text === '换微信' || text === '交换微信';
+              const existingLabel = text => /查看微信|微信号|复制微信号/.test(text);
+              const alreadyText = normalize(document.body ? document.body.innerText || '' : '');
+              const alreadyExchanged = /已交换微信|对方已同意交换微信|已同意交换微信|微信号[:：]|复制微信号|查看微信/.test(alreadyText);
+              const candidates = [];
+              const seen = new Set();
+              for (const root of roots) {
+                for (const node of [root, ...Array.from(root.querySelectorAll(directSelectors))]) {
+                  if (!node || seen.has(node) || !visible(node)) continue;
+                  seen.add(node);
+                  const text = textOf(node);
+                  const meta = metaOf(node);
+                  const combined = normalize(`${text} ${meta}`);
+                  const box = rect(node);
+                  let score = 0;
+                  let action = '';
+                  if (platform === '51job' && /exchange-wx-btn|exchange-wx-wrap/.test(meta)) score += 260;
+                  if (platform === 'zhilian' && /im-ask-for-wx/.test(meta)) score += 280;
+                  if (platform === 'boss' && /operate-icon-item|operate-btn|operate-exchange-left/.test(meta)) score += 120;
+                  if (exchangeLabel(text)) {
+                    score += 280;
+                    action = 'exchange_request';
+                  } else if (/(^|\s)(换微信|交换微信)(\s|$)/.test(combined)) {
+                    score += 190;
+                    action = 'exchange_request';
+                  }
+                  if (existingLabel(text)) {
+                    score += 180;
+                    action = 'already_exchanged';
+                  }
+                  if (/换电话|打电话|约面试|不合适|求简历|查看附件简历|邀请面试/.test(text) && !/微信/.test(text)) score -= 180;
+                  if (box.w > 220 || box.h > 90) score -= 80;
+                  if (box.x > window.innerWidth * 0.42 && box.y > window.innerHeight * 0.35) score += 25;
+                  if (score < 120) continue;
+                  let target = node;
+                  if (platform === '51job') {
+                    target = node.closest('.exchange-wx-btn') || node.closest('.exchange-wx-wrap') || node.closest('.icon-text-wrap') || node;
+                  } else if (platform === 'zhilian') {
+                    target = node.closest('.im-ask-for-wx') || node.closest('a,button,[role="button"]') || node;
+                  } else {
+                    target = node.closest('.operate-icon-item') || node.closest('.operate-btn') || node;
+                  }
+                  const targetText = textOf(target);
+                  const targetMeta = metaOf(target);
+                  const targetChain = chainText(target);
+                  const disabled = /disabled|unable|forbid|disable|禁用|不可用|已发送|已申请/i.test(targetChain)
+                    || target.disabled === true
+                    || target.getAttribute('disabled') !== null
+                    || target.getAttribute('aria-disabled') === 'true'
+                    || window.getComputedStyle(target).pointerEvents === 'none';
+                  candidates.push({
+                    node,
+                    target,
+                    action: action || (existingLabel(targetText) ? 'already_exchanged' : 'exchange_request'),
+                    label: targetText || text || '换微信',
+                    score,
+                    disabled,
+                    reason: targetChain.slice(0, 260),
+                    meta: targetMeta.slice(0, 220),
+                    rect: rect(target)
+                  });
+                }
+              }
+              candidates.sort((left, right) => (right.score - left.score) || (right.rect.y - left.rect.y) || (right.rect.x - left.rect.x));
+              const best = candidates[0] || null;
+              if (!best) {
+                return {
+                  found: false,
+                  alreadyExchanged,
+                  action: alreadyExchanged ? 'already_exchanged' : '',
+                  reason: alreadyExchanged ? 'wechat_exchange_already_visible' : 'wechat_exchange_button_not_found'
+                };
+              }
+              best.target.setAttribute('data-codex-interview-wechat', token);
+              return {
+                found: true,
+                token,
+                action: best.action,
+                label: best.label,
+                alreadyExchanged: alreadyExchanged || best.action === 'already_exchanged',
+                disabled: best.disabled,
+                reason: best.reason,
+                meta: best.meta,
+                rect: best.rect,
+                platform
+              };
+            }""",
+            {"token": token, "platform": normalize_interview_platform(platform)},
+        )
+    except Exception as error:
+        return {"found": False, "error": safe_text(str(error), 220)}
+    if not isinstance(info, dict):
+        return {"found": False}
+    if info.get("found"):
+        info["locator"] = page.locator(f"[data-codex-interview-wechat='{token}']").first
+    return info
+
+
+def find_interview_wechat_exchange_confirm_button(page, platform: str = "") -> dict:
+    token = f"codex_interview_wechat_confirm_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+    try:
+        info = page.evaluate(
+            r"""({ token }) => {
+              const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+              const visible = el => {
+                if (!el || !el.isConnected) return false;
+                const box = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return box.width > 2 && box.height > 2
+                  && box.bottom > 0 && box.right > 0
+                  && box.top < window.innerHeight && box.left < window.innerWidth
+                  && style.display !== 'none'
+                  && style.visibility !== 'hidden'
+                  && style.opacity !== '0';
+              };
+              const rect = el => {
+                const box = el.getBoundingClientRect();
+                return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
+              };
+              const cls = el => typeof el.className === 'string' ? el.className : String((el.className && el.className.baseVal) || '');
+              const textOf = el => normalize([el.innerText, el.textContent, el.getAttribute('title'), el.getAttribute('aria-label')].filter(Boolean).join(' '));
+              const metaOf = el => normalize([el.tagName, el.id, cls(el), el.getAttribute('role'), el.getAttribute('title'), el.getAttribute('aria-label')].filter(Boolean).join(' '));
+              const containers = Array.from(document.querySelectorAll(
+                '.exchange-tooltip,.boss-popup,.dialog,.modal,.tooltip,.popover,.el-popover,.el-dialog,.km-modal,.km-popover,.km-dialog,[class*="popup"],[class*="dialog"],[class*="modal"],[class*="popover"],[class*="tooltip"]'
+              )).filter(el => {
+                if (!visible(el)) return false;
+                const meta = metaOf(el);
+                if (/reference|conversation-operate|toolbar-box|operate-exchange|custom-operate|session-new-action|im-session-detail-footer|km-footer/.test(meta)) return false;
+                const text = textOf(el);
+                const box = rect(el);
+                return /微信|交换/.test(text) && box.w <= Math.max(720, window.innerWidth * 0.72) && box.h <= Math.max(520, window.innerHeight * 0.78);
+              });
+              const labels = ['确定', '确认', '发送', '发起交换', '申请交换', '交换微信', '换微信', '确认发送'];
+              let best = null;
+              let bestScore = -9999;
+              for (const container of containers) {
+                const containerText = textOf(container);
+                const buttons = Array.from(container.querySelectorAll('button,a,[role="button"],.boss-btn,.el-button,.km-button,span,div')).filter(visible);
+                for (const node of buttons) {
+                  const label = textOf(node);
+                  if (!labels.includes(label)) continue;
+                  if (/取消|关闭|稍后/.test(label)) continue;
+                  const box = rect(node);
+                  let score = 100;
+                  const meta = metaOf(node);
+                  if (/primary|boss-btn|el-button|km-button|button|btn/i.test(meta)) score += 80;
+                  if (box.w >= 36 && box.w <= 180 && box.h >= 20 && box.h <= 70) score += 35;
+                  if (box.x > window.innerWidth * 0.35) score += 12;
+                  if (label === '确定' || label === '确认') score += 20;
+                  if (score > bestScore) {
+                    bestScore = score;
+                    best = { node, label, containerText, meta, rect: box };
+                  }
+                }
+              }
+              if (!best) return { found: false, containers: containers.map(el => textOf(el).slice(0, 180)).slice(0, 3) };
+              best.node.setAttribute('data-codex-interview-wechat-confirm', token);
+              return {
+                found: true,
+                token,
+                label: best.label,
+                reason: best.containerText.slice(0, 240),
+                meta: best.meta.slice(0, 160),
+                rect: best.rect
+              };
+            }""",
+            {"token": token, "platform": normalize_interview_platform(platform)},
+        )
+    except Exception as error:
+        return {"found": False, "error": safe_text(str(error), 220)}
+    if not isinstance(info, dict):
+        return {"found": False}
+    if info.get("found"):
+        info["locator"] = page.locator(f"[data-codex-interview-wechat-confirm='{token}']").first
+    return info
+
+
+def inspect_interview_wechat_exchange_state(page, platform: str = "") -> dict:
+    try:
+        return page.evaluate(
+            r"""platform => {
+              const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+              const text = normalize(document.body ? document.body.innerText || '' : '');
+              const alreadyExchanged = /已交换微信|对方已同意交换微信|已同意交换微信|微信号[:：]|复制微信号|查看微信/.test(text);
+              const requestVisible = /我想.{0,12}交换微信|交换微信.{0,18}方便沟通|等待.{0,12}同意|已.{0,8}申请.{0,8}微信|已.{0,8}发起.{0,8}微信/.test(text);
+              const actionStillAvailable = /换微信|交换微信/.test(text);
+              return {
+                platform,
+                alreadyExchanged,
+                requestVisible,
+                actionStillAvailable,
+                summary: text.slice(Math.max(0, text.length - 500))
+              };
+            }""",
+            normalize_interview_platform(platform),
+        ) or {}
+    except Exception as error:
+        return {"alreadyExchanged": False, "requestVisible": False, "error": safe_text(str(error), 220)}
+
+
+def wait_for_interview_wechat_exchange_confirm_button(page, platform: str = "", attempts: int = 8) -> dict:
+    button: dict = {"found": False}
+    for _ in range(max(1, int(attempts))):
+        button = find_interview_wechat_exchange_confirm_button(page, platform)
+        if isinstance(button, dict) and button.get("found"):
+            return button
+        try:
+            page.wait_for_timeout(random.randint(220, 420))
+        except Exception:
+            break
+    return button if isinstance(button, dict) else {"found": False}
+
+
+def click_interview_wechat_exchange(terminal: BrowserTerminal, platform: str = "", candidate_label: str = "") -> dict:
+    page = terminal.current_page()
+    button = find_interview_wechat_exchange_button(page, platform)
+    cleaned_button = {k: v for k, v in button.items() if k != "locator"} if isinstance(button, dict) else {"found": False}
+    if bool(cleaned_button.get("alreadyExchanged")) and cleaned_button.get("action") == "already_exchanged":
+        return {
+            "ok": True,
+            "sent": True,
+            "verified": True,
+            "alreadyExchanged": True,
+            "reason": "wechat_exchange_already_available",
+            "message": "候选人已交换微信，无需重复发起",
+            "button": cleaned_button,
+        }
+    if not isinstance(button, dict) or not button.get("found"):
+        return {
+            "ok": False,
+            "blocked": True,
+            "sent": False,
+            "verified": False,
+            "reason": cleaned_button.get("reason") or "wechat_exchange_button_not_found",
+            "message": "已确认候选人，但未找到可点击的换微信按钮",
+            "button": cleaned_button,
+        }
+    if button.get("disabled"):
+        return {
+            "ok": False,
+            "blocked": True,
+            "sent": False,
+            "verified": False,
+            "reason": "wechat_exchange_button_disabled",
+            "message": "换微信按钮不可用，未点击",
+            "button": cleaned_button,
+        }
+    locator = button.get("locator")
+    if locator is None:
+        return {
+            "ok": False,
+            "blocked": True,
+            "sent": False,
+            "verified": False,
+            "reason": "wechat_exchange_locator_missing",
+            "message": "换微信按钮定位缺少 locator，未点击",
+            "button": cleaned_button,
+        }
+    click_error = ""
+    clicked = False
+    try:
+        if terminal.humanize:
+            terminal.pause_like_person("pre_action")
+            humanized_precise_button_click(terminal, locator, force=True)
+        else:
+            locator.click(timeout=6000, force=True)
+        clicked = True
+        if terminal.humanize:
+            terminal.pause_like_person("post_action")
+        page.wait_for_timeout(random.randint(650, 1050))
+    except Exception as error:
+        click_error = safe_text(str(error), 240)
+        try:
+            locator.click(timeout=5000, force=True)
+            clicked = True
+            page.wait_for_timeout(random.randint(550, 900))
+        except Exception as fallback_error:
+            click_error = safe_text(f"{click_error}; fallback={fallback_error}", 260)
+    if not clicked:
+        return {
+            "ok": False,
+            "blocked": True,
+            "sent": False,
+            "verified": False,
+            "reason": "wechat_exchange_click_failed",
+            "message": "点击换微信失败",
+            "button": cleaned_button,
+            "error": click_error,
+        }
+
+    confirm = wait_for_interview_wechat_exchange_confirm_button(page, platform, attempts=6)
+    confirm_clicked = False
+    confirm_error = ""
+    if isinstance(confirm, dict) and confirm.get("found"):
+        confirm_locator = confirm.get("locator")
+        try:
+            if terminal.humanize:
+                terminal.pause_like_person("pre_action")
+                humanized_precise_button_click(terminal, confirm_locator, force=True)
+            else:
+                confirm_locator.click(timeout=6000, force=True)
+            confirm_clicked = True
+            if terminal.humanize:
+                terminal.pause_like_person("post_action")
+            page.wait_for_timeout(random.randint(900, 1400))
+        except Exception as error:
+            confirm_error = safe_text(str(error), 240)
+            try:
+                confirm_locator.click(timeout=5000, force=True)
+                confirm_clicked = True
+                page.wait_for_timeout(random.randint(700, 1100))
+            except Exception as fallback_error:
+                confirm_error = safe_text(f"{confirm_error}; fallback={fallback_error}", 260)
+
+    state = inspect_interview_wechat_exchange_state(page, platform)
+    verified = bool(state.get("alreadyExchanged") or state.get("requestVisible"))
+    if not verified and isinstance(confirm, dict) and confirm.get("found") and not confirm_clicked:
+        return {
+            "ok": False,
+            "blocked": True,
+            "sent": False,
+            "verified": False,
+            "reason": "wechat_exchange_confirm_failed",
+            "message": "换微信确认弹窗点击失败",
+            "button": cleaned_button,
+            "confirm": {k: v for k, v in confirm.items() if k != "locator"},
+            "state": state,
+            "error": confirm_error,
+        }
+    return {
+        "ok": verified,
+        "blocked": not verified,
+        "sent": verified,
+        "verified": verified,
+        "candidate": safe_text(candidate_label, 120),
+        "reason": "" if verified else "wechat_exchange_verification_failed",
+        "message": "已点击换微信并校验到交换请求/微信状态" if verified else "已点击换微信，但未校验到交换请求或微信状态",
+        "button": cleaned_button,
+        "confirm": {k: v for k, v in confirm.items() if k != "locator"} if isinstance(confirm, dict) else {"found": False},
+        "confirmClicked": confirm_clicked,
+        "state": state,
+    }
+
+
 def service_interview_invite(self, payload: dict) -> dict:
     payload = payload if isinstance(payload, dict) else {}
     platform = normalize_interview_platform(payload.get("platform") or payload.get("sourceKey") or "")
@@ -1933,7 +2370,6 @@ def service_interview_invite(self, payload: dict) -> dict:
     search_name = safe_text(str(payload.get("searchName") or platform_contact.get("displayName") or "").strip(), 180)
     applied_position = safe_text(str(payload.get("appliedPosition") or platform_contact.get("appliedPosition") or "").strip(), 120)
     chat_evidence = normalize_interview_chat_evidence(platform_contact.get("chatEvidence") or payload.get("chatEvidence") or [])
-    message = str(payload.get("message") or INTERVIEW_INVITE_DEFAULT_MESSAGE).strip()
     dry_run = bool(payload.get("dryRun"))
     if not search_name:
         return {"ok": False, "blocked": True, "reason": "missing_platform_display_name", "message": "缺少平台联系人显示名，未执行搜索"}
@@ -1991,8 +2427,14 @@ def service_interview_invite(self, payload: dict) -> dict:
         contact_verified = bool(verification.get("verified"))
         chat_inputs = final.get("chatInputs") if isinstance(final, dict) else []
         send_buttons = final.get("sendButtons") if isinstance(final, dict) else []
+        wechat_exchange = find_interview_wechat_exchange_button(page, platform) if contact_verified else {"found": False}
+        wechat_exchange_public = {k: v for k, v in wechat_exchange.items() if k != "locator"} if isinstance(wechat_exchange, dict) else {"found": False}
+        wechat_exchange_ready = bool(
+            isinstance(wechat_exchange, dict)
+            and (wechat_exchange.get("found") or wechat_exchange.get("alreadyExchanged"))
+        )
         base = {
-            "ok": bool(contact_verified and chat_inputs),
+            "ok": bool(contact_verified and wechat_exchange_ready),
             "platform": platform,
             "searchName": search_name,
             "platformContact": {
@@ -2007,7 +2449,9 @@ def service_interview_invite(self, payload: dict) -> dict:
             "verification": verification,
             "inputReady": bool(chat_inputs),
             "sendButtonReady": bool(send_buttons),
-            "message": "约面试 dry-run 已定位到候选人输入框" if dry_run else "约面试候选人已定位",
+            "wechatExchangeReady": wechat_exchange_ready,
+            "wechatExchange": wechat_exchange_public,
+            "message": "约面试 dry-run 已定位到候选人换微信按钮" if dry_run else "约面试候选人已定位，准备点击换微信",
             "home": home,
             "openedSearch": opened_search,
             "search": search,
@@ -2028,8 +2472,13 @@ def service_interview_invite(self, payload: dict) -> dict:
                 base.update({"ok": False, "blocked": True, "reason": reason, "message": message_map.get(reason, "未能确认当前会话是目标联系人")})
             elif not result_matches and not clicked and not chat_inputs:
                 base.update({"ok": False, "blocked": True, "reason": "search_result_not_found", "message": "已搜索但未找到可点击的目标联系人"})
-            elif not chat_inputs:
-                base.update({"ok": False, "blocked": True, "reason": "chat_input_not_found", "message": "已确认目标联系人，但未找到聊天输入框"})
+            elif not wechat_exchange_ready:
+                base.update({
+                    "ok": False,
+                    "blocked": True,
+                    "reason": wechat_exchange_public.get("reason") or "wechat_exchange_button_not_found",
+                    "message": "已确认目标联系人，但未找到可点击的换微信按钮",
+                })
             return base
         if not contact_verified:
             reason = str(verification.get("reason") or "chat_evidence_not_matched")
@@ -2041,26 +2490,34 @@ def service_interview_invite(self, payload: dict) -> dict:
             }
             base.update({"ok": False, "blocked": True, "reason": reason, "message": message_map.get(reason, "未能确认当前会话是目标联系人，未发送")})
             return base
-        if not chat_inputs:
-            base.update({"ok": False, "blocked": True, "reason": "chat_input_not_found", "message": "未找到聊天输入框，未发送"})
+        if not wechat_exchange_ready:
+            base.update({
+                "ok": False,
+                "blocked": True,
+                "reason": wechat_exchange_public.get("reason") or "wechat_exchange_button_not_found",
+                "message": "已确认目标联系人，但未找到可点击的换微信按钮，未发起约面试",
+            })
             return base
 
-        if platform == "51job":
-            sent = self.job51_send_message_with_verification(terminal, message)
-            verified = not bool(sent.get("blocked")) and bool((sent.get("verification") or {}).get("verified") or sent.get("sent"))
-        elif platform == "zhilian":
-            sent = self.zhilian_send_message_with_verification(terminal, message)
-            verified = not bool(sent.get("blocked")) and bool(sent.get("verified") or sent.get("sent"))
-        else:
-            self.smart_fill(terminal, "聊天", message)
-            sent = self.send_current_chat_reply_with_verification(terminal, message)
-            verified = bool((sent.get("verification") or {}).get("verified"))
+        if INTERVIEW_INVITE_SEND_DISABLED_FOR_TESTING:
+            base.update({
+                "ok": False,
+                "blocked": True,
+                "sent": False,
+                "sendDisabledForTesting": True,
+                "reason": "interview_send_disabled_for_testing",
+                "message": "约面试测试保护已开启：已定位候选人和换微信按钮，但不会点击换微信",
+            })
+            return base
+
+        exchange = click_interview_wechat_exchange(terminal, platform, candidate_label=search_name)
+        verified = bool(exchange.get("verified") or exchange.get("sent"))
         base.update({
             "ok": verified,
             "sent": verified,
             "verified": verified,
-            "send": sent,
-            "message": "约面试消息已发送并校验" if verified else "已尝试发送，但未校验到消息已发出",
+            "wechatExchange": exchange,
+            "message": exchange.get("message") or ("已点击换微信并校验" if verified else "已点击换微信，但未校验到交换请求"),
             "blocked": not verified,
         })
         return base

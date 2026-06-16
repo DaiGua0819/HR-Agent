@@ -46,6 +46,31 @@
                     self.send_json({"error": str(error), "timings": finished_timing}, status=500)
                     return
                 self.send_json(compact_process_messages_response(result))
+            elif path == "/api/recruiter/collect-operation-resumes":
+                payload = self.read_json()
+                options = payload.get("options")
+                if isinstance(options, dict):
+                    SERVICE.set_options(options)
+                SERVICE.set_pause(False, "开始 BOSS 运营岗位简历补采前自动解除暂停")
+                timing = SERVICE.start_operation_timing("chat", "BOSS运营岗位简历补采")
+                raw_max_total = payload.get("maxTotal", payload.get("count", 80))
+                max_total = int(raw_max_total if raw_max_total is not None else 80)
+                try:
+                    with SERVICE.lock:
+                        terminal = SERVICE.get_terminal()
+                        result = SERVICE.collect_operation_resume_contacts(terminal, max_total=max_total)
+                    finished_timing = SERVICE.finish_operation_timing(timing, "success")
+                    if isinstance(result, dict) and finished_timing:
+                        result["timings"] = finished_timing
+                except PauseRequested as error:
+                    finished_timing = SERVICE.finish_operation_timing(timing, "paused", str(error))
+                    self.send_json({"reply": str(error), "paused": True, "pause": SERVICE.pause_state(), "timings": finished_timing})
+                    return
+                except Exception as error:
+                    finished_timing = SERVICE.finish_operation_timing(timing, "failed", str(error))
+                    self.send_json({"error": str(error), "timings": finished_timing}, status=500)
+                    return
+                self.send_json(result)
             elif path == "/api/recruiter/proactive-contact":
                 payload = self.read_json()
                 options = payload.get("options")
@@ -88,6 +113,32 @@
                             job51_terminal,
                             max_total=max_total,
                             target_position=str(payload.get("targetPosition") or ""),
+                        ),
+                        timeout_seconds=timeout_seconds,
+                    )
+                    finished_timing = SERVICE.finish_operation_timing(timing, "success")
+                    if isinstance(result, dict) and finished_timing:
+                        result["timings"] = finished_timing
+                except Exception as error:
+                    finished_timing = SERVICE.finish_operation_timing(timing, "failed", str(error))
+                    self.send_json({"error": str(error), "timings": finished_timing}, status=500)
+                    return
+                self.send_json(result)
+            elif path == "/api/51job/collect-operation-resumes":
+                payload = self.read_json()
+                options = payload.get("options")
+                if isinstance(options, dict):
+                    SERVICE.set_options(options)
+                SERVICE.set_pause(False, "开始 51job 运营岗位简历补采前自动解除暂停")
+                timing = SERVICE.start_operation_timing("chat", "51job运营岗位简历补采")
+                raw_max_total = payload.get("maxTotal", payload.get("count", 80))
+                max_total = int(raw_max_total if raw_max_total is not None else 80)
+                timeout_seconds = max(240, min(1200, max_total * 45 + 120))
+                try:
+                    result = SERVICE.with_job51_terminal(
+                        lambda job51_terminal: SERVICE.job51_collect_operation_resume_contacts(
+                            job51_terminal,
+                            max_total=max_total,
                         ),
                         timeout_seconds=timeout_seconds,
                     )
@@ -160,6 +211,30 @@
                             zhilian_terminal,
                             max_total=max_total,
                             target_position=str(payload.get("targetPosition") or ""),
+                        )
+                    )
+                    finished_timing = SERVICE.finish_operation_timing(timing, "success")
+                    if isinstance(result, dict) and finished_timing:
+                        result["timings"] = finished_timing
+                except Exception as error:
+                    finished_timing = SERVICE.finish_operation_timing(timing, "failed", str(error))
+                    self.send_json({"error": str(error), "timings": finished_timing}, status=500)
+                    return
+                self.send_json(result)
+            elif path == "/api/zhilian/collect-operation-resumes":
+                payload = self.read_json()
+                options = payload.get("options")
+                if isinstance(options, dict):
+                    SERVICE.set_options(options)
+                SERVICE.set_pause(False, "开始智联运营岗位简历补采前自动解除暂停")
+                timing = SERVICE.start_operation_timing("chat", "智联运营岗位简历补采")
+                raw_max_total = payload.get("maxTotal", payload.get("count", 80))
+                max_total = int(raw_max_total if raw_max_total is not None else 80)
+                try:
+                    result = SERVICE.with_zhilian_terminal(
+                        lambda zhilian_terminal: SERVICE.zhilian_collect_operation_resume_contacts(
+                            zhilian_terminal,
+                            max_total=max_total,
                         )
                     )
                     finished_timing = SERVICE.finish_operation_timing(timing, "success")

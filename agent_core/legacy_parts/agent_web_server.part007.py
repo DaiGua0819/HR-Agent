@@ -809,6 +809,92 @@
             "lastMy": safe_text(str(last_my.get("text") or ""), 120) if isinstance(last_my, dict) else "",
         }
 
+    def direct_resume_status_from_result(self, resume_result: dict | None) -> str:
+        resume_result = resume_result if isinstance(resume_result, dict) else {}
+        request_result = resume_result.get("request") if isinstance(resume_result.get("request"), dict) else {}
+        nested_resume = resume_result.get("resume") if isinstance(resume_result.get("resume"), dict) else {}
+        download_result = resume_result.get("download") if isinstance(resume_result.get("download"), dict) else {}
+        resume_skipped = bool(
+            (resume_result.get("skipped") and resume_result.get("skipReason") in {"already_requested", "resume_attachment_received"})
+            or (request_result.get("skipped") and request_result.get("skipReason") in {"already_requested", "resume_attachment_received"})
+            or (nested_resume.get("skipped") and nested_resume.get("skipReason") in {"already_requested", "resume_attachment_received"})
+        )
+        resume_downloaded = bool(
+            resume_result.get("downloaded")
+            or nested_resume.get("downloaded")
+            or download_result.get("downloaded")
+        )
+        if resume_downloaded:
+            return "direct_resume_downloaded"
+        if resume_skipped:
+            return "direct_resume_already_requested"
+        if resume_result.get("blocked"):
+            return "direct_resume_blocked"
+        return "direct_resume_requested"
+
+    def handle_direct_resume_operations_candidate(
+        self,
+        terminal: BrowserTerminal,
+        context: dict,
+        candidate_label: str,
+        conversation_key: str,
+        candidate_state_key: str = "",
+        platform: str = "boss",
+        request_resume=None,
+    ) -> dict:
+        position_reply = context.get("positionReply") if isinstance(context.get("positionReply"), dict) else {}
+        resume_job_type = direct_resume_operations_job_type(context, position_reply) or "运营"
+        screening = {
+            "status": "accept",
+            "reason": "direct_resume_operations_position",
+            "jobType": resume_job_type,
+            "directResume": True,
+        }
+        if callable(request_resume):
+            resume_result = request_resume()
+        else:
+            resume_result = self.request_resume_from_recruiter_conversation(
+                terminal,
+                confirmed=False,
+                open_unreplied=False,
+                target_candidate="",
+            )
+        status = self.direct_resume_status_from_result(resume_result)
+        state_payload = {
+            "platform": platform,
+            "screening": screening,
+            "directResume": True,
+            "resumeJobType": resume_job_type,
+            "lastScreening": "direct_resume_operations_position",
+        }
+        if conversation_key:
+            self.set_chat_state(conversation_key, status, candidateLabel=safe_text(candidate_label, 160), **state_payload)
+        if candidate_state_key:
+            self.set_chat_state(candidate_state_key, status, candidateLabel=safe_text(candidate_label, 160), **state_payload)
+        self.set_recruiter_basic_state(
+            conversation_key,
+            candidate_label,
+            status,
+            context=context,
+            **state_payload,
+        )
+        message = (
+            f"{platform} 运营岗位已按直求简历流程处理：{safe_text(candidate_label, 80)}；"
+            f"简历岗位={resume_job_type}；结果={safe_text(str((resume_result or {}).get('message') or ''), 180)}"
+        )
+        candidate = context.get("applicant") if isinstance(context.get("applicant"), dict) else {}
+        if platform == "boss":
+            candidate = read_recruiter_selected_candidate(terminal) or candidate
+        return {
+            "message": message,
+            "candidate": candidate,
+            "screening": screening,
+            "resume": resume_result if isinstance(resume_result, dict) else {},
+            "blocked": bool(isinstance(resume_result, dict) and resume_result.get("blocked")),
+            "directResume": True,
+            "resumeJobType": resume_job_type,
+        }
+
     def handle_basic_acceptance_and_request_resume(
         self,
         terminal: BrowserTerminal,
@@ -1289,6 +1375,20 @@
         conversation_key = str(context.get("conversationKey") or "")
         candidate_state_key = recruiter_basic_candidate_state_key(candidate_label)
         previous_state = self.get_chat_state(conversation_key) or self.get_chat_state(candidate_state_key)
+        if is_direct_resume_operations_position(context, position_reply):
+            result = self.handle_direct_resume_operations_candidate(
+                terminal,
+                context,
+                candidate_label,
+                conversation_key,
+                candidate_state_key,
+                platform="boss",
+            )
+            return {
+                **result,
+                "candidate": result.get("candidate") or candidate,
+                "opened": opened,
+            }
         if should_use_position_screening_flow(context, position_reply):
             result = self.screen_recruiter_position_rules(
                 terminal,

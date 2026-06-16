@@ -56,6 +56,29 @@
                 "skippedIdentityMismatch": True,
             }
         job51_ai_basic_allowed = is_explicit_ai_app_basic_conditions_position(context)
+        if is_direct_resume_operations_position(context, position_reply):
+            return self.handle_direct_resume_operations_candidate(
+                terminal,
+                context,
+                candidate_label,
+                conversation_key,
+                candidate_state_key,
+                platform="51job",
+                request_resume=lambda: self.job51_download_attachment_or_request_resume(
+                    terminal,
+                    accepted_by_flow={
+                        "accepted": True,
+                        "source": "direct_resume_operations_position",
+                        "reason": "direct_resume_operations_position",
+                        "screening": {
+                            "status": "accept",
+                            "reason": "direct_resume_operations_position",
+                            "jobType": direct_resume_operations_job_type(context, position_reply),
+                            "directResume": True,
+                        },
+                    },
+                ),
+            )
         if should_use_position_screening_flow(context, position_reply) or (
             not job51_ai_basic_allowed and normalize_position_screening_questions(position_screening)
         ):
@@ -755,6 +778,201 @@
                 "filteredOut": len(filtered),
                 "scanTraceCount": len(scan_trace),
             },
+            "scanTrace": scan_trace[-80:],
+            "batchReportId": batch_report.get("runId"),
+        }
+
+    @timed_agent_stage("job51_collect_operation_resumes", "51job 补采运营岗位简历")
+    def job51_collect_operation_resume_contacts(
+        self,
+        terminal: BrowserTerminal,
+        max_total: int = 80,
+    ) -> dict:
+        target_limit = max(1, min(200, int(max_total or 80)))
+        self.measure_current_timing_stage("job51_open_chat_page", "51job 打开聊天页", lambda: self.job51_open_chat_page(terminal))
+        all_messages_filter = self.measure_current_timing_stage(
+            "job51_prepare_all_messages_filter",
+            "51job 取消未读筛选",
+            lambda: self.job51_prepare_all_messages_filter(terminal),
+        )
+        all_position_filter = self.measure_current_timing_stage(
+            "job51_select_all_positions",
+            "51job 切换全部岗位",
+            lambda: self.job51_select_all_positions(terminal),
+        )
+        self.measure_current_timing_stage(
+            "job51_scroll_conversation_list_to_top",
+            "51job 联系人列表回到顶部",
+            lambda: self.job51_scroll_conversation_list_to_top(terminal),
+        )
+
+        allowed_positions = direct_resume_operations_target_positions()
+        results: list[dict] = []
+        filtered: list[dict] = []
+        counts: dict[str, int] = {}
+        scan_trace: list[dict] = []
+        excluded: list[str] = []
+        no_target = 0
+        max_scan_attempts = max(40, min(220, target_limit * 5))
+
+        while len(results) < target_limit and no_target < max_scan_attempts:
+            self.check_pause()
+            target = self.measure_current_timing_stage(
+                "job51_find_operation_thread",
+                "51job 查找运营岗位联系人",
+                lambda: self.job51_find_next_thread(
+                    terminal,
+                    exclude_labels=excluded,
+                    allowed_positions=allowed_positions,
+                    include_read_sent=True,
+                ),
+            )
+            if not target:
+                before_summary = self.job51_visible_thread_summary(
+                    terminal,
+                    exclude_labels=excluded,
+                    allowed_positions=allowed_positions,
+                    include_read_sent=True,
+                )
+                scrolled = self.measure_current_timing_stage(
+                    "job51_scroll_conversation_list",
+                    "51job 滚动联系人列表",
+                    lambda: self.job51_scroll_conversation_list(terminal),
+                )
+                after_summary = self.job51_visible_thread_summary(
+                    terminal,
+                    exclude_labels=excluded,
+                    allowed_positions=allowed_positions,
+                    include_read_sent=True,
+                )
+                no_target += 1
+                scan_trace.append({
+                    "step": len(scan_trace) + 1,
+                    "event": "no_target_scroll",
+                    "processed": len(results),
+                    "filtered": len(filtered),
+                    "scrolled": bool(scrolled.get("scrolled")),
+                    "reason": safe_text(str(scrolled.get("reason") or ""), 80),
+                    "atEnd": bool(scrolled.get("atEnd")),
+                    "beforeSummary": {
+                        "visibleRows": before_summary.get("visibleRows"),
+                        "actionableCount": before_summary.get("actionableCount"),
+                        "filteredPositionCount": before_summary.get("filteredPositionCount"),
+                        "readOrSentCount": before_summary.get("readOrSentCount"),
+                        "labels": before_summary.get("labels", [])[:5],
+                    },
+                    "afterSummary": {
+                        "visibleRows": after_summary.get("visibleRows"),
+                        "actionableCount": after_summary.get("actionableCount"),
+                        "filteredPositionCount": after_summary.get("filteredPositionCount"),
+                        "readOrSentCount": after_summary.get("readOrSentCount"),
+                        "labels": after_summary.get("labels", [])[:5],
+                    },
+                })
+                if scrolled.get("scrolled") and no_target < max_scan_attempts:
+                    terminal.current_page().wait_for_timeout(random.randint(560, 980))
+                    continue
+                break
+
+            label = str(target.get("label") or "")
+            label_key = compact_conversation_label(label)
+            if label_key:
+                excluded.append(label_key)
+            target_candidate_name = recruiter_candidate_name_from_label(label)
+            if target_candidate_name:
+                excluded.append(target_candidate_name)
+            locator = target.get("locator")
+            if locator is None:
+                counts["open_candidate_failed"] = counts.get("open_candidate_failed", 0) + 1
+                filtered.append({"label": safe_text(label, 140), "reason": "missing_locator"})
+                continue
+
+            open_result = self.job51_open_candidate_with_retries(terminal, target, max_attempts=3)
+            if not open_result.get("opened"):
+                counts["open_candidate_failed"] = counts.get("open_candidate_failed", 0) + 1
+                filtered.append({
+                    "label": safe_text(label, 140),
+                    "reason": "open_candidate_failed",
+                    "message": safe_text(str(open_result.get("message") or ""), 220),
+                    "openResult": open_result,
+                })
+                continue
+            maybe_human_reading_pause(terminal, reason="job51_operation_resume_candidate_open", text_hint=label)
+
+            context_before = self.measure_current_timing_stage(
+                "job51_read_chat_context",
+                "51job 读取聊天上下文",
+                lambda: self.job51_read_chat_context(terminal, opened=target),
+            )
+            position_reply = context_before.get("positionReply") if isinstance(context_before.get("positionReply"), dict) else {}
+            position_text = " ".join([
+                str(context_before.get("appliedPosition") or ""),
+                str((context_before.get("applicant") or {}).get("appliedPosition") if isinstance(context_before.get("applicant"), dict) else ""),
+                str(label or ""),
+                str(target.get("job") or ""),
+            ])
+            if not is_direct_resume_operations_position(context_before, position_reply) and not direct_resume_operations_position_matches(position_text):
+                filtered.append({
+                    "label": safe_text(label, 140),
+                    "reason": "operation_position_mismatch_after_open",
+                    "appliedPosition": safe_text(str(context_before.get("appliedPosition") or target.get("job") or ""), 80),
+                })
+                continue
+
+            result = self.measure_current_timing_stage(
+                "job51_process_operation_resume_candidate",
+                "51job 直求运营岗位简历",
+                lambda: self.job51_process_current_position(terminal, opened=target),
+            )
+            action = classify_recruiter_screen_result_action(result)
+            counts[action] = counts.get(action, 0) + 1
+            screening = result.get("screening") if isinstance(result.get("screening"), dict) else {}
+            resume = result.get("resume") if isinstance(result.get("resume"), dict) else {}
+            applicant = context_before.get("applicant") if isinstance(context_before.get("applicant"), dict) else {}
+            results.append({
+                "index": len(results) + 1,
+                "label": safe_text(str(applicant.get("label") or label), 140),
+                "candidateName": safe_text(str(applicant.get("name") or recruiter_candidate_name_from_label(label)), 80),
+                "appliedPosition": safe_text(str(context_before.get("appliedPosition") or target.get("job") or ""), 80),
+                "resumeJobType": direct_resume_operations_job_type(context_before, position_reply),
+                "conversationKey": safe_text(str(context_before.get("conversationKey") or ""), 120),
+                "action": action,
+                "screeningStatus": safe_text(str(screening.get("status") or ""), 40),
+                "message": safe_text(str(result.get("message") or ""), 260),
+                "resume": compact_recruiter_resume_result(resume),
+            })
+            maybe_human_batch_pause(terminal, len(results))
+
+        message = f"51job 运营岗位简历补采完成：处理 {len(results)} 人，跳过非目标/不可处理 {len(filtered)} 人。"
+        if counts:
+            message += " 动作统计：" + "；".join(f"{key} {value}" for key, value in sorted(counts.items()))
+        if len(results) >= target_limit:
+            message += f" 已达到本次上限 {target_limit} 人。"
+        self.add_event("chat", message)
+        state = {
+            "platform": "51job",
+            "processedPeople": len(results),
+            "filteredOut": len(filtered),
+            "counts": counts,
+            "targetPositions": list(allowed_positions),
+            "allMessagesFilter": all_messages_filter,
+            "allPositionFilter": all_position_filter,
+            "scanTraceCount": len(scan_trace),
+        }
+        batch_report = append_recruiter_batch_report({
+            "type": "job51_collect_operation_resume_contacts",
+            "message": safe_text(message, 800),
+            "state": state,
+            "results": results,
+            "filteredOut": filtered[:160],
+            "scanTrace": scan_trace[-160:],
+        })
+        return {
+            "message": message,
+            "results": results,
+            "counts": counts,
+            "filteredOut": filtered[:60],
+            "state": state,
             "scanTrace": scan_trace[-80:],
             "batchReportId": batch_report.get("runId"),
         }

@@ -11,6 +11,8 @@ const RESUME_LIBRARY_JOB_TYPES = [
   "国际业务管培生",
   "销售工程师（石油钻井泥浆膨润土）_湖州",
   "电气工程师",
+  "运营A",
+  "运营B",
 ];
 
 const RESUME_JOB_DISPLAY_LABELS = {
@@ -18,6 +20,8 @@ const RESUME_JOB_DISPLAY_LABELS = {
   "应用技术经理（工业涂料领域）": "应用技术",
   "人力资源管培生": "人资管培",
   "销售工程师（石油钻井泥浆膨润土）_湖州": "石油销售",
+  "运营A": "运营A",
+  "运营B": "运营B",
 };
 
 const LEGACY_JOB_TYPES = [

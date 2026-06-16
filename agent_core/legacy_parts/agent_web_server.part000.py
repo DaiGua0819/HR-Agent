@@ -265,6 +265,10 @@ RECRUITER_STAGE_BY_STATUS = {
     "position_screening_rejected": "\u4e0d\u5408\u9002\u8df3\u8fc7",
     "position_screening_unclear": "\u5f85\u89c2\u5bdf",
     "position_screening_send_blocked": "\u53d1\u9001\u5931\u8d25\u5f85\u91cd\u8bd5",
+    "direct_resume_requested": "\u5df2\u6c42\u7b80\u5386",
+    "direct_resume_already_requested": "\u5df2\u6c42\u7b80\u5386",
+    "direct_resume_downloaded": "\u5df2\u4e0b\u8f7d\u7b80\u5386",
+    "direct_resume_blocked": "\u53d1\u9001\u5931\u8d25\u5f85\u91cd\u8bd5",
     "zhilian_resume_downloaded": "\u5df2\u4e0b\u8f7d\u7b80\u5386",
     "job51_resume_downloaded": "\u5df2\u4e0b\u8f7d\u7b80\u5386",
 }
@@ -289,6 +293,10 @@ RECRUITER_NEXT_ACTION_BY_STATUS = {
     "position_screening_rejected": "done_skip_unsuitable",
     "position_screening_unclear": "wait_or_manual_review",
     "position_screening_send_blocked": "retry_send_screening_question",
+    "direct_resume_requested": "done_resume_requested",
+    "direct_resume_already_requested": "done_resume_already_requested",
+    "direct_resume_downloaded": "done_resume_downloaded",
+    "direct_resume_blocked": "retry_request_resume",
     "zhilian_resume_downloaded": "done_resume_downloaded",
     "job51_resume_downloaded": "done_resume_downloaded",
     "proactive_greeted": "wait_candidate_reply",
@@ -406,6 +414,8 @@ JOB51_CONFIGURED_POSITIONS = (
     "HRBP",
     "人力资源",
     "人力资源管培生",
+    "企业内容运营负责人（B2B/短视频方向）",
+    "B端社交媒体运营",
 )
 ZHILIAN_CONFIGURED_POSITIONS = (
     "电气工程师",
@@ -420,6 +430,8 @@ ZHILIAN_CONFIGURED_POSITIONS = (
     "外贸销售经理（流变助剂）",
     "石油销售",
     "销售工程师（石油钻井泥浆膨润土）",
+    "企业内容运营负责人（B2B/短视频方向）",
+    "B端社交媒体运营",
 )
 
 
@@ -463,6 +475,8 @@ def recruiter_next_action_for_status(status: str) -> str:
         return "retry_request_resume"
     if "resume" in status and "requested" in status:
         return "done_resume_requested"
+    if "resume" in status and "downloaded" in status:
+        return "done_resume_downloaded"
     if "rejected" in status:
         return "done_skip_unsuitable"
     if "waiting" in status:
@@ -520,6 +534,115 @@ def is_explicit_ai_app_basic_conditions_position(context: dict | None) -> bool:
     return False
 
 
+def normalize_direct_resume_operations_job_type(value: str) -> str:
+    compact = re.sub(r"\s+", "", str(value or "")).lower()
+    if not compact:
+        return ""
+    if compact in {"运营a", "operationa", "operationsa"}:
+        return "运营A"
+    if compact in {"运营b", "operationb", "operationsb"}:
+        return "运营B"
+    if "企业内容运营负责人" in compact or ("b2b" in compact and "短视频" in compact) or ("内容运营负责人" in compact and "短视频" in compact):
+        return "运营A"
+    if "b端社交媒体运营" in compact or "社交媒体运营" in compact:
+        return "运营B"
+    return ""
+
+
+def direct_resume_operations_job_type(context: dict | None, position_reply: dict | None = None) -> str:
+    context = context if isinstance(context, dict) else {}
+    position_reply = position_reply if isinstance(position_reply, dict) else {}
+    knowledge_base = context.get("companyKnowledgeBase") if isinstance(context.get("companyKnowledgeBase"), dict) else {}
+    applicant = context.get("applicant") if isinstance(context.get("applicant"), dict) else {}
+    for source in (position_reply, knowledge_base):
+        if not isinstance(source, dict):
+            continue
+        direct_flag = (
+            source.get("directResume") is True
+            or source.get("directRequestResume") is True
+            or source.get("direct_resume") is True
+        )
+        if not direct_flag:
+            continue
+        configured = (
+            source.get("resumeJobType")
+            or source.get("normalizedJobType")
+            or source.get("jobType")
+            or source.get("matched")
+            or source.get("title")
+            or source.get("category")
+        )
+        normalized = normalize_direct_resume_operations_job_type(str(configured or ""))
+        if normalized:
+            return normalized
+    texts = [
+        context.get("appliedPosition"),
+        applicant.get("appliedPosition"),
+        knowledge_base.get("title"),
+        knowledge_base.get("appliedPosition"),
+        position_reply.get("category"),
+        position_reply.get("matched"),
+        position_reply.get("resumeJobType"),
+    ]
+    for raw in texts:
+        normalized = normalize_direct_resume_operations_job_type(str(raw or ""))
+        if normalized:
+            return normalized
+    return ""
+
+
+def is_direct_resume_operations_position(context: dict | None, position_reply: dict | None = None) -> bool:
+    return bool(direct_resume_operations_job_type(context, position_reply))
+
+
+DIRECT_RESUME_OPERATION_TARGET_POSITIONS = (
+    "\u8fd0\u8425A",
+    "\u8fd0\u8425B",
+    "\u4f01\u4e1a\u5185\u5bb9\u8fd0\u8425\u8d1f\u8d23\u4eba\uff08B2B/\u77ed\u89c6\u9891\u65b9\u5411\uff09",
+    "\u4f01\u4e1a\u5185\u5bb9\u8fd0\u8425\u8d1f\u8d23\u4eba",
+    "B\u7aef\u793e\u4ea4\u5a92\u4f53\u8fd0\u8425",
+    "\u5185\u5bb9\u8fd0\u8425\u8d1f\u8d23\u4eba",
+    "\u793e\u4ea4\u5a92\u4f53\u8fd0\u8425",
+)
+
+
+def direct_resume_operations_target_positions(extra: list[str] | tuple[str, ...] | None = None) -> tuple[str, ...]:
+    values = list(DIRECT_RESUME_OPERATION_TARGET_POSITIONS)
+    if extra:
+        values.extend(str(item or "") for item in extra)
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        clean = clean_applied_position(str(item or ""))
+        if not clean:
+            continue
+        key = re.sub(r"\s+", "", clean).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(clean)
+    return tuple(cleaned)
+
+
+def direct_resume_operations_position_matches(value: str, targets: list[str] | tuple[str, ...] | None = None) -> bool:
+    clean = clean_applied_position(str(value or ""))
+    if not clean:
+        return False
+    if direct_resume_operations_job_type({"appliedPosition": clean}):
+        return True
+    compact = re.sub(r"\s+", "", clean).lower()
+    for target in direct_resume_operations_target_positions(targets):
+        target_clean = clean_applied_position(target)
+        target_compact = re.sub(r"\s+", "", target_clean).lower()
+        if not target_compact:
+            continue
+        if target_compact in compact or compact in target_compact:
+            return True
+        if recommend_position_matches(clean, target_clean):
+            return True
+    return False
+
+
 def recruiter_workflow_for_context(context: dict | None, status: str = "", payload: dict | None = None) -> str:
     context = context if isinstance(context, dict) else {}
     payload = payload if isinstance(payload, dict) else {}
@@ -528,6 +651,8 @@ def recruiter_workflow_for_context(context: dict | None, status: str = "", paylo
     position_reply = context.get("positionReply") if isinstance(context.get("positionReply"), dict) else {}
     knowledge_base = context.get("companyKnowledgeBase") if isinstance(context.get("companyKnowledgeBase"), dict) else {}
     screening = knowledge_base.get("screening") if isinstance(knowledge_base.get("screening"), dict) else {}
+    if is_direct_resume_operations_position(context, position_reply):
+        return "direct_resume_request"
     if str(position_reply.get("initialCommonPhrase") or "").strip() and is_ai_app_basic_conditions_position(context, position_reply):
         return "basic_conditions_screening"
     if normalize_position_screening_questions(screening):

@@ -6,11 +6,38 @@
         except Exception as error:
             return {"found": False, "reason": safe_text(str(error), 160)}
 
+    def job51_prepare_all_messages_filter(self, terminal: BrowserTerminal) -> dict:
+        page = terminal.current_page()
+        self.job51_dismiss_interruptions(terminal, reason="before_all_messages_filter")
+        unread = page.locator("label.el-checkbox.btn.unread-checkbox").first
+        try:
+            if not unread.count():
+                return {"found": False, "reason": "unread_checkbox_not_found"}
+            state = unread.evaluate("""el => ({
+              checked: el.classList.contains('is-checked') || !!el.querySelector('input:checked'),
+              text: String(el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim()
+            })""")
+            if not isinstance(state, dict):
+                state = {}
+            if state.get("checked"):
+                if terminal.humanize:
+                    terminal.pause_like_person("pre_action")
+                    highlight_target(unread)
+                humanized_locator_click(terminal, unread, force=True)
+                if terminal.humanize:
+                    terminal.pause_like_person("post_action")
+                page.wait_for_timeout(random.randint(900, 1300))
+                return {"found": True, "clicked": True, "state": state}
+            return {"found": True, "clicked": False, "state": state}
+        except Exception as error:
+            return {"found": False, "reason": safe_text(str(error), 160)}
+
     def job51_find_next_thread(
         self,
         terminal: BrowserTerminal,
         exclude_labels: list[str] | None = None,
         allowed_positions: tuple[str, ...] | list[str] = JOB51_CONFIGURED_POSITIONS,
+        include_read_sent: bool = False,
     ) -> dict | None:
         exclude_labels = exclude_labels or []
         excluded_keys = [compact_conversation_label(item) for item in exclude_labels if compact_conversation_label(item)]
@@ -45,7 +72,7 @@
                 continue
             if "平台推荐" in label or "为你推荐的人才" in label:
                 continue
-            if re.search(r"\[(送达|已读)\]", label):
+            if not include_read_sent and re.search(r"\[(送达|已读)\]", label):
                 continue
             job = safe_text(safe_eval(page, f"""() => {{
               const row = document.querySelectorAll('#conversation-list .list-item')[{index}];
@@ -95,6 +122,7 @@
         terminal: BrowserTerminal,
         exclude_labels: list[str] | None = None,
         allowed_positions: tuple[str, ...] | list[str] = JOB51_CONFIGURED_POSITIONS,
+        include_read_sent: bool = False,
     ) -> dict:
         exclude_labels = exclude_labels or []
         excluded_keys = [compact_conversation_label(item) for item in exclude_labels if compact_conversation_label(item)]
@@ -151,7 +179,8 @@
                 continue
             if re.search(r"\[(送达|已读)\]", label):
                 summary["readOrSentCount"] += 1
-                continue
+                if not include_read_sent:
+                    continue
             label_key = compact_conversation_label(label)
             label_name = recruiter_candidate_name_from_label(label)
             label_prefix = label_key[:32]

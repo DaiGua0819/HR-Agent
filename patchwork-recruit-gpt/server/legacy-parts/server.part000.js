@@ -1664,6 +1664,12 @@ function normalizeJobTypeBySignal(text = "") {
   if (/AI应用开发实习生|AI实习生|AI应用开发工程师|AI开发工程师|人工智能实习|智能体实习|Agent实习|智能体开发工程师/i.test(text)) {
     return AI_SCORING_JOB_TYPE;
   }
+  if (/运营A|企业内容运营负责人|B2B.*短视频|短视频方向|内容运营负责人/i.test(text)) {
+    return "运营A";
+  }
+  if (/运营B|B端社交媒体运营|社交媒体运营|B端.*运营/i.test(text)) {
+    return "运营B";
+  }
   if (/应用技术经理|应用技术管培|应用技术|技术服务|技术支持|工业涂料|涂料领域|涂料应用|涂料研发|材料应用|流变助剂/i.test(text)) {
     return "应用技术经理（工业涂料领域）";
   }
@@ -1736,7 +1742,22 @@ function isAiScoringJobType(jobType, context = "") {
   return normalizeJobType(jobType || DEFAULT_JOB_TYPE, context) === AI_SCORING_JOB_TYPE;
 }
 
+const NO_SCORE_DIRECT_IMPORT_JOB_TYPES = new Set(["运营A", "运营B"]);
+
+function isNoScoreDirectImportJobType(jobType, context = "") {
+  return NO_SCORE_DIRECT_IMPORT_JOB_TYPES.has(normalizeJobType(jobType || "", context));
+}
+
 function getBaseScoringMeta(jobType = DEFAULT_JOB_TYPE) {
+  if (isNoScoreDirectImportJobType(jobType)) {
+    return {
+      version: "direct-import-no-score",
+      name: "免评分直接入库",
+      description: "该岗位配置为直接获取简历，入库后不做自动评分。",
+      ruleScope: "直接入库 / 不评分",
+    };
+  }
+
   if (isAiScoringJobType(jobType)) {
     return {
       version: AI_V4_SCORING_VERSION,

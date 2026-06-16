@@ -804,6 +804,28 @@ function applyAiV4Scoring(record = {}) {
 
 function applyPositionRuleScoring(record = {}) {
   const normalizedJobType = normalizeJobType(record.jobType || "", `${record.fileName || ""} ${record.name || ""}`);
+  if (isNoScoreDirectImportJobType(normalizedJobType)) {
+    const existingBreakdown = record.scoreBreakdown && typeof record.scoreBreakdown === "object" ? record.scoreBreakdown : {};
+    return {
+      ...record,
+      jobType: normalizedJobType,
+      matchScore: "",
+      jdMatch: null,
+      scoreBreakdown: {
+        ...existingBreakdown,
+        projectScore: "",
+        techScore: "",
+        summary: "该岗位配置为免评分直接入库。",
+        strengths: normalizeStringArray(existingBreakdown.strengths).slice(0, 8),
+        risks: normalizeStringArray(existingBreakdown.risks).slice(0, 8),
+        evidence: uniqueLimitedStrings([
+          ...normalizeStringArray(existingBreakdown.evidence),
+          "direct-import-no-score",
+        ], 8),
+      },
+      scoringVersion: getCurrentScoringVersion(normalizedJobType),
+    };
+  }
   if (isAiScoringJobType(normalizedJobType)) {
     return applyAiV4Scoring({ ...record, jobType: normalizedJobType });
   }
@@ -2550,6 +2572,9 @@ function automation24hStatusProgressTargets(platform = "boss", accountId = "all"
     )
     .map((target) => ({
       ...target,
+      cycle: Number(status.cycle || 0),
+      runId: String(status.runId || ""),
+      progressSource: "status",
       progressKey: `${status.runId || "status"}|${status.cycle || 0}|${target.id || target.sourceKey || target.platform}`,
     }));
 }
@@ -2669,6 +2694,9 @@ function automation24hLogProgressTargets(platform = "boss", accountId = "all", d
         label: entry.targetLabel || entry.platformLabel || entry.platform,
         updatedAt: entry.timestamp || "",
         timestamp: entry.timestamp || "",
+        cycle: Number(entry.cycle || 0),
+        runId: String(entry.runId || ""),
+        progressSource: "log",
         progressKey,
       };
       if (!automation24hTargetMatchesRequest(target, platform, accountId)) continue;
@@ -2747,12 +2775,36 @@ function automation24hLogProgressTargets(platform = "boss", accountId = "all", d
   return [...byTargetRun.values()];
 }
 
+function automation24hProgressLogicalKey(target = {}) {
+  return [
+    Number(target.cycle || 0),
+    normalizeAutomationPlatformId(target.platform || ""),
+    normalizeBossAutomationAccountId(target.accountId || ""),
+    String(target.sourceKey || ""),
+    String(target.id || ""),
+  ].join("|");
+}
+
+function automation24hProgressCountsMatch(left = {}, right = {}) {
+  return (
+    automationMetricCount(left.processed) === automationMetricCount(right.processed) &&
+    automationMetricCount(left.requestedResume) === automationMetricCount(right.requestedResume) &&
+    automationMetricCount(left.downloadedResume) === automationMetricCount(right.downloadedResume)
+  );
+}
+
 function automation24hProgressTargets(platform = "boss", accountId = "all", date = "") {
   const byKey = new Map();
-  for (const target of [
-    ...automation24hLogProgressTargets(platform, accountId, date),
-    ...automation24hStatusProgressTargets(platform, accountId, date),
-  ]) {
+  const logTargets = automation24hLogProgressTargets(platform, accountId, date);
+  const statusTargets = automation24hStatusProgressTargets(platform, accountId, date).filter((statusTarget) => {
+    const logicalKey = automation24hProgressLogicalKey(statusTarget);
+    return !logTargets.some(
+      (logTarget) =>
+        automation24hProgressLogicalKey(logTarget) === logicalKey &&
+        automation24hProgressCountsMatch(logTarget, statusTarget)
+    );
+  });
+  for (const target of [...logTargets, ...statusTargets]) {
     const key = target.progressKey || `${target.id || target.sourceKey || target.platform}:${target.accountId || ""}`;
     const current = byKey.get(key);
     if (!current || automationMetricCount(target.processed) >= automationMetricCount(current.processed)) {
@@ -2810,6 +2862,12 @@ function applyAutomation24hProgressFallback(payload = {}, { platform = "boss", a
   if (!recovered) return payload;
   let changed = false;
   const currentMetrics = Array.isArray(payload.metrics) ? payload.metrics : [];
+  const hasCurrentMetrics = currentMetrics.some((metric) =>
+    ["processed", "sentCompanyInfo", "requestedResume", "userQuestions", "savedResumes", "knowledgeAnswered"].includes(
+      String(metric?.key || "")
+    ) && automationMetricCount(metric?.value)
+  );
+  if (hasCurrentMetrics) return payload;
   const recoveredByKey = new Map(recovered.metrics.map((metric) => [metric.key, metric]));
   const metricKeys = new Set([...currentMetrics.map((metric) => metric.key), ...recoveredByKey.keys()]);
   const metrics = [...metricKeys].map((key) => {

@@ -123,6 +123,12 @@ def select_company_knowledge_base(rules: dict, applied_position: str = "") -> di
         "company": company,
         "screening": selected_section.get("screening") if isinstance(selected_section.get("screening"), dict) else {},
         "scoring": selected_section.get("scoring") if isinstance(selected_section.get("scoring"), dict) else {},
+        "directResume": bool(
+            selected_section.get("directResume") is True
+            or selected_section.get("directRequestResume") is True
+            or selected_section.get("direct_resume") is True
+        ),
+        "resumeJobType": safe_text(str(selected_section.get("resumeJobType") or selected_section.get("normalizedJobType") or ""), 40),
         "topics": topics,
         "faq": faq[:80],
     }
@@ -528,6 +534,8 @@ def select_position_reply(applied_position: str, rules: dict) -> dict:
                 talking_points = value.get("talkingPoints") if isinstance(value.get("talkingPoints"), list) else []
                 screening_questions = value.get("screeningQuestions") if isinstance(value.get("screeningQuestions"), list) else []
                 next_steps = value.get("nextSteps") if isinstance(value.get("nextSteps"), list) else []
+                direct_resume = bool(value.get("directResume") is True or value.get("directRequestResume") is True or value.get("direct_resume") is True)
+                resume_job_type = str(value.get("resumeJobType") or value.get("normalizedJobType") or value.get("jobType") or "").strip()
             else:
                 template = str(value or "").strip()
                 category = key_text
@@ -536,6 +544,8 @@ def select_position_reply(applied_position: str, rules: dict) -> dict:
                 talking_points = []
                 screening_questions = []
                 next_steps = []
+                direct_resume = False
+                resume_job_type = ""
             if template:
                 return cache_position_reply_selection(cache_key, {
                     "category": category,
@@ -545,6 +555,8 @@ def select_position_reply(applied_position: str, rules: dict) -> dict:
                     "talkingPoints": [safe_text(str(item), 160) for item in talking_points[:8]],
                     "screeningQuestions": [safe_text(str(item), 160) for item in screening_questions[:8]],
                     "nextSteps": [safe_text(str(item), 160) for item in next_steps[:6]],
+                    "directResume": direct_resume,
+                    "resumeJobType": safe_text(resume_job_type, 40),
                     "source": "positionReplies",
                     "matched": key_text,
                 })
