@@ -1334,10 +1334,23 @@ const AUTOMATION_CONTACT_BRIDGE_GENERIC_NAMES = new Set([
   "\u672a\u8bfb",
 ]);
 
+function automationContactBridgePositionKey(record = {}, metadata = {}) {
+  const rawPosition = metadata.platformContact?.appliedPosition || record.appliedPosition || "";
+  const context = [
+    metadata.platformContact?.displayName,
+    metadata.platformContact?.label,
+    record.candidateName,
+    record.candidateLabel,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return resumeContactBackfillJobKey(rawPosition, context) || compactResumeContactMatchText(rawPosition);
+}
+
 function automationContactBridgeIdentityKey(record = {}, metadata = {}) {
   const sourceKey = String(metadata.sourceKey || record.sourceKey || "").trim();
   const name = compactResumeContactMatchText(metadata.platformContact?.displayName || record.candidateName || "");
-  const position = compactResumeContactMatchText(metadata.platformContact?.appliedPosition || record.appliedPosition || "");
+  const position = automationContactBridgePositionKey(record, metadata);
   if (sourceKey && name && position && name.length >= 2 && !AUTOMATION_CONTACT_BRIDGE_GENERIC_NAMES.has(name) && !/^\d+$/.test(name)) {
     return `${sourceKey}|display|${name}|${position}`;
   }
