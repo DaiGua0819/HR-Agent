@@ -30,6 +30,7 @@ def select_company_knowledge_base(rules: dict, applied_position: str = "") -> di
     default_title = safe_text(str(kb.get("defaultTitle") or ""), 60)
     selected_title = ""
     selected_section: dict = {}
+    selected_score = -1
 
     for title, section in sections.items():
         if not isinstance(section, dict):
@@ -38,22 +39,33 @@ def select_company_knowledge_base(rules: dict, applied_position: str = "") -> di
         aliases = section.get("aliases") if isinstance(section.get("aliases"), list) else []
         positions = section.get("matchPositions") if isinstance(section.get("matchPositions"), list) else []
         match_values.extend(str(item or "") for item in aliases + positions)
-        matched = False
+        section_score = -1
         for value in match_values:
             value_clean = clean_applied_position(value)
             if value_clean and applied_position_clean and (
                 value_clean in applied_position_clean or applied_position_clean in value_clean
             ):
-                matched = True
-                break
-        if matched:
+                match_score = len(value_clean)
+                if value_clean == applied_position_clean:
+                    match_score += 10000
+                elif value_clean in applied_position_clean:
+                    match_score += 1000
+                section_score = max(section_score, match_score)
+        if section_score > selected_score:
+            selected_score = section_score
             selected_title = safe_text(str(title or ""), 60)
             selected_section = section
-            break
     if not selected_section:
         with BOSS_CHAT_RULES_CACHE_LOCK:
             COMPANY_KNOWLEDGE_SELECTION_CACHE[cache_key] = {}
         return {}
+
+    base_section: dict = {}
+    base_title = safe_text(str(selected_section.get("extendsSection") or selected_section.get("inheritsSection") or ""), 60)
+    if base_title and base_title != selected_title:
+        candidate_base = sections.get(base_title) if isinstance(sections.get(base_title), dict) else {}
+        if isinstance(candidate_base, dict):
+            base_section = candidate_base
 
     def merge_topics(*sources: dict) -> dict:
         merged: dict[str, list] = {}
@@ -69,24 +81,28 @@ def select_company_knowledge_base(rules: dict, applied_position: str = "") -> di
                         bucket.append(value)
         return merged
 
-    inherit_root = not selected_section or selected_section.get("inheritsRoot", True)
+    inherit_root = selected_section.get("inheritsRoot", base_section.get("inheritsRoot", True))
     root_topics = kb.get("topics") if isinstance(kb.get("topics"), dict) else {}
     root_faq = kb.get("faq") if isinstance(kb.get("faq"), list) else []
     common_topics = common.get("topics") if isinstance(common.get("topics"), dict) else {}
     common_faq = common.get("faq") if isinstance(common.get("faq"), list) else []
+    base_topics = base_section.get("topics") if isinstance(base_section.get("topics"), dict) else {}
+    base_faq = base_section.get("faq") if isinstance(base_section.get("faq"), list) else []
     section_topics = selected_section.get("topics") if isinstance(selected_section.get("topics"), dict) else {}
     section_faq = selected_section.get("faq") if isinstance(selected_section.get("faq"), list) else []
-    topics = merge_topics(common_topics, root_topics if inherit_root else {}, section_topics)
+    topics = merge_topics(common_topics, root_topics if inherit_root else {}, base_topics, section_topics)
     faq = []
     if common_faq:
         faq.extend(common_faq)
     if inherit_root:
         faq.extend(root_faq)
+    faq.extend(base_faq)
     faq.extend(section_faq)
     answer_policy = []
     for source in (
         common.get("answerPolicy") if isinstance(common.get("answerPolicy"), list) else [],
         kb.get("answerPolicy") if isinstance(kb.get("answerPolicy"), list) else [],
+        base_section.get("answerPolicy") if isinstance(base_section.get("answerPolicy"), list) else [],
         selected_section.get("answerPolicy") if isinstance(selected_section.get("answerPolicy"), list) else [],
     ):
         for item in source:
@@ -97,6 +113,7 @@ def select_company_knowledge_base(rules: dict, applied_position: str = "") -> di
     for source in (
         common.get("silentQuestionPatterns") if isinstance(common.get("silentQuestionPatterns"), list) else [],
         kb.get("silentQuestionPatterns") if isinstance(kb.get("silentQuestionPatterns"), list) else [],
+        base_section.get("silentQuestionPatterns") if isinstance(base_section.get("silentQuestionPatterns"), list) else [],
         selected_section.get("silentQuestionPatterns") if isinstance(selected_section.get("silentQuestionPatterns"), list) else [],
     ):
         for item in source:
@@ -107,28 +124,36 @@ def select_company_knowledge_base(rules: dict, applied_position: str = "") -> di
     for source in (
         common.get("company") if isinstance(common.get("company"), dict) else {},
         kb.get("company") if isinstance(kb.get("company"), dict) else {},
+        base_section.get("company") if isinstance(base_section.get("company"), dict) else {},
         selected_section.get("company") if isinstance(selected_section.get("company"), dict) else {},
     ):
         company.update(source)
+    repeat_control = selected_section.get("repeatControl") if isinstance(selected_section.get("repeatControl"), dict) else base_section.get("repeatControl") if isinstance(base_section.get("repeatControl"), dict) else kb.get("repeatControl") if isinstance(kb.get("repeatControl"), dict) else {}
+    unknown_reply = selected_section.get("unknownReply") or base_section.get("unknownReply") or kb.get("unknownReply") or ""
+    screening = selected_section.get("screening") if isinstance(selected_section.get("screening"), dict) else base_section.get("screening") if isinstance(base_section.get("screening"), dict) else {}
+    scoring = selected_section.get("scoring") if isinstance(selected_section.get("scoring"), dict) else base_section.get("scoring") if isinstance(base_section.get("scoring"), dict) else {}
     result = {
         "enabled": True,
         "title": selected_title,
         "availableTitles": [safe_text(str(title), 60) for title in sections.keys()],
         "appliedPosition": safe_text(applied_position_clean, 80),
-        "description": safe_text(str(selected_section.get("description") or kb.get("description") or ""), 200),
+        "description": safe_text(str(selected_section.get("description") or base_section.get("description") or kb.get("description") or ""), 200),
         "answerPolicy": answer_policy[:16],
         "silentQuestionPatterns": silent_question_patterns[:120],
-        "repeatControl": selected_section.get("repeatControl") if isinstance(selected_section.get("repeatControl"), dict) else kb.get("repeatControl") if isinstance(kb.get("repeatControl"), dict) else {},
-        "unknownReply": safe_text(str(selected_section.get("unknownReply") or kb.get("unknownReply") or ""), 40),
+        "repeatControl": repeat_control,
+        "unknownReply": safe_text(str(unknown_reply), 40),
         "company": company,
-        "screening": selected_section.get("screening") if isinstance(selected_section.get("screening"), dict) else {},
-        "scoring": selected_section.get("scoring") if isinstance(selected_section.get("scoring"), dict) else {},
+        "screening": screening,
+        "scoring": scoring,
         "directResume": bool(
             selected_section.get("directResume") is True
             or selected_section.get("directRequestResume") is True
             or selected_section.get("direct_resume") is True
+            or base_section.get("directResume") is True
+            or base_section.get("directRequestResume") is True
+            or base_section.get("direct_resume") is True
         ),
-        "resumeJobType": safe_text(str(selected_section.get("resumeJobType") or selected_section.get("normalizedJobType") or ""), 40),
+        "resumeJobType": safe_text(str(selected_section.get("resumeJobType") or selected_section.get("normalizedJobType") or base_section.get("resumeJobType") or base_section.get("normalizedJobType") or ""), 40),
         "topics": topics,
         "faq": faq[:80],
     }

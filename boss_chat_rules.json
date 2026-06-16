@@ -734,9 +734,17 @@
           "mode": "ask_required_questions",
           "successAction": "request_resume",
           "rejectAction": "skip",
-          "passRule": "两个必问问题都明确接受，才可以继续求简历。",
+          "passRule": "所有必问问题都明确接受，才可以继续求简历。",
           "failRule": "任意一个必问问题明确不接受，就判定不合适并跳过。",
           "questions": [
+            {
+              "id": "changxing_single_rest",
+              "text": "你好，我们这边在湖州长兴这边，然后还是单休，可以接受吗",
+              "variants": [
+                "你好，我们这边在湖州长兴，还是单休，你可以接受吗"
+              ],
+              "required": true
+            },
             {
               "id": "training_location",
               "text": "你好，我们前期需要在湖州总部培训 1-3 个月，可以接受吗",
@@ -1102,8 +1110,8 @@
           "mode": "ask_required_questions",
           "successAction": "request_resume",
           "rejectAction": "skip",
-          "passRule": "两个必问问题都明确熟悉，才可以继续求简历。",
-          "failRule": "任意一个问题明确不会或不熟悉，就判定不合适并跳过。",
+          "passRule": "所有必问问题都明确接受，才可以继续求简历。",
+          "failRule": "任意一个必问问题明确不接受，就判定不合适并跳过。",
           "rejectIfCandidateMessageMatches": [
             {
               "id": "conductive_slurry_not_fit",
@@ -1114,6 +1122,14 @@
             }
           ],
           "questions": [
+            {
+              "id": "changxing_single_rest",
+              "text": "你好，我们这边在湖州长兴这边，然后还是单休，可以接受吗",
+              "variants": [
+                "你好，我们这边在湖州长兴，还是单休，你可以接受吗"
+              ],
+              "required": true
+            },
             {
               "id": "industrial_coating_formula",
               "text": "你好，你熟悉工业涂料配方吗",
@@ -1221,13 +1237,94 @@
           }
         ]
       },
+      "HRBP": {
+        "matchPositions": [
+          "HRBP",
+          "hrbp",
+          "人力资源业务伙伴"
+        ],
+        "extendsSection": "人力资源",
+        "description": "HRBP岗位筛选问题库。仅用于 HRBP 岗位，先确认湖州长兴和单休，再继续出差、一线学习等必问项。",
+        "screening": {
+          "mode": "ask_required_questions",
+          "successAction": "request_resume",
+          "rejectAction": "skip",
+          "passRule": "所有必问问题都明确接受，才可以继续求简历。",
+          "failRule": "任意一个必问问题明确不接受，就判定不合适并跳过。",
+          "questions": [
+            {
+              "id": "changxing_single_rest",
+              "text": "你好，我们这边在湖州长兴这边，然后还是单休，可以接受吗",
+              "variants": [
+                "你好，我们这边在湖州长兴，还是单休，你可以接受吗"
+              ],
+              "required": true
+            },
+            {
+              "id": "business_trip",
+              "text": "你好，这个岗位需要出差，可以接受吗",
+              "variants": [
+                "你好，你可以接受出差吗"
+              ],
+              "required": true
+            },
+            {
+              "id": "frontline_learning",
+              "text": "你好，这个岗位要深入一线了解产品，可以接受吗",
+              "variants": [
+                "你好，需要到一线学习产品和业务，你能接受吗"
+              ],
+              "required": true
+            }
+          ]
+        }
+      },
+      "人力资源管培生": {
+        "matchPositions": [
+          "人力资源管培生",
+          "人资管培",
+          "人力资源管理培训"
+        ],
+        "extendsSection": "人力资源",
+        "description": "人力资源管培生岗位筛选问题库。仅用于人力资源管培生，先确认湖州长兴和单休，再继续出差、一线学习等必问项。",
+        "screening": {
+          "mode": "ask_required_questions",
+          "successAction": "request_resume",
+          "rejectAction": "skip",
+          "passRule": "所有必问问题都明确接受，才可以继续求简历。",
+          "failRule": "任意一个必问问题明确不接受，就判定不合适并跳过。",
+          "questions": [
+            {
+              "id": "changxing_single_rest",
+              "text": "你好，我们这边在湖州长兴这边，然后还是单休，可以接受吗",
+              "variants": [
+                "你好，我们这边在湖州长兴，还是单休，你可以接受吗"
+              ],
+              "required": true
+            },
+            {
+              "id": "business_trip",
+              "text": "你好，这个岗位需要出差，可以接受吗",
+              "variants": [
+                "你好，你可以接受出差吗"
+              ],
+              "required": true
+            },
+            {
+              "id": "frontline_learning",
+              "text": "你好，这个岗位要深入一线了解产品，可以接受吗",
+              "variants": [
+                "你好，需要到一线学习产品和业务，你能接受吗"
+              ],
+              "required": true
+            }
+          ]
+        }
+      },
       "人力资源": {
         "matchPositions": [
           "人力资源",
-          "人力资源管培生",
           "HR",
-          "HRBP",
-          "hrbp",
           "招聘"
         ],
         "inheritsRoot": false,
@@ -1491,12 +1588,12 @@
               "出差一般哪里",
               "为什么出差",
               "为什么需要出差",
-            "为什么还需要出差",
-            "为什么人力资源岗还需要出差",
-            "为什么人力资源岗需要出差",
-            "为什么人力资源还需要出差",
-            "人力资源为什么出差",
-            "人力资源岗为什么还需要出差",
+              "为什么还需要出差",
+              "为什么人力资源岗还需要出差",
+              "为什么人力资源岗需要出差",
+              "为什么人力资源还需要出差",
+              "人力资源为什么出差",
+              "人力资源岗为什么还需要出差",
               "HR为什么出差",
               "HRBP为什么出差",
               "为什么要跟着销售出差",
