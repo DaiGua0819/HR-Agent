@@ -476,6 +476,15 @@
         blocked = 0
         knowledge_answered = 0
         passes = 0
+        page = terminal.current_page()
+        current_url = str(getattr(page, "url", "") or "")
+        if "zhipin.com" not in current_url or "/web/chat" not in current_url:
+            self.measure_current_timing_stage(
+                "open_boss_chat_page",
+                "BOSS 打开聊天页",
+                lambda: page.goto("https://www.zhipin.com/web/chat/index", wait_until="domcontentloaded", timeout=20000),
+            )
+            page.wait_for_timeout(random.randint(1400, 2200))
         unread_filter = self.measure_current_timing_stage(
             "prepare_unread_filter",
             "切换/检查未读筛选",

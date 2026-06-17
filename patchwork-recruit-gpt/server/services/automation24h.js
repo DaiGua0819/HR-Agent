@@ -190,6 +190,23 @@ function extractRunStats(payload) {
   };
 }
 
+function isBlockedZeroProcessResult(payload, stats) {
+  if (!payload || typeof payload !== "object" || !stats || typeof stats !== "object") return false;
+  if (normalizeCount(stats.processed, 0) > 0) return false;
+  const state = stats.state && typeof stats.state === "object" ? stats.state : {};
+  const blocked = Boolean(payload.blocked) || normalizeCount(stats.blocked, 0) > 0 || Boolean(state.blocked);
+  if (!blocked) return false;
+  const reasonText = [
+    payload.message,
+    payload.reply,
+    payload.error,
+    state.reason,
+    state.unreadFilter?.reason,
+    payload.unreadFilter?.reason,
+  ].filter(Boolean).join(" ");
+  return /unread_tab_not_found|not_found|未读|消息页|聊天页|blocked|阻塞/i.test(reasonText) || Boolean(payload.blocked);
+}
+
 function normalizeRecoveredStats(payload) {
   if (!payload || typeof payload !== "object") {
     return {
@@ -748,6 +765,11 @@ function createAutomation24hScheduler({
       throw new Error(payload.reply || payload.message || "任务已暂停");
     }
     const stats = extractRunStats(payload);
+    if (isBlockedZeroProcessResult(payload, stats)) {
+      const error = new Error(stats.message || payload.message || payload.reply || "任务未实际开始：页面阻塞或未找到可处理消息入口");
+      error.payload = payload;
+      throw error;
+    }
     const observed = await observeTarget(target);
     const remainingUnread = observed.ok ? observed.remainingUnread : null;
     const remainingActionable = observed.ok ? observed.remainingActionable : null;

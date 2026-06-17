@@ -1963,11 +1963,24 @@
           };
           const target = el.closest('a,button,[role="button"],[onclick],#sensor_Bchat_newzxjl,.chat-user-operate .file-style,.chat-user-operate [tabindex],.resume-element,.item-container-resume,[class*="resume" i],[class*="file-style" i]') || el;
           if (!visible(target)) return { ok: false, reason: 'online_resume_dom_element_not_visible' };
+          const href = String(target.getAttribute('href') || el.getAttribute('href') || '');
+          const targetText = normalize([
+            target.innerText,
+            target.textContent,
+            target.getAttribute('title'),
+            target.getAttribute('aria-label'),
+            href,
+            target.id,
+            el.id,
+            target.className,
+            el.className
+          ].filter(Boolean).join(' '));
           if (
             target.id === 'sensor_Bchat_newzxjl'
             || el.id === 'sensor_Bchat_newzxjl'
             || target.closest('.chat-user-operate')
             || el.closest('.chat-user-operate')
+            || /Revision\/talent\/management|Revision\/talent\/search-recommend|人才管理|人才沟通/.test(targetText)
           ) {
             return { ok: false, reason: 'online_resume_header_shortcut_blocked' };
           }
@@ -2091,12 +2104,31 @@
                 detail_page = accepted
                 opened_by = "same_page"
         if detail_page is None:
+            restore_result = {}
+            try:
+                origin_url = str(getattr(origin_page, "url", "") or "")
+                if "ehire.51job.com" in origin_url and "/Revision/chat" not in origin_url:
+                    origin_page.goto(JOB51_CHAT_URL, wait_until="domcontentloaded", timeout=15000)
+                    origin_page.wait_for_timeout(random.randint(900, 1400))
+                    terminal.page = origin_page
+                    restore_result = {
+                        "restored": True,
+                        "fromUrl": safe_text(origin_url, 180),
+                        "toUrl": safe_text(str(getattr(origin_page, "url", "") or ""), 180),
+                    }
+                    try:
+                        self.job51_close_stale_non_chat_pages(terminal, origin_page=origin_page, reason="restore_after_bad_resume_page")
+                    except Exception:
+                        pass
+            except Exception as error:
+                restore_result = {"restored": False, "error": safe_text(str(error), 160)}
             return {
                 "ok": False,
                 "reason": "online_resume_detail_not_opened",
                 "entry": {k: v for k, v in entry.items() if k != "token"},
                 "rejectedDetailPages": rejected_detail_pages[-6:],
                 "pages": [page_brief(page) for page in pages[-6:]],
+                "restoreResult": restore_result,
             }
 
         try:
