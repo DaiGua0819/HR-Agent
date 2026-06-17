@@ -37,6 +37,8 @@
     questions_generated: "已生成问题",
     prepared: "已准备",
     prepared_local: "本地准备",
+    backfilling: "回灌中",
+    backfill_failed: "回灌失败",
     needs_review: "待复核",
     completed: "已完成",
   };
@@ -97,8 +99,9 @@
 
   function statusClass(status) {
     if (status === "prepared" || status === "completed") return "is-good";
-    if (status === "needs_confirmation" || status === "needs_match" || status === "prepared_local") return "is-warn";
+    if (status === "needs_confirmation" || status === "needs_match" || status === "prepared_local" || status === "backfilling") return "is-warn";
     if (status === "needs_review") return "is-review";
+    if (status === "backfill_failed") return "is-error";
     return "";
   }
 
@@ -122,8 +125,8 @@
     const sessions = state.sessions;
     els.metricTotal.textContent = sessions.length;
     els.metricMatched.textContent = sessions.filter((item) => item.resumeId).length;
-    els.metricPrepared.textContent = sessions.filter((item) => ["prepared", "prepared_local", "needs_review", "completed"].includes(item.status)).length;
-    els.metricBackfill.textContent = sessions.filter((item) => item.status === "needs_review").length;
+    els.metricPrepared.textContent = sessions.filter((item) => ["prepared", "prepared_local", "backfilling", "needs_review", "completed"].includes(item.status)).length;
+    els.metricBackfill.textContent = sessions.filter((item) => ["backfilling", "backfill_failed", "needs_review"].includes(item.status)).length;
   }
 
   function renderEvents() {
@@ -206,29 +209,127 @@
       .join("");
   }
 
+  function sourceTypeLabel(type) {
+    const labels = {
+      interview_doc: "面试文档",
+      linked_doc: "关联文档",
+      minutes_transcript: "妙记转录",
+    };
+    return labels[type] || type || "-";
+  }
+
+  function textListHtml(items = [], emptyText = "暂无") {
+    const values = (items || []).filter(Boolean);
+    if (!values.length) return `<span class="empty-inline">${escapeHtml(emptyText)}</span>`;
+    return `<ul>${values.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+  }
+
+  function sourceSummaryHtml(source = {}, lastError = "") {
+    const sources = source.sources || [];
+    const errors = [...(source.errors || []), lastError].filter(Boolean);
+    const sourceRows = sources.length
+      ? sources
+          .map(
+            (item) => `
+              <span>
+                ${escapeHtml(sourceTypeLabel(item.type))}
+                ${item.length ? ` · ${escapeHtml(item.length)}字` : ""}
+                ${item.url ? ` · <a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">打开</a>` : ""}
+              </span>
+            `
+          )
+          .join("")
+      : '<span class="empty-inline">尚未读取到有效来源</span>';
+    return `
+      <div class="backfill-source">
+        <div><strong>来源</strong><span>${escapeHtml((source.types || []).map(sourceTypeLabel).join("、") || "-")}</span></div>
+        <div><strong>文本量</strong><span>${escapeHtml(source.rawTextLength || 0)} 字</span></div>
+        <div><strong>读取项</strong><p>${sourceRows}</p></div>
+        ${errors.length ? `<div class="source-errors"><strong>异常</strong>${textListHtml(errors)}</div>` : ""}
+      </div>
+    `;
+  }
+
+  function reviewStatusText(evaluation = {}) {
+    const decision = evaluation.review?.decision || evaluation.review?.status || "";
+    if (decision === "passed") return "已通过复核";
+    if (decision === "rejected") return "已淘汰";
+    if (decision === "need_followup") return "需补问";
+    return "待人工复核";
+  }
+
+  function evaluationActionsHtml(session) {
+    if (!session.interviewEvaluation) return "";
+    const disabled = state.busy ? "disabled" : "";
+    return `
+      <div class="review-actions">
+        <button class="primary-btn small" type="button" data-review-decision="passed" ${disabled}>通过复核</button>
+        <button class="ghost-btn small danger" type="button" data-review-decision="rejected" ${disabled}>淘汰</button>
+        <button class="ghost-btn small" type="button" data-review-decision="need_followup" ${disabled}>需要补问</button>
+        <button class="ghost-btn small" type="button" data-rerun-backfill="${escapeHtml(session.id)}" ${disabled}>重新回灌</button>
+      </div>
+    `;
+  }
+
   function evaluationHtml(session) {
     const evaluation = session.interviewEvaluation;
-    if (!evaluation) return '<div class="empty-state">尚未回灌面试结果</div>';
-    const profile = evaluation.abilityProfile || [];
+    if (!evaluation) {
+      if (session.status === "backfilling") return '<div class="empty-state">正在读取飞书记录并生成回灌结果</div>';
+      if (session.status === "backfill_failed") {
+        return `
+          <div class="empty-state">回灌失败：${escapeHtml(session.lastBackfillError || "未读取到有效面试记录")}</div>
+          ${sourceSummaryHtml(session.backfillSource || {}, session.lastBackfillError || "")}
+        `;
+      }
+      return '<div class="empty-state">尚未回灌面试结果</div>';
+    }
+    const source = evaluation.source || session.backfillSource || {};
+    const qaEvidence = evaluation.qaEvidence || [];
+    const qaRows = qaEvidence.length
+      ? qaEvidence
+      : (evaluation.abilityProfile || []).map((item) => ({
+          ability: item.ability,
+          question: item.question,
+          answerSummary: item.answerSummary,
+          signal: item.signal,
+          reason: item.reason,
+          followUpSuggestion: item.followUp,
+          evidenceQuotes: [],
+        }));
     return `
       <div class="evaluation-summary">
-        <strong>总体建议：${escapeHtml(evaluation.overallRecommendation || "待复核")}</strong>
+        <div class="evaluation-heading">
+          <strong>总体建议：${escapeHtml(evaluation.overallRecommendation || "待复核")}</strong>
+          <span class="status-badge ${evaluation.review?.status && evaluation.review.status !== "pending" ? "is-good" : "is-review"}">${escapeHtml(reviewStatusText(evaluation))}</span>
+        </div>
         <p>${escapeHtml(evaluation.summary || "")}</p>
+        <div class="evaluation-columns">
+          <div><strong>优势</strong>${textListHtml(evaluation.strengths || [])}</div>
+          <div><strong>风险</strong>${textListHtml(evaluation.risks || [])}</div>
+        </div>
+        ${evaluation.nextAction ? `<p class="next-action">${escapeHtml(evaluation.nextAction)}</p>` : ""}
+        ${sourceSummaryHtml(source, session.lastBackfillError || "")}
       </div>
-      ${profile
+      <div class="qa-evidence-list">
+        ${qaRows
         .map(
-          (item) => `
-            <article class="ability-row">
+          (item, index) => `
+            <article class="qa-evidence-row">
               <span>${escapeHtml(item.signal || "待复核")}</span>
               <div>
-                <strong>${escapeHtml(item.ability || "")}</strong>
-                <p>${escapeHtml(item.answerSummary || "")}</p>
-                <small>${escapeHtml(item.reason || "")}</small>
+                <strong>${escapeHtml(index + 1)}. ${escapeHtml(item.ability || "能力项")}</strong>
+                ${item.question ? `<p class="qa-question">${escapeHtml(item.question)}</p>` : ""}
+                <p>${escapeHtml(item.answerSummary || "未提取到明确回答")}</p>
+                ${item.evidenceQuotes?.length ? `<div class="evidence-quotes">${item.evidenceQuotes.map((quote) => `<em>${escapeHtml(quote)}</em>`).join("")}</div>` : ""}
+                ${item.reason ? `<small>${escapeHtml(item.reason)}</small>` : ""}
+                ${item.followUpSuggestion ? `<small>建议追问：${escapeHtml(item.followUpSuggestion)}</small>` : ""}
               </div>
             </article>
           `
         )
         .join("")}
+      </div>
+      ${evaluationActionsHtml(session)}
     `;
   }
 
@@ -245,6 +346,7 @@
       });
       els.prepareBtn.textContent = "生成问题并同步飞书";
       els.backfillBtn.textContent = "读取纪要并回灌";
+      els.confirmBtn.textContent = "通过复核";
       return;
     }
 
@@ -260,11 +362,14 @@
     let backfillDisabledByState = "";
     if (!session.resumeId) backfillDisabledByState = "先绑定候选人";
     else if (!session.feishuDoc?.documentId) backfillDisabledByState = "先生成面试文档";
+    else if (session.status === "backfilling") backfillDisabledByState = "正在回灌";
     else if (!backfill.ready) backfillDisabledByState = backfill.label;
-    els.backfillBtn.textContent = backfillDisabledByState || "读取纪要并回灌";
+    els.backfillBtn.textContent =
+      state.busyAction === "backfill" ? "回灌中..." : backfillDisabledByState || (session.interviewEvaluation ? "重新回灌" : "读取纪要并回灌");
     els.backfillBtn.disabled = Boolean(backfillDisabledByState) || state.busy;
     els.backfillBtn.dataset.disabledByState = backfillDisabledByState ? "true" : "false";
     els.backfillBtn.title = backfillDisabledByState || "";
+    els.confirmBtn.textContent = state.busyAction === "review" ? "复核中..." : "通过复核";
     els.confirmBtn.disabled = !session.interviewEvaluation || state.busy;
     els.confirmBtn.dataset.disabledByState = !session.interviewEvaluation ? "true" : "false";
     const docLinkText = session.feishuDoc?.contentSynced === false ? "已创建，正文未同步" : "已创建";
@@ -272,6 +377,14 @@
       session.feishuDoc?.contentSynced === false && session.feishuDoc?.contentError
         ? `<small class="detail-error">${escapeHtml(session.feishuDoc.contentError)}</small>`
         : "";
+    const scheduler = state.backfillStatus;
+    const schedulerText = scheduler
+      ? `${scheduler.enabled ? (scheduler.running ? "扫描中" : "运行中") : "已关闭"}，待处理 ${scheduler.pendingCount || 0}`
+      : "-";
+    const calendarSync = state.calendarSyncStatus;
+    const calendarSyncText = calendarSync
+      ? `${calendarSync.enabled ? (calendarSync.running ? "同步中" : "每5分钟自动同步") : "已关闭"}${calendarSync.lastRunAt ? `，上次 ${new Date(calendarSync.lastRunAt).toLocaleTimeString("zh-CN", { hour12: false })}` : ""}`
+      : "-";
 
     els.workspaceBody.innerHTML = `
       <section class="detail-section">
@@ -283,6 +396,8 @@
           <div><dt>岗位</dt><dd>${escapeHtml(session.resume?.jobType || session.matchedResume?.jobType || "-")}</dd></div>
           <div><dt>飞书文档</dt><dd>${session.feishuDoc?.url ? `<a href="${escapeHtml(session.feishuDoc.url)}" target="_blank" rel="noreferrer">${escapeHtml(docLinkText)}</a>${docErrorHtml}` : "未创建"}</dd></div>
           <div><dt>台账</dt><dd>${escapeHtml(session.bitable?.skipped ? "未配置" : session.bitable?.recordId ? "已同步" : "未同步")}</dd></div>
+          <div><dt>日历同步</dt><dd>${escapeHtml(calendarSyncText)}</dd></div>
+          <div><dt>自动回灌</dt><dd>${escapeHtml(schedulerText)}</dd></div>
         </dl>
       </section>
       <section class="detail-section">
@@ -407,6 +522,8 @@
     state.connected = Boolean(payload.connected);
     state.bitableConfigured = Boolean(payload.bitableConfigured);
     state.userInfo = payload.userInfo || null;
+    state.calendarSyncStatus = payload.calendarSync || null;
+    state.backfillStatus = await api.backfillStatus().catch(() => state.backfillStatus);
     renderAll();
   }
 
@@ -414,6 +531,7 @@
     const payload = await api.sessions();
     state.sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
     state.logs = Array.isArray(payload.logs) ? payload.logs : [];
+    state.backfillStatus = await api.backfillStatus().catch(() => state.backfillStatus);
     if (!state.selectedId && state.sessions.length) state.selectedId = state.sessions[0].id;
     if (state.selectedId && !state.sessions.some((item) => item.id === state.selectedId)) {
       state.selectedId = state.sessions[0]?.id || "";
@@ -475,6 +593,7 @@
     });
     els.eventList.addEventListener("click", handleDelegatedClick);
     els.matchList.addEventListener("click", handleDelegatedClick);
+    els.workspaceBody.addEventListener("click", handleDelegatedClick);
     els.prepareBtn.addEventListener("click", () => {
       const session = selectedSession();
       if (session) runAction("正在生成面试题并同步飞书", () => api.prepare(session.id, true), { busyAction: "prepare" });
@@ -485,11 +604,11 @@
     });
     els.backfillBtn.addEventListener("click", () => {
       const session = selectedSession();
-      if (session) runAction("正在读取飞书记录并回灌", () => api.backfill(session.id));
+      if (session) runAction("正在读取飞书记录并回灌", () => api.backfill(session.id, true), { busyAction: "backfill" });
     });
     els.confirmBtn.addEventListener("click", () => {
       const session = selectedSession();
-      if (session) runAction("正在确认评估", () => api.confirm(session.id));
+      if (session) runAction("正在确认评估", () => api.review(session.id, "passed"), { busyAction: "review" });
     });
   }
 
@@ -505,6 +624,21 @@
       const sessionId = bindButton.dataset.bindSession;
       const resumeId = bindButton.dataset.resumeId;
       runAction("正在绑定候选人", () => api.bind(sessionId, resumeId, false));
+      return;
+    }
+    const reviewButton = event.target.closest("[data-review-decision]");
+    if (reviewButton) {
+      const session = selectedSession();
+      if (!session) return;
+      const decision = reviewButton.dataset.reviewDecision || "passed";
+      const labels = { passed: "通过复核", rejected: "淘汰候选人", need_followup: "标记补问" };
+      runAction(`正在${labels[decision] || "复核"}`, () => api.review(session.id, decision), { busyAction: "review" });
+      return;
+    }
+    const rerunButton = event.target.closest("[data-rerun-backfill]");
+    if (rerunButton) {
+      const session = selectedSession();
+      if (session) runAction("正在重新读取飞书记录并回灌", () => api.backfill(session.id, true), { busyAction: "backfill" });
     }
   }
 

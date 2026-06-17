@@ -18,6 +18,7 @@
   window.InterviewCenterApi = {
     requestJson,
     status: () => requestJson("/api/interview-center/feishu/status"),
+    backfillStatus: () => requestJson("/api/interview-center/backfill/status"),
     authUrl: () => requestJson("/api/interview-center/feishu/auth-url"),
     disconnect: () => requestJson("/api/interview-center/feishu/disconnect", { method: "POST", body: {} }),
     sessions: () => requestJson("/api/interview-center/sessions"),
@@ -37,10 +38,16 @@
         method: "POST",
         body: { force },
       }),
-    confirm: (sessionId) =>
-      requestJson(`/api/interview-center/sessions/${encodeURIComponent(sessionId)}/confirm`, {
+    backfillSource: (sessionId) => requestJson(`/api/interview-center/sessions/${encodeURIComponent(sessionId)}/backfill-source`),
+    review: (sessionId, decision = "passed", note = "") =>
+      requestJson(`/api/interview-center/sessions/${encodeURIComponent(sessionId)}/review`, {
         method: "POST",
-        body: { decision: "reviewed" },
+        body: { decision, note },
+      }),
+    confirm: (sessionId) =>
+      requestJson(`/api/interview-center/sessions/${encodeURIComponent(sessionId)}/review`, {
+        method: "POST",
+        body: { decision: "passed" },
       }),
   };
 })();

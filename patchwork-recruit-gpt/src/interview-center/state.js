@@ -10,5 +10,7 @@
     statusFilter: "",
     busy: false,
     busyAction: "",
+    backfillStatus: null,
+    calendarSyncStatus: null,
   };
 })();
