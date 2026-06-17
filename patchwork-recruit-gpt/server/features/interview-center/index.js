@@ -2,8 +2,8 @@ const { createInterviewStore } = require("./store");
 const { createFeishuClient } = require("./feishuClient");
 const { enrichSessionWithMatches } = require("./candidateMatcher");
 const { generateInterviewQuestions, summarizeConversation } = require("./questionGenerator");
-const { generateInterviewEvaluation } = require("./feedbackBackfill");
-const { ensureBitableResumeImage, ensureBitableInterviewRecordImage } = require("./bitableAssets");
+const { generateInterviewEvaluation, formatSkillEvaluationDocumentText } = require("./feedbackBackfill");
+const { ensureBitableResumeImage, ensureBitableInterviewRecordImage, ensureBitableSkillEvaluationDocument } = require("./bitableAssets");
 const { clipText, nowIso, parseJson, randomId, safeArray } = require("./utils");
 
 const DAY_SECONDS = 24 * 60 * 60;
@@ -171,6 +171,35 @@ function createInterviewCenterFeature(context) {
     return result;
   }
 
+  async function syncSessionSkillEvaluationDocumentToBitable(session, resume) {
+    const publicResume = context.publicRecord(resume);
+    const result = await ensureBitableSkillEvaluationDocument({
+      feishu,
+      store,
+      session,
+      resume: publicResume,
+      createDocument: async () =>
+        feishu.createDocumentFromText({
+          title: `${session.interviewEvaluation?.candidateName || publicResume.name || session.matchedResume?.name || "候选人"}-${session.interviewEvaluation?.targetRole || publicResume.jobType || "面试"}-技能评价`,
+          docText: formatSkillEvaluationDocumentText({
+            resume: publicResume,
+            session,
+            evaluation: session.interviewEvaluation,
+          }),
+          action: "创建飞书技能评价文档",
+        }),
+      fieldText: "",
+    });
+    if (result.ok) {
+      store.appendLog(session.id, "info", "已生成技能评价飞书文档并同步到飞书面试表", {
+        recordId: result.recordId,
+        documentId: result.skillEvaluationDocument?.documentId,
+        url: result.skillEvaluationDocument?.url,
+      });
+    }
+    return result;
+  }
+
   async function prepareSession(sessionId, { force = false } = {}) {
     let session = store.getSession(sessionId);
     if (!session) {
@@ -316,7 +345,20 @@ function createInterviewCenterFeature(context) {
       error.payload = { availableAt, endTime: session.endTime || 0 };
       throw error;
     }
-    if (session.interviewEvaluation && !force) return session;
+    if (session.interviewEvaluation && !force) {
+      if (!session.bitableSkillEvaluationDocument?.documentId) {
+        const { record } = await getResumeById(session.resumeId);
+        if (record) {
+          try {
+            const skillEvaluationResult = await syncSessionSkillEvaluationDocumentToBitable(session, record);
+            if (skillEvaluationResult.session) return skillEvaluationResult.session;
+          } catch (error) {
+            store.appendLog(session.id, "warn", error.message || "补同步技能评价文档到飞书面试表失败", error.payload || {});
+          }
+        }
+      }
+      return store.getSession(session.id) || session;
+    }
     if (backfillRunning.has(session.id)) return session;
 
     const { records, index, record } = await getResumeById(session.resumeId);
@@ -420,6 +462,22 @@ function createInterviewCenterFeature(context) {
         }
       } catch (error) {
         store.appendLog(session.id, "warn", error.message || "同步面试记录图到飞书面试表失败", error.payload || {});
+      }
+      try {
+        const skillEvaluationResult = await syncSessionSkillEvaluationDocumentToBitable(session, records[index]);
+        if (skillEvaluationResult.session) session = skillEvaluationResult.session;
+        if (
+          skillEvaluationResult.skipped &&
+          ![
+            "missing_bitable_config",
+            "skill_evaluation_document_already_synced",
+            "bitable_skill_evaluation_field_already_has_value",
+          ].includes(skillEvaluationResult.reason)
+        ) {
+          store.appendLog(session.id, "info", "飞书面试表技能评价文档同步已跳过", skillEvaluationResult);
+        }
+      } catch (error) {
+        store.appendLog(session.id, "warn", error.message || "同步技能评价文档到飞书面试表失败", error.payload || {});
       }
       return session;
     } catch (error) {

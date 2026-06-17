@@ -667,9 +667,8 @@ function createFeishuClient({
     return events;
   }
 
-  async function createInterviewDocument(session) {
+  async function createDocumentFromText({ title, docText, action = "创建飞书文档" }) {
     const userToken = await getValidUserToken();
-    const title = `${session.resume?.name || session.matchedResume?.name || "候选人"}-${session.resume?.jobType || session.matchedResume?.jobType || "面试"}-面试问题`;
     const created = await requestJson(
       `${FEISHU_API_BASE}/docx/v1/documents`,
       {
@@ -680,13 +679,12 @@ function createFeishuClient({
         },
         body: JSON.stringify({ title: clipText(title, 120) }),
       },
-      "创建飞书面试文档"
+      action
     );
     const document = created.data?.document || created.data || {};
     const documentId = document.document_id || document.documentId || document.obj_token || "";
-    if (!documentId) throw createFeishuError("创建飞书面试文档", created, 500);
+    if (!documentId) throw createFeishuError(action, created, 500);
 
-    const docText = questionSetToDocText(session);
     let contentSynced = false;
     let contentError = "";
     let contentErrorPayload = null;
@@ -708,6 +706,12 @@ function createFeishuClient({
       localText: docText,
       syncedAt: new Date().toISOString(),
     };
+  }
+
+  async function createInterviewDocument(session) {
+    const title = `${session.resume?.name || session.matchedResume?.name || "候选人"}-${session.resume?.jobType || session.matchedResume?.jobType || "面试"}-面试问题`;
+    const docText = questionSetToDocText(session);
+    return createDocumentFromText({ title, docText, action: "创建飞书面试文档" });
   }
 
   async function writeDocumentBlocks(documentId, docText, userToken) {
@@ -930,6 +934,7 @@ function createFeishuClient({
     getStatus,
     listCalendarEvents,
     createInterviewDocument,
+    createDocumentFromText,
     syncInterviewDocumentContent,
     readDocumentText,
     syncBitableRecord,

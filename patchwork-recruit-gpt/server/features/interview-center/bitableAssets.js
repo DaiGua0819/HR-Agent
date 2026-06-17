@@ -8,6 +8,7 @@ const { clipText, compactText, normalizeText, safeArray } = require("./utils");
 const DEFAULT_ALLOWED_JOBS = ["AI应用开发实习生", "AI应用开发", "AI Agent开发", "AI实习生", "智能体", "Agent", "RAG"];
 const RESUME_FIELD = "简历";
 const INTERVIEW_RECORD_FIELD = "面试记录";
+const SKILL_EVALUATION_FIELD = process.env.FEISHU_INTERVIEW_SKILL_EVALUATION_FIELD || "技能评价";
 
 function splitConfigList(value, fallback = []) {
   const items = String(value || "")
@@ -55,6 +56,39 @@ function attachmentTokens(value) {
 function recordId(record = {}) {
   if (!record) return "";
   return record.record_id || record.id || "";
+}
+
+function fieldTypeText(field = {}) {
+  return [field.type, field.field_type, field.ui_type, field.property?.type, field.property?.field_type]
+    .filter((value) => value !== undefined && value !== null)
+    .map((value) => String(value).toLowerCase())
+    .join(" ");
+}
+
+function documentFieldValueCandidates(field = {}, doc = {}, fieldText = "") {
+  const typeText = fieldTypeText(field);
+  const url = doc.url || "";
+  const title = doc.title || "技能评价";
+  const textValue = [url, fieldText].filter(Boolean).join("\n") || url || title;
+  const urlValue = { text: title, link: url };
+  const attachmentValue = doc.documentId ? [{ file_token: doc.documentId }] : null;
+  const candidates = [];
+  if (/17|attachment|file|附件/.test(typeText) && attachmentValue) candidates.push(attachmentValue);
+  if (/15|url|link|链接/.test(typeText)) candidates.push(urlValue);
+  candidates.push(textValue);
+  candidates.push(urlValue);
+  if (attachmentValue) candidates.push(attachmentValue);
+  const seen = new Set();
+  return candidates.filter((value) => {
+    const key = JSON.stringify(value);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function hasDocxLink(value = "") {
+  return /https?:\/\/(?:www\.)?(?:feishu|larksuite)\.cn\/docx\/[A-Za-z0-9]+/i.test(String(value || ""));
 }
 
 function positionAllowedForTable({ session = {}, resume = {}, tableInfo = {} } = {}) {
@@ -315,8 +349,98 @@ async function ensureBitableInterviewRecordImage({ feishu, store, session, resum
   return { ok: true, session: next, recordId: nextRecordId, interviewRecordImage };
 }
 
+async function ensureBitableSkillEvaluationDocument({ feishu, store, session, resume, createDocument, fieldText = "" }) {
+  if (!session?.isInterviewLike || !resume?.id || !session.interviewEvaluation) return { skipped: true, reason: "missing_interview_evaluation" };
+  if (!feishu.getStatus().bitableConfigured) return { skipped: true, reason: "missing_bitable_config" };
+  if (session.bitableSkillEvaluationDocument?.documentId && session.bitableRecordId) {
+    return { skipped: true, reason: "skill_evaluation_document_already_synced", recordId: session.bitableRecordId };
+  }
+
+  const fieldMap = await feishu.getBitableFields();
+  const skillField = fieldMap.byName?.get(SKILL_EVALUATION_FIELD);
+  if (!skillField) return { skipped: true, reason: "skill_evaluation_field_missing", field: SKILL_EVALUATION_FIELD };
+
+  const tableInfo = await feishu.getBitableTableInfo();
+  const allow = positionAllowedForTable({ session, resume, tableInfo });
+  if (!allow.allowed) return { skipped: true, ...allow };
+
+  const records = await feishu.listBitableRecords();
+  const existing = session.bitableRecordId ? { record: await feishu.getBitableRecord(session.bitableRecordId), reason: "session_record" } : findExistingBitableRecord(records, resume);
+  if (existing.reason === "ambiguous_name_match") {
+    return { skipped: true, reason: "ambiguous_bitable_candidate", count: existing.count };
+  }
+  const existingRecord = existing.record || null;
+  const existingRecordId = recordId(existingRecord);
+  const existingSkillText = compactText(extractFieldText(existingRecord?.fields?.[SKILL_EVALUATION_FIELD] || ""));
+  if (hasDocxLink(existingSkillText)) {
+    return {
+      skipped: true,
+      reason: "bitable_skill_evaluation_field_already_has_docx_link",
+      recordId: existingRecordId,
+      field: SKILL_EVALUATION_FIELD,
+    };
+  }
+
+  const doc =
+    session.bitableSkillEvaluationDocument?.documentId && session.bitableSkillEvaluationDocument?.url
+      ? session.bitableSkillEvaluationDocument
+      : await createDocument();
+  const attempts = [];
+  let record = null;
+  let lastError = null;
+  const preservedManualText = existingSkillText || compactText(fieldText);
+  for (const value of documentFieldValueCandidates(skillField, doc, preservedManualText)) {
+    try {
+      const fields = {
+        姓名: resume.name || session.matchedResume?.name || "",
+        候选人联系电话: resume.phone || "",
+        [SKILL_EVALUATION_FIELD]: value,
+      };
+      record = existingRecordId ? await feishu.updateBitableRecord(existingRecordId, fields) : await feishu.createBitableRecord(fields);
+      attempts.push({ ok: true, valueKind: Array.isArray(value) ? "attachment" : typeof value });
+      break;
+    } catch (error) {
+      lastError = error;
+      attempts.push({
+        ok: false,
+        valueKind: Array.isArray(value) ? "attachment" : typeof value,
+        error: error.message || "写入技能评价字段失败",
+        payload: error.payload || null,
+      });
+    }
+  }
+  if (!record) {
+    const error = new Error(lastError?.message || "写入技能评价字段失败");
+    error.payload = { attempts };
+    throw error;
+  }
+
+  const nextRecordId = recordId(record) || existingRecordId;
+  const skillEvaluationDocument = {
+    status: "synced",
+    field: SKILL_EVALUATION_FIELD,
+    recordId: nextRecordId,
+    documentId: doc.documentId,
+    url: doc.url,
+    title: doc.title,
+    contentSynced: doc.contentSynced !== false,
+    contentError: doc.contentError || "",
+    syncedAt: new Date().toISOString(),
+    attempts,
+    allowed: allow,
+  };
+  const next = store.saveSession({
+    ...session,
+    bitableRecordId: nextRecordId,
+    bitableSkillEvaluationDocument: skillEvaluationDocument,
+    bitable: { ...(session.bitable || {}), recordId: nextRecordId, skillEvaluationDocument },
+  });
+  return { ok: true, session: next, recordId: nextRecordId, skillEvaluationDocument };
+}
+
 module.exports = {
   ensureBitableResumeImage,
   ensureBitableInterviewRecordImage,
+  ensureBitableSkillEvaluationDocument,
   positionAllowedForTable,
 };

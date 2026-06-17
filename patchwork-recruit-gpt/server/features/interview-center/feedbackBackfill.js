@@ -173,6 +173,192 @@ function normalizeEvaluation(value, fallback, { session = {}, source = {} } = {}
   };
 }
 
+function formatList(items = [], fallback = "暂无明确内容") {
+  const values = safeArray(items)
+    .map((item) => clipText(item, 260))
+    .filter(Boolean);
+  if (!values.length) return [`- ${fallback}`];
+  return values.map((item) => `- ${item}`);
+}
+
+function formatQaEvidenceRows(items = []) {
+  const rows = safeArray(items);
+  if (!rows.length) return ["- 暂无结构化问答证据，需要人工复核飞书会议纪要。"];
+  return rows.flatMap((item, index) => {
+    const evidence = normalizeEvidenceQuotes(item.evidenceQuotes || item.evidence_quotes || item.quotes);
+    return [
+      `### ${index + 1}. ${item.ability || "能力项"}｜${item.signal || "未回答"}`,
+      `面试官问题：${item.question || "-"}`,
+      `候选人回答摘要：${item.answerSummary || "-"}`,
+      `判断依据：${item.reason || "-"}`,
+      `证据短句：${evidence.length ? evidence.join("；") : "-"}`,
+      `后续建议：${item.followUpSuggestion || item.followUp || "-"}`,
+      "",
+    ];
+  });
+}
+
+function dateTextFromSession(session = {}) {
+  const seconds = Number(session.startTime || session.endTime || 0);
+  const date = seconds ? new Date(seconds * 1000) : new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function scoreFromSignal(signal = "") {
+  const text = String(signal || "");
+  if (text.includes("强")) return "7.5";
+  if (text.includes("风险") || text.includes("弱")) return "6.2";
+  if (text.includes("未回答")) return "待复核";
+  return "7.0";
+}
+
+function qaTypeFromAbility(ability = "", question = "") {
+  const text = `${ability} ${question}`;
+  if (/动机|规划|稳定|适配|表达|沟通|协作|复盘|owner/i.test(text)) return "behavior";
+  if (/技术|项目|rag|agent|python|工程|系统|接口|权限|检索|模型|部署|数据|架构/i.test(text)) return "technical";
+  return "technical";
+}
+
+function tableRow(values = []) {
+  return values.map((value) => clipText(value || "-", 220)).join(" | ");
+}
+
+function formatBehaviorTable(rows = []) {
+  const items = rows.length ? rows : [];
+  return [
+    tableRow(["问题（简写）", "类型", "想测什么", "候选人回答摘要", "有效证据", "不足/风险", "是否追问到位"]),
+    tableRow(["---", "---", "---", "---", "---", "---", "---"]),
+    ...items.map((item) =>
+      tableRow([
+        item.question || item.ability || "行为问题",
+        item.ability || "履历/动机核验",
+        item.expectedSignal || "求职动机、职业规划、岗位适配度",
+        item.answerSummary || "-",
+        safeArray(item.evidenceQuotes)[0] || item.reason || "-",
+        item.signal === "风险" || item.signal === "弱" ? item.reason || "存在待确认风险" : item.followUpSuggestion || "仍需结合后续问题验证",
+        item.answered === false ? "未回答" : "基本到位",
+      ])
+    ),
+  ];
+}
+
+function formatTechnicalTable(rows = []) {
+  const items = rows.length ? rows : [];
+  return [
+    tableRow(["问题（简写）", "类型", "想测什么", "回答摘要", "真实信号", "薄弱信号", "追问是否到位", "单题评分"]),
+    tableRow(["---", "---", "---", "---", "---", "---", "---", "---"]),
+    ...items.map((item) =>
+      tableRow([
+        item.question || item.ability || "技术问题",
+        item.ability || "技术核验",
+        item.expectedSignal || "岗位核心能力与项目真实性",
+        item.answerSummary || "-",
+        safeArray(item.evidenceQuotes)[0] || item.reason || "-",
+        item.signal === "风险" || item.signal === "弱" ? item.reason || "深度不足或证据不充分" : item.followUpSuggestion || "指标化和边界场景仍需补问",
+        item.answered === false ? "未回答" : "基本到位",
+        scoreFromSignal(item.signal),
+      ])
+    ),
+  ];
+}
+
+function abilityScoreRows(evaluation = {}) {
+  const qa = safeArray(evaluation.qaEvidence);
+  const technical = qa.filter((item) => qaTypeFromAbility(item.ability, item.question) === "technical");
+  const behavior = qa.filter((item) => qaTypeFromAbility(item.ability, item.question) === "behavior");
+  const avgSignal = (rows) => {
+    if (!rows.length) return "7.0";
+    const scores = rows.map((item) => Number(scoreFromSignal(item.signal))).filter(Number.isFinite);
+    if (!scores.length) return "待复核";
+    return (scores.reduce((sum, item) => sum + item, 0) / scores.length).toFixed(1);
+  };
+  return [
+    ["自我表达", avgSignal(behavior), "能围绕经历、动机和诉求展开表达", "结合面试官复核调整"],
+    ["结构化思考", avgSignal(qa), "能按问题拆解回答并给出部分依据", "关注是否有指标、边界和复盘"],
+    ["ownership", avgSignal(behavior), "从经历中提取主动性和问题意识", "需要结合具体项目追问"],
+    ["岗位匹配", evaluation.overallRecommendation === "通过" ? "7.4" : "7.0", evaluation.summary || "岗位匹配度待复核", "以最终人工复核为准"],
+    ["智能体/RAG工程能力", avgSignal(technical), "从项目链路、工具使用和工程细节判断", "重点看真实实现深度"],
+    ["系统治理能力", avgSignal(technical.filter((item) => /权限|安全|治理|异常|稳定|部署/i.test(`${item.ability} ${item.question}`))), "从权限、异常、监控和边界意识判断", "没有追问时应补测"],
+    ["协作/复盘能力", avgSignal(behavior), "从复盘、沟通和学习方式判断", "建议下一轮继续验证"],
+    ["稳定性", avgSignal(behavior), "从工作条件接受度和长期规划判断", "对实习时长/节奏需明确确认"],
+  ];
+}
+
+function formatSkillEvaluationDocumentText({ resume = {}, session = {}, evaluation = {} } = {}) {
+  const source = evaluation.source || session.backfillSource || {};
+  const candidateName = evaluation.candidateName || resume.name || session.matchedResume?.name || "候选人";
+  const dateText = dateTextFromSession(session);
+  const qa = safeArray(evaluation.qaEvidence);
+  const behaviorRows = qa.filter((item) => qaTypeFromAbility(item.ability, item.question) === "behavior");
+  const technicalRows = qa.filter((item) => qaTypeFromAbility(item.ability, item.question) === "technical");
+  const behaviorItems = behaviorRows.length ? behaviorRows : qa.slice(0, 3);
+  const technicalItems = technicalRows.length ? technicalRows : qa.slice(0, 6);
+  const sourceTitle = source.sources?.[0]?.id ? `飞书会议纪要 ${source.sources[0].id}` : `${candidateName}初试（${dateText}）`;
+  const scoreRows = abilityScoreRows(evaluation);
+  return [
+    `# 候选人初试总结-${candidateName}-${dateText}`,
+    "",
+    `本报告基于《智能纪要：${sourceTitle}》生成，按“模板严格版”结构输出。说明：当前依据为智能纪要/面试文档，涉及行为判断与技术评估已按证据强弱标注。`,
+    "",
+    "## Behavior question 部分",
+    `本场初试重点评估候选人的求职动机、职业规划、经历真实性、工程迁移能力，以及对公司工作节奏和实习安排的适配度。`,
+    "",
+    "### 你问了什么、能测什么、哪里不够",
+    ...formatBehaviorTable(behaviorItems),
+    "",
+    "### 这一部分暴露出来的问题",
+    ...formatList(evaluation.risks, "行为面暂未暴露明确风险，建议结合原始纪要复核。"),
+    "",
+    "### 这部分建议怎么打分",
+    `- 自我表达 / 结构化表达：${scoreRows[0][1]}/10`,
+    `- owner意识 / 主动性：${scoreRows[2][1]}/10`,
+    `- 协作 / 复盘 / 稳定性：${scoreRows[6][1]}/10`,
+    "",
+    "## Technical question 部分",
+    `本场技术交流覆盖岗位核心技能、项目真实性、工程化能力、系统边界意识和问题复盘能力，重点检验其是否具备 ${evaluation.targetRole || resume.jobType || session.matchedResume?.jobType || "目标岗位"} 的成长潜力。`,
+    "",
+    "### 逐题分析",
+    ...formatTechnicalTable(technicalItems),
+    "",
+    "### 能力画像（技术岗位视角）",
+    ...formatList(evaluation.strengths, "暂未形成明确优势，需要继续结合面试原文复核。"),
+    ...formatList(evaluation.risks, "暂未形成明确风险，需要继续结合面试原文复核。"),
+    "",
+    "### 这轮“问题展开”里哪些地方有点问题",
+    "#### 问得对的地方",
+    "- 已覆盖候选人经历真实性、岗位匹配度和核心能力验证。",
+    "- 已结合候选人回答抽取证据短句，方便后续复核。",
+    "#### 可优化点",
+    "- 增加现场任务或 coding 验证，确认独立完成能力。",
+    "- 增加量化追问，例如效果指标、失败场景、异常处理和复盘标准。",
+    "- 对风险点继续追问，避免只停留在概念描述。",
+    "",
+    "## 我会怎么给这个人打分（10分制）",
+    tableRow(["维度", "分数", "证据", "备注"]),
+    tableRow(["---", "---", "---", "---"]),
+    ...scoreRows.map(tableRow),
+    "",
+    "## 综合结论",
+    `${evaluation.targetRole || resume.jobType || session.matchedResume?.jobType || "目标岗位"}（初试）：${evaluation.overallRecommendation || "待复核"}。${evaluation.summary || "建议结合原始纪要进行人工复核。"}`,
+    "",
+    "## 下一轮重点追问（直接可用）",
+    "### Behavior 题",
+    "- 你为什么选择这个方向？什么条件会让你稳定投入？",
+    "- 讲一个你自己解决问题、而不是主要靠别人或 AI 的案例。",
+    "- 如果入职后节奏比预期更快，你会怎么调整？",
+    "### 技术/业务场景题",
+    ...safeArray(evaluation.qaEvidence)
+      .map((item) => item.followUpSuggestion)
+      .filter(Boolean)
+      .slice(0, 5)
+      .map((item) => `- ${item}`),
+    "- 选择一个真实项目，展开讲技术方案、关键取舍、失败场景和复盘结果。",
+  ].join("\n");
+}
+
 async function generateInterviewEvaluation({ resume, session, interviewText, source = {}, gpt }) {
   const normalizedSource = {
     types: safeArray(source.types),
@@ -215,4 +401,5 @@ async function generateInterviewEvaluation({ resume, session, interviewText, sou
 module.exports = {
   generateInterviewEvaluation,
   fallbackEvaluation,
+  formatSkillEvaluationDocumentText,
 };
