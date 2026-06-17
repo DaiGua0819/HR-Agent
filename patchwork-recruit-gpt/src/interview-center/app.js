@@ -267,6 +267,11 @@
     els.backfillBtn.title = backfillDisabledByState || "";
     els.confirmBtn.disabled = !session.interviewEvaluation || state.busy;
     els.confirmBtn.dataset.disabledByState = !session.interviewEvaluation ? "true" : "false";
+    const docLinkText = session.feishuDoc?.contentSynced === false ? "已创建，正文未同步" : "已创建";
+    const docErrorHtml =
+      session.feishuDoc?.contentSynced === false && session.feishuDoc?.contentError
+        ? `<small class="detail-error">${escapeHtml(session.feishuDoc.contentError)}</small>`
+        : "";
 
     els.workspaceBody.innerHTML = `
       <section class="detail-section">
@@ -276,7 +281,7 @@
           <div><dt>标题</dt><dd>${escapeHtml(session.title || "-")}</dd></div>
           <div><dt>候选人</dt><dd>${escapeHtml(session.resume?.name || session.matchedResume?.name || "未绑定")}</dd></div>
           <div><dt>岗位</dt><dd>${escapeHtml(session.resume?.jobType || session.matchedResume?.jobType || "-")}</dd></div>
-          <div><dt>飞书文档</dt><dd>${session.feishuDoc?.url ? `<a href="${escapeHtml(session.feishuDoc.url)}" target="_blank" rel="noreferrer">已创建</a>` : "未创建"}</dd></div>
+          <div><dt>飞书文档</dt><dd>${session.feishuDoc?.url ? `<a href="${escapeHtml(session.feishuDoc.url)}" target="_blank" rel="noreferrer">${escapeHtml(docLinkText)}</a>${docErrorHtml}` : "未创建"}</dd></div>
           <div><dt>台账</dt><dd>${escapeHtml(session.bitable?.skipped ? "未配置" : session.bitable?.recordId ? "已同步" : "未同步")}</dd></div>
         </dl>
       </section>

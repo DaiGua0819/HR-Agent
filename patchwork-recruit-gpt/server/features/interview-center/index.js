@@ -164,15 +164,44 @@ function createInterviewCenterFeature(context) {
           resume: publicResume,
           questionSet,
         });
-        store.appendLog(session.id, "info", "已创建飞书面试文档", { documentId: feishuDoc.documentId, url: feishuDoc.url });
+        if (feishuDoc.contentSynced === false) {
+          docError = feishuDoc.contentError || "飞书面试文档已创建，但正文写入失败";
+          store.appendLog(session.id, "warn", docError, {
+            documentId: feishuDoc.documentId,
+            url: feishuDoc.url,
+            payload: feishuDoc.contentErrorPayload || {},
+          });
+        } else {
+          store.appendLog(session.id, "info", "已创建并写入飞书面试文档", { documentId: feishuDoc.documentId, url: feishuDoc.url });
+        }
       } catch (error) {
         docError = error.message || "创建飞书文档失败";
         store.appendLog(session.id, "error", docError, error.payload || {});
+      }
+    } else if (feishuDoc.contentSynced === false) {
+      try {
+        const syncResult = await feishu.syncInterviewDocumentContent(feishuDoc.documentId, {
+          ...session,
+          resume: publicResume,
+          questionSet,
+        });
+        feishuDoc = { ...feishuDoc, ...syncResult };
+        store.appendLog(session.id, "info", "已补写飞书面试文档正文", { documentId: feishuDoc.documentId, url: feishuDoc.url });
+      } catch (error) {
+        docError = error.message || "补写飞书文档正文失败";
+        feishuDoc = {
+          ...feishuDoc,
+          contentSynced: false,
+          contentError: docError,
+          contentErrorPayload: error.payload || null,
+        };
+        store.appendLog(session.id, "warn", docError, error.payload || {});
       }
     }
 
     let bitable = session.bitable || null;
     let bitableError = "";
+    const documentReady = Boolean(feishuDoc?.documentId && feishuDoc.contentSynced !== false);
     try {
       bitable = await feishu.syncBitableRecord({
         ...session,
@@ -180,7 +209,7 @@ function createInterviewCenterFeature(context) {
         questionSet,
         feishuDoc,
         bitableRecordId: session.bitableRecordId || bitable?.recordId || "",
-        status: feishuDoc?.documentId ? "prepared" : "prepared_local",
+        status: documentReady ? "prepared" : "prepared_local",
       });
       if (!bitable?.skipped) {
         store.appendLog(session.id, "info", "已同步飞书面试台账", { recordId: bitable.recordId });
@@ -197,7 +226,7 @@ function createInterviewCenterFeature(context) {
       feishuDoc,
       bitable,
       bitableRecordId: bitable?.recordId || session.bitableRecordId || "",
-      status: feishuDoc?.documentId ? "prepared" : "prepared_local",
+      status: documentReady ? "prepared" : "prepared_local",
       prepareErrors: [docError, bitableError].filter(Boolean),
       preparedAt: nowIso(),
     });

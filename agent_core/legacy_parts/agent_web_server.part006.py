@@ -653,9 +653,29 @@
             try:
                 js_clicked = bool(page.evaluate(
                     r"""selector => {
-                      const el = document.querySelector(selector);
-                      if (!el || !el.isConnected) return false;
-                      el.click();
+                      const node = document.querySelector(selector);
+                      if (!node || !node.isConnected) return false;
+                      const el = node.closest('button,[role="button"],input[type="button"],input[type="submit"],a,[class*="send"],[class*="submit"],[class*="btn"],[class*="button"]') || node;
+                      try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (_) {}
+                      const rect = el.getBoundingClientRect();
+                      const init = {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        clientX: rect.x + rect.width / 2,
+                        clientY: rect.y + rect.height / 2,
+                        button: 0,
+                        buttons: 1
+                      };
+                      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+                        try {
+                          const event = type.startsWith('pointer') && window.PointerEvent
+                            ? new PointerEvent(type, { ...init, pointerId: 1, pointerType: 'mouse', isPrimary: true })
+                            : new MouseEvent(type, init);
+                          el.dispatchEvent(event);
+                        } catch (_) {}
+                      }
+                      try { if (typeof el.click === 'function') el.click(); } catch (_) {}
                       return true;
                     }""",
                     selector,

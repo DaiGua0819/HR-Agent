@@ -2552,22 +2552,41 @@ def service_interview_invite(self, payload: dict) -> dict:
             return base
 
         fill_followup: dict = {}
-        try:
-            self.smart_fill(terminal, "聊天", INTERVIEW_INVITE_FOLLOWUP_MESSAGE)
-            page.wait_for_timeout(random.randint(260, 520))
-            fill_followup = {"ok": True}
-        except Exception as error:
-            fill_followup = {"ok": False, "error": safe_text(str(error), 220)}
-        followup_send = self.send_current_chat_reply_with_verification(
-            terminal,
-            INTERVIEW_INVITE_FOLLOWUP_MESSAGE,
-            max_attempts=2,
-        )
-        followup_verified = bool(
-            isinstance(followup_send, dict)
-            and isinstance(followup_send.get("verification"), dict)
-            and followup_send["verification"].get("verified")
-        )
+        if platform == "zhilian":
+            followup_send = self.zhilian_send_message_with_verification(terminal, INTERVIEW_INVITE_FOLLOWUP_MESSAGE)
+            fill_followup = followup_send.get("input") if isinstance(followup_send.get("input"), dict) else {}
+            zhilian_verify = followup_send.get("verify") if isinstance(followup_send.get("verify"), dict) else {}
+            followup_verified = bool(
+                isinstance(followup_send, dict)
+                and (
+                    followup_send.get("verified")
+                    or followup_send.get("sent")
+                    or zhilian_verify.get("verified")
+                )
+            )
+            followup_send = {
+                **followup_send,
+                "verification": {**zhilian_verify, "verified": followup_verified},
+                "send": followup_send.get("send") if isinstance(followup_send.get("send"), dict) else {},
+                "platformSendStrategy": "zhilian_send_message_with_verification",
+            }
+        else:
+            try:
+                self.smart_fill(terminal, "聊天", INTERVIEW_INVITE_FOLLOWUP_MESSAGE)
+                page.wait_for_timeout(random.randint(260, 520))
+                fill_followup = {"ok": True}
+            except Exception as error:
+                fill_followup = {"ok": False, "error": safe_text(str(error), 220)}
+            followup_send = self.send_current_chat_reply_with_verification(
+                terminal,
+                INTERVIEW_INVITE_FOLLOWUP_MESSAGE,
+                max_attempts=2,
+            )
+            followup_verified = bool(
+                isinstance(followup_send, dict)
+                and isinstance(followup_send.get("verification"), dict)
+                and followup_send["verification"].get("verified")
+            )
         base.update({
             "ok": followup_verified,
             "sent": followup_verified,

@@ -128,26 +128,64 @@ function questionSetToDocText(session = {}) {
   return lines.join("\n");
 }
 
+function richTextPayload(content = "", options = {}) {
+  return {
+    elements: [
+      {
+        text_run: {
+          content: compactText(content),
+          text_element_style: options.bold ? { bold: true } : {},
+        },
+      },
+    ],
+    style: {},
+  };
+}
+
+function splitTextChunks(text = "", maxLength = 1800) {
+  const value = compactText(text);
+  if (!value) return [];
+  if (value.length <= maxLength) return [value];
+  const chunks = [];
+  for (let index = 0; index < value.length; index += maxLength) {
+    chunks.push(value.slice(index, index + maxLength));
+  }
+  return chunks;
+}
+
+function docLineToBlocks(line = "") {
+  const content = compactText(line);
+  if (!content) return [];
+  const heading = /^(#{1,9})\s+(.+)$/.exec(content);
+  if (heading) {
+    const level = Math.min(heading[1].length, 9);
+    const field = `heading${level}`;
+    return [
+      {
+        block_type: level + 2,
+        [field]: richTextPayload(clipText(heading[2], 1200)),
+      },
+    ];
+  }
+  return splitTextChunks(content).map((chunk) => ({
+    block_type: 2,
+    text: richTextPayload(chunk, { bold: /^问题：/.test(chunk) }),
+  }));
+}
+
 function docTextToBlocks(text = "") {
   return String(text || "")
     .split(/\n+/)
-    .map((line) => compactText(line))
-    .filter(Boolean)
-    .slice(0, 180)
-    .map((content) => ({
-      block_type: content.startsWith("#") ? 3 : 2,
-      text: {
-        elements: [
-          {
-            text_run: {
-              content: content.replace(/^#+\s*/, ""),
-              text_element_style: {},
-            },
-          },
-        ],
-        style: {},
-      },
-    }));
+    .flatMap((line) => docLineToBlocks(line))
+    .slice(0, 180);
+}
+
+function chunkArray(items = [], size = 40) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
 }
 
 function createFeishuClient({
@@ -364,22 +402,13 @@ function createFeishuClient({
     const docText = questionSetToDocText(session);
     let contentSynced = false;
     let contentError = "";
+    let contentErrorPayload = null;
     try {
-      await requestJson(
-        `${FEISHU_API_BASE}/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(documentId)}/children`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${userToken}`,
-            "Content-Type": "application/json; charset=utf-8",
-          },
-          body: JSON.stringify({ children: docTextToBlocks(docText) }),
-        },
-        "写入飞书面试文档"
-      );
+      await writeDocumentBlocks(documentId, docText, userToken);
       contentSynced = true;
     } catch (error) {
       contentError = error.message || "写入飞书文档内容失败";
+      contentErrorPayload = error.payload || null;
     }
 
     return {
@@ -388,6 +417,46 @@ function createFeishuClient({
       title,
       contentSynced,
       contentError,
+      contentErrorPayload,
+      localText: docText,
+      syncedAt: new Date().toISOString(),
+    };
+  }
+
+  async function writeDocumentBlocks(documentId, docText, userToken) {
+    const blocks = docTextToBlocks(docText);
+    if (!blocks.length) return;
+    let insertIndex = 0;
+    for (const children of chunkArray(blocks)) {
+      await requestJson(
+        `${FEISHU_API_BASE}/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(documentId)}/children`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${userToken}`,
+            "Content-Type": "application/json; charset=utf-8",
+          },
+          body: JSON.stringify({ index: insertIndex, children }),
+        },
+        "写入飞书面试文档"
+      );
+      insertIndex += children.length;
+    }
+  }
+
+  async function syncInterviewDocumentContent(documentId, session) {
+    if (!documentId) {
+      const error = new Error("飞书文档不存在");
+      error.statusCode = 400;
+      throw error;
+    }
+    const userToken = await getValidUserToken();
+    const docText = typeof session === "string" ? session : questionSetToDocText(session);
+    await writeDocumentBlocks(documentId, docText, userToken);
+    return {
+      contentSynced: true,
+      contentError: "",
+      contentErrorPayload: null,
       localText: docText,
       syncedAt: new Date().toISOString(),
     };
@@ -510,6 +579,7 @@ function createFeishuClient({
     getStatus,
     listCalendarEvents,
     createInterviewDocument,
+    syncInterviewDocumentContent,
     readDocumentText,
     syncBitableRecord,
     collectBackfillText,
