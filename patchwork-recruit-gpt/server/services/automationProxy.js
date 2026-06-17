@@ -75,6 +75,11 @@ function createAutomationProxyService({
         throw error;
       }
       return { payload, source };
+    } catch (error) {
+      if (error?.statusCode) throw error;
+      const wrapped = new Error(`${source.label || sourceKey} 自动化服务请求失败：${error?.message || error}`);
+      wrapped.statusCode = 502;
+      throw wrapped;
     } finally {
       clearTimeout(timeoutId);
     }

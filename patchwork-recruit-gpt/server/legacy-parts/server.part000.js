@@ -531,6 +531,32 @@ async function handleBossAutomationSummary(request, response) {
   }
 }
 
+function bossAutomationRuntimeTarget(sourceKey) {
+  const source = AUTOMATION_SUMMARY_SOURCES[sourceKey] || {};
+  if (source.platform !== "boss") return null;
+  const accountId = normalizeBossAutomationAccountId(sourceKey);
+  const account = BROWSER_AUTOMATION_ACCOUNTS.find((item) => item.id === accountId);
+  return account ? getAutomationBrowserRuntimeTarget(account, "boss") : null;
+}
+
+async function ensureBossAutomationAgentsReady(accountId, actionLabel) {
+  const sources = bossAutomationSources(accountId);
+  return Promise.all(
+    sources.map(async (sourceKey) => {
+      const target = bossAutomationRuntimeTarget(sourceKey);
+      if (!target) {
+        throw new Error(`${AUTOMATION_SUMMARY_SOURCES[sourceKey]?.label || sourceKey} agent 运行配置不存在`);
+      }
+      try {
+        const result = await ensureAutomationBrowserAgentReady(target);
+        return { sourceKey, label: AUTOMATION_SUMMARY_SOURCES[sourceKey]?.label || sourceKey, ...result };
+      } catch (error) {
+        throw new Error(`${AUTOMATION_SUMMARY_SOURCES[sourceKey]?.label || sourceKey}${actionLabel || "任务"}前启动 agent 失败：${error.message || error}`);
+      }
+    })
+  );
+}
+
 async function handlePlatformAutomationSummary(request, response) {
   try {
     const requestUrl = new URL(request.url, `http://${HOST}:${PORT}`);
@@ -617,6 +643,7 @@ async function handleBossAutomationProcessMessages(request, response) {
     const body = await readJsonBody(request).catch(() => ({}));
     const accountId = normalizeBossAutomationAccountId(body.accountId || "all");
     const message = String(body.message || "请处理全部未读消息，所有已配置岗位都要按最新逻辑处理。");
+    await ensureBossAutomationAgentsReady(accountId, "开始处理");
     const results = await Promise.all(
       bossAutomationSources(accountId).map(async (sourceKey) => {
         await fetchAgentJson(sourceKey, "/api/pause", {
@@ -657,6 +684,7 @@ async function handleBossAutomationProactiveContact(request, response) {
   try {
     const body = await readJsonBody(request).catch(() => ({}));
     const accountId = normalizeBossAutomationAccountId(body.accountId || "all");
+    await ensureBossAutomationAgentsReady(accountId, "开始主动联系");
     const results = await Promise.all(
       bossAutomationSources(accountId).map(async (sourceKey) => {
         await fetchAgentJson(sourceKey, "/api/pause", {
