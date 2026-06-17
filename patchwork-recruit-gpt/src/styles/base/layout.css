@@ -431,7 +431,8 @@ h2 {
   background: var(--primary);
 }
 
-.launch-browser-btn.is-processing {
+.launch-browser-btn.is-processing,
+.launch-browser-btn.is-proactive-running {
   color: #fff;
   border-color: transparent;
   background: #16a34a;

@@ -280,9 +280,13 @@ function renderBrowserLaunchButton(button, status = "idle") {
   if (!button) return;
   const target = getBrowserLaunchButtonTarget(button);
   const statusNode = button.querySelector(".launch-status");
+  const shouldShowProactive = isProactiveAutomationRunningForTarget(target.platform, target.accountId)
+    && !["starting", "stopping", "needs_login", "account_abnormal", "captcha", "failed"].includes(status);
+  const displayStatus = shouldShowProactive ? "proactive" : status;
   const label = {
     running: "已登录",
     processing: "处理中",
+    proactive: "正在主动联系",
     starting: "启动中",
     stopping: "关闭中",
     needs_login: "需登录",
@@ -290,18 +294,45 @@ function renderBrowserLaunchButton(button, status = "idle") {
     captcha: "人机验证",
     failed: "异常",
     idle: "启动",
-  }[status] || "启动";
-  button.dataset.launchStatus = status;
-  button.classList.toggle("is-running", status === "running");
-  button.classList.toggle("is-processing", status === "processing");
-  button.classList.toggle("is-starting", status === "starting" || status === "stopping");
-  button.classList.toggle("is-login", status === "needs_login");
-  button.classList.toggle("is-error", status === "failed" || status === "account_abnormal" || status === "captcha");
-  button.classList.toggle("is-captcha", status === "captcha");
+  }[displayStatus] || "启动";
+  button.dataset.browserStatus = status;
+  button.dataset.launchStatus = displayStatus;
+  button.classList.toggle("is-running", displayStatus === "running");
+  button.classList.toggle("is-processing", displayStatus === "processing");
+  button.classList.toggle("is-proactive-running", displayStatus === "proactive");
+  button.classList.toggle("is-starting", displayStatus === "starting" || displayStatus === "stopping");
+  button.classList.toggle("is-login", displayStatus === "needs_login");
+  button.classList.toggle("is-error", displayStatus === "failed" || displayStatus === "account_abnormal" || displayStatus === "captcha");
+  button.classList.toggle("is-captcha", displayStatus === "captcha");
   button.disabled = status === "starting" || status === "stopping";
-  if (statusNode) statusNode.textContent = `${label} ${target.ports}`;
+  if (statusNode) statusNode.textContent = displayStatus === "proactive" ? label : `${label} ${target.ports}`;
   button.title = `${target.label} ${label} ${target.ports}`;
   button.setAttribute("aria-label", button.title);
+}
+
+function isAutomationTaskRunning(state) {
+  return Boolean(state?.running && !state.paused);
+}
+
+function getProactiveAutomationState(platform, accountId) {
+  const normalizedPlatform = normalizeAutomationPlatform(platform);
+  const normalizedAccount = normalizeBossAutomationAccountId(accountId);
+  return normalizedPlatform === "boss"
+    ? getProactiveContactState(normalizedAccount)
+    : getPlatformAutomationTaskState(normalizedPlatform, "proactive", normalizedAccount);
+}
+
+function isProactiveAutomationRunningForTarget(platform, accountId) {
+  const normalizedPlatform = normalizeAutomationPlatform(platform);
+  const normalizedAccount = normalizeBossAutomationAccountId(accountId);
+  if (isAutomationTaskRunning(getProactiveAutomationState(normalizedPlatform, normalizedAccount))) return true;
+  return normalizedAccount !== "all" && isAutomationTaskRunning(getProactiveAutomationState(normalizedPlatform, "all"));
+}
+
+function syncProactiveLaunchButtonStates() {
+  elements.browserLaunchButtons?.forEach((button) => {
+    renderBrowserLaunchButton(button, button.dataset.browserStatus || button.dataset.launchStatus || "idle");
+  });
 }
 
 function getBrowserLaunchButtonStatus(target = {}) {
@@ -553,7 +584,7 @@ async function launchAutomationBrowserTarget(button) {
 
 function isBrowserLaunchButtonActive(button) {
   const status = button?.dataset?.launchStatus || "idle";
-  if (["running", "processing", "needs_login", "account_abnormal", "captcha"].includes(status)) return true;
+  if (["running", "processing", "proactive", "needs_login", "account_abnormal", "captcha"].includes(status)) return true;
   if (status === "failed") {
     return button?.dataset?.cdpReady === "1" || button?.dataset?.agentReady === "1";
   }
@@ -1187,6 +1218,7 @@ async function startOrPauseProactiveBossContact() {
     await pauseBossAutomation({ fromInlineControl: true, accountId });
     state.paused = true;
     stopProactiveContactLiveTimers(accountId);
+    syncProactiveLaunchButtonStates();
     if (isCurrentBossAutomationAccount(accountId)) {
       setBossAutomationMode("proactive");
       setProactiveContactStatus("已暂停");
@@ -1201,6 +1233,7 @@ async function startOrPauseProactiveBossContact() {
       state.paused = false;
       if (state.running) {
         startProactiveContactLiveTimers(accountId);
+        syncProactiveLaunchButtonStates();
         if (isCurrentBossAutomationAccount(accountId)) {
           setBossAutomationMode("proactive");
           setProactiveContactStatus("继续执行中");
@@ -1243,6 +1276,7 @@ async function runProactiveBossContact(accountId = bossAutomationAccountId) {
   }
   state.running = true;
   state.paused = false;
+  syncProactiveLaunchButtonStates();
   const runId = ++state.runId;
   startProactiveContactLiveTimers(accountId);
   if (isCurrentBossAutomationAccount(accountId)) setProactiveContactStatus(`正在慢速主动联系：${targetLabel}，目标 ${targetCount} 人`);
@@ -1272,6 +1306,7 @@ async function runProactiveBossContact(accountId = bossAutomationAccountId) {
     if (state.paused) {
       state.running = false;
       stopProactiveContactLiveTimers(accountId);
+      syncProactiveLaunchButtonStates();
       if (isCurrentBossAutomationAccount(accountId)) {
         setProactiveContactStatus("已暂停");
         updateProactiveContactButton();
@@ -1284,6 +1319,7 @@ async function runProactiveBossContact(accountId = bossAutomationAccountId) {
     state.running = false;
     state.paused = false;
     stopProactiveContactLiveTimers(accountId);
+    syncProactiveLaunchButtonStates();
     if (isCurrentBossAutomationAccount(accountId)) {
       if (elements.batchSummary) elements.batchSummary.textContent = text;
       showBossAutomationActions("主动联系完成，可以继续处理消息或再次执行主动联系");
@@ -1299,6 +1335,7 @@ async function runProactiveBossContact(accountId = bossAutomationAccountId) {
     const text = error.message || "主动联系失败";
     state.running = false;
     stopProactiveContactLiveTimers(accountId);
+    syncProactiveLaunchButtonStates();
     if (isCurrentBossAutomationAccount(accountId)) {
       if (elements.batchSummary) elements.batchSummary.textContent = text;
       showBossAutomationActions("主动联系失败，可以检查推荐牛人页面是否已打开");
@@ -1508,6 +1545,7 @@ async function pausePlatformAutomation(platform, mode) {
     state.localRunPending = false;
     state.externalBusy = false;
     stopPlatformAutomationLiveTimers(normalized, actionMode, accountId);
+    if (actionMode === "proactive") syncProactiveLaunchButtonStates();
     if (isCurrentPlatformAutomationTask(normalized, actionMode, accountId)) {
       setPlatformInlineStatus(normalized, actionMode, accountId, "已暂停");
       syncPlatformAutomationStartControls();
@@ -1581,6 +1619,7 @@ async function runPlatformAutomation(platform, mode) {
   state.paused = false;
   state.localRunPending = true;
   state.externalBusy = false;
+  if (isProactive) syncProactiveLaunchButtonStates();
   const runId = ++state.runId;
   activeAutomationPlatform = normalizedPlatform;
   setBossAutomationMode(isProactive ? "proactive" : "process");
@@ -1619,6 +1658,7 @@ async function runPlatformAutomation(platform, mode) {
     state.paused = false;
     state.externalBusy = false;
     stopPlatformAutomationLiveTimers(normalizedPlatform, actionMode, accountId);
+    if (isProactive) syncProactiveLaunchButtonStates();
     setPlatformAutomationStatus(normalizedPlatform, finalState.platformStatus, finalState.state);
     if (isProactive) {
       setProactiveContactStatus(finalState.inlineStatus);
@@ -1635,6 +1675,7 @@ async function runPlatformAutomation(platform, mode) {
     state.localRunPending = false;
     state.externalBusy = false;
     stopPlatformAutomationLiveTimers(normalizedPlatform, actionMode, accountId);
+    if (isProactive) syncProactiveLaunchButtonStates();
     setPlatformAutomationStatus(normalizedPlatform, "失败", "error");
     if (isProactive) {
       setProactiveContactStatus(text);
@@ -1649,6 +1690,7 @@ async function runPlatformAutomation(platform, mode) {
       state.localRunPending = false;
       state.externalBusy = false;
       stopPlatformAutomationLiveTimers(normalizedPlatform, actionMode, accountId);
+      if (isProactive) syncProactiveLaunchButtonStates();
       if (normalizedPlatform === activeAutomationPlatform) syncPlatformAutomationStartControls();
       await refreshBossAutomationSummary(bossAutomationSummaryDate, { force: true });
     }
