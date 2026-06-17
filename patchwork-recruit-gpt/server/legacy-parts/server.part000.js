@@ -539,7 +539,7 @@ function bossAutomationRuntimeTarget(sourceKey) {
   return account ? getAutomationBrowserRuntimeTarget(account, "boss") : null;
 }
 
-async function ensureBossAutomationAgentsReady(accountId, actionLabel) {
+async function ensureBossAutomationRuntimeReady(accountId, actionLabel) {
   const sources = bossAutomationSources(accountId);
   return Promise.all(
     sources.map(async (sourceKey) => {
@@ -548,11 +548,35 @@ async function ensureBossAutomationAgentsReady(accountId, actionLabel) {
         throw new Error(`${AUTOMATION_SUMMARY_SOURCES[sourceKey]?.label || sourceKey} agent 运行配置不存在`);
       }
       try {
-        const result = await ensureAutomationBrowserAgentReady(target);
-        return { sourceKey, label: AUTOMATION_SUMMARY_SOURCES[sourceKey]?.label || sourceKey, ...result };
+        const browser = await startBrowserTarget(target.account, "boss", { waitTimeoutMs: 45000 });
+        if (browser?.captcha) throw new Error("检测到人机验证");
+        if (browser?.needsLogin) throw new Error("账号未登录，需要人工登录");
+        if (browser?.accountAbnormal) throw new Error("账号异常，需要人工处理");
+        const agent = await ensureAutomationBrowserAgentReady(target);
+        return {
+          sourceKey,
+          label: AUTOMATION_SUMMARY_SOURCES[sourceKey]?.label || sourceKey,
+          target,
+          browser,
+          agent,
+          agentPort: target.agentPort || 0,
+          cdpPort: target.cdpPort || 0,
+        };
       } catch (error) {
-        throw new Error(`${AUTOMATION_SUMMARY_SOURCES[sourceKey]?.label || sourceKey}${actionLabel || "任务"}前启动 agent 失败：${error.message || error}`);
+        throw new Error(`${AUTOMATION_SUMMARY_SOURCES[sourceKey]?.label || sourceKey}${actionLabel || "任务"}前启动浏览器/CDP 或 agent 失败：${error.message || error}`);
       }
+    })
+  );
+}
+
+async function cleanupBossAutomationAgents(runtimeTargets) {
+  const targets = Array.isArray(runtimeTargets) ? runtimeTargets : [];
+  return Promise.all(
+    targets.map(async (item) => {
+      const target = item?.target || item;
+      const agentPort = Number(item?.agentPort || target?.agentPort || 0);
+      if (!agentPort) return { ok: true, skipped: true, reason: "agent_port_missing" };
+      return stopAutomationLocalPort(agentPort, "agent");
     })
   );
 }
@@ -639,11 +663,12 @@ async function handleBossAutomationStart(request, response) {
 }
 
 async function handleBossAutomationProcessMessages(request, response) {
+  let runtimeTargets = [];
   try {
     const body = await readJsonBody(request).catch(() => ({}));
     const accountId = normalizeBossAutomationAccountId(body.accountId || "all");
     const message = String(body.message || "请处理全部未读消息，所有已配置岗位都要按最新逻辑处理。");
-    await ensureBossAutomationAgentsReady(accountId, "开始处理");
+    runtimeTargets = await ensureBossAutomationRuntimeReady(accountId, "开始处理");
     const results = await Promise.all(
       bossAutomationSources(accountId).map(async (sourceKey) => {
         await fetchAgentJson(sourceKey, "/api/pause", {
@@ -677,14 +702,19 @@ async function handleBossAutomationProcessMessages(request, response) {
     });
   } catch (error) {
     sendJson(response, 502, { error: error.message || "BOSS 处理消息失败" });
+  } finally {
+    await cleanupBossAutomationAgents(runtimeTargets).catch((error) => {
+      console.warn(`[boss-automation] process cleanup failed: ${error.message || error}`);
+    });
   }
 }
 
 async function handleBossAutomationProactiveContact(request, response) {
+  let runtimeTargets = [];
   try {
     const body = await readJsonBody(request).catch(() => ({}));
     const accountId = normalizeBossAutomationAccountId(body.accountId || "all");
-    await ensureBossAutomationAgentsReady(accountId, "开始主动联系");
+    runtimeTargets = await ensureBossAutomationRuntimeReady(accountId, "开始主动联系");
     const results = await Promise.all(
       bossAutomationSources(accountId).map(async (sourceKey) => {
         await fetchAgentJson(sourceKey, "/api/pause", {
@@ -723,6 +753,10 @@ async function handleBossAutomationProactiveContact(request, response) {
     });
   } catch (error) {
     sendJson(response, 502, { error: error.message || "BOSS 主动联系失败" });
+  } finally {
+    await cleanupBossAutomationAgents(runtimeTargets).catch((error) => {
+      console.warn(`[boss-automation] proactive cleanup failed: ${error.message || error}`);
+    });
   }
 }
 
