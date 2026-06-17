@@ -8,3 +8,22 @@
 .frontend-hidden {
   display: none !important;
 }
+
+.topbar > div:first-of-type {
+  order: 1;
+}
+
+.topbar-interview-link {
+  order: 2;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.topbar .status-pill {
+  order: 3;
+}

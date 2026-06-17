@@ -435,6 +435,34 @@ async function handleAutomation24hLogs(request, response) {
   }
 }
 
+const interviewCenterFeature = createInterviewCenterFeature({
+  getDb,
+  readJsonBody,
+  sendJson,
+  readDatabase,
+  writeDatabase,
+  findResume,
+  publicRecord,
+  publicResumeListRecord,
+  collectAutomationConversationCandidates,
+  scoreResumeConversationMatch,
+  getCurrentScoringRules,
+  callGptJson,
+  makeAbortController,
+  createRuleSuggestionsFromFeedback,
+  invalidateResumeListResponseCache,
+  feishuAppId: FEISHU_APP_ID,
+  feishuAppSecret: FEISHU_APP_SECRET,
+  redirectUri: FEISHU_OAUTH_REDIRECT_URI,
+  bitableAppToken: FEISHU_INTERVIEW_BITABLE_APP_TOKEN,
+  bitableTableId: FEISHU_INTERVIEW_BITABLE_TABLE_ID,
+  authorizeUrl: FEISHU_OAUTH_AUTHORIZE_URL || undefined,
+  autoMatchMinScore: INTERVIEW_CENTER_AUTO_MATCH_MIN_SCORE,
+  autoMatchLeadScore: INTERVIEW_CENTER_AUTO_MATCH_LEAD_SCORE,
+  autoPrepareLimit: INTERVIEW_CENTER_AUTO_PREPARE_LIMIT,
+  gptTextTimeoutMs: GPT_TEXT_TIMEOUT_MS,
+});
+
 const server = http.createServer((request, response) => {
   const url = new URL(request.url, requestBaseUrl(request));
   const resumeMatch = url.pathname.match(/^\/api\/resumes\/([^/]+)$/);
@@ -580,6 +608,11 @@ const server = http.createServer((request, response) => {
 
   if (request.method === "GET" && url.pathname === "/api/feishu/status") {
     handleFeishuStatus(request, response);
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/interview-center/")) {
+    interviewCenterFeature.handle(request, response, url);
     return;
   }
 

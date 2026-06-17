@@ -546,6 +546,21 @@ function createAutomation24hScheduler({
     return normalizeCount(observed.remainingUnread, 0) > 0 || normalizeCount(observed.remainingActionable, 0) > 0;
   }
 
+  function shouldRunBossConfirmRound(target, round, roundResult, observed) {
+    if (target?.platform !== "boss" || round !== 1) return false;
+    if (observed?.busy) return false;
+    return normalizeCount(roundResult?.stats?.processed, 0) > 0;
+  }
+
+  function nextRoundDecision(target, round, roundResult, observed) {
+    if (round >= maxRoundsPerTarget) return { run: false, reason: "max_rounds_reached" };
+    if (shouldRunSecondRound(observed)) return { run: true, reason: "remaining_messages" };
+    if (shouldRunBossConfirmRound(target, round, roundResult, observed)) {
+      return { run: true, reason: "boss_confirm_after_processed" };
+    }
+    return { run: false, reason: observed?.ok ? "no_remaining_messages" : "observe_failed" };
+  }
+
   function processTaskRoutes(target) {
     if (target?.platform === "boss") {
       return {
@@ -1073,7 +1088,26 @@ function createAutomation24hScheduler({
           remainingActionable: lastObserved.ok ? lastObserved.remainingActionable : null,
           lastMessage: `第${round}轮完成`,
         });
-        if (!shouldRunSecondRound(lastObserved)) break;
+        const nextDecision = nextRoundDecision(target, round, roundResult, lastObserved);
+        if (!nextDecision.run) break;
+        if (nextDecision.reason === "boss_confirm_after_processed") {
+          await appendLog({
+            event: "round_confirm_scheduled",
+            targetId: target.id,
+            targetLabel: target.label,
+            platform: target.platform,
+            platformLabel: target.platformLabel,
+            accountId: target.accountId,
+            accountName: target.accountName,
+            sourceKey: target.sourceKey,
+            round,
+            processed: roundResult.stats.processed,
+            remainingUnread: lastObserved?.ok ? lastObserved.remainingUnread : null,
+            remainingActionable: lastObserved?.ok ? lastObserved.remainingActionable : null,
+            reason: nextDecision.reason,
+            message: `${chinaTimeText()} ${target.label} 第${round}轮处理过候选人但剩余红点为 0，已追加 BOSS 确认轮，避免漏处理`,
+          });
+        }
       }
 
       const stopped = state.stopRequested;

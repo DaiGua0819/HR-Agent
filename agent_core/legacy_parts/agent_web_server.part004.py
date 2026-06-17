@@ -1235,6 +1235,62 @@
         origin_page = terminal.current_page()
         entry = self.recruiter_find_resume_attachment_entry(terminal, platform)
         if not entry.get("found"):
+            if platform == "zhilian":
+                url_download = self.recruiter_download_resume_from_page_url(
+                    platform,
+                    resume_context,
+                    origin_page,
+                    candidate_name,
+                    applied_position,
+                    fallback_text=candidate_label,
+                )
+                if url_download.get("ok") and url_download.get("downloaded"):
+                    url_download["candidate"] = candidate
+                    url_download["entry"] = entry
+                    url_download["openedBy"] = "already_open_preview"
+                    url_download["closeResult"] = self.recruiter_close_resume_download_surfaces(terminal, origin_page=origin_page, platform=platform)
+                    return url_download
+                download_button = self.recruiter_find_resume_download_button(origin_page)
+                if download_button.get("found"):
+                    button_locator = download_button.get("locator")
+                    if button_locator is not None and button_locator.count():
+                        try:
+                            with origin_page.expect_download(timeout=20000) as download_info:
+                                if terminal.humanize:
+                                    terminal.pause_like_person("pre_action")
+                                    highlight_target(button_locator)
+                                humanized_locator_click(terminal, button_locator, force=True)
+                                if terminal.humanize:
+                                    terminal.pause_like_person("post_action")
+                            download = download_info.value
+                            failure = ""
+                            try:
+                                failure = download.failure() or ""
+                            except Exception:
+                                failure = ""
+                            if failure:
+                                close_result = self.recruiter_close_resume_download_surfaces(terminal, origin_page=origin_page, platform=platform)
+                                return {"ok": False, "blocked": True, "reason": "resume_download_failed", "message": f"{platform} 附件简历下载失败：{safe_text(failure, 160)}", "candidate": candidate, "entry": entry, "downloadButton": {k: v for k, v in download_button.items() if k != "locator"}, "closeResult": close_result}
+                            saved = self.recruiter_save_download_object(platform, resume_context, download, candidate_name, applied_position, "attachment_preview_already_open_download", fallback_text=candidate_label)
+                            saved["candidate"] = candidate
+                            saved["entry"] = entry
+                            saved["downloadButton"] = {k: v for k, v in download_button.items() if k != "locator"}
+                            saved["openedBy"] = "already_open_preview"
+                            saved["closeResult"] = self.recruiter_close_resume_download_surfaces(terminal, origin_page=origin_page, platform=platform)
+                            return saved
+                        except Exception as error:
+                            close_result = self.recruiter_close_resume_download_surfaces(terminal, origin_page=origin_page, platform=platform)
+                            return {
+                                "ok": False,
+                                "blocked": True,
+                                "reason": "resume_download_not_triggered",
+                                "message": f"{platform} 已检测到简历预览下载按钮，但点击后没有触发文件下载：{safe_text(candidate_label, 80)}",
+                                "candidate": candidate,
+                                "error": safe_text(str(error), 180),
+                                "entry": entry,
+                                "downloadButton": {k: v for k, v in download_button.items() if k != "locator"},
+                                "closeResult": close_result,
+                            }
             return {
                 "ok": False,
                 "blocked": False,

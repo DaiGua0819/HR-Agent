@@ -1088,6 +1088,30 @@
                 terminal.pause_like_person("post_action")
             page.wait_for_timeout(random.randint(1200, 1900))
             after = self.zhilian_inspect_resume_request_state(terminal)
+            if after.get("hasResumeAttachment"):
+                download_result = self.recruiter_download_visible_resume_attachment(terminal, "zhilian", context=context)
+                if download_result.get("ok") and download_result.get("downloaded"):
+                    return {
+                        "message": f"智联已点击要附件简历并立即下载附件：{safe_text(str(download_result.get('filename') or candidate_label), 120)}",
+                        "downloaded": True,
+                        "resumeReceived": True,
+                        "candidate": candidate,
+                        "state": {k: v for k, v in target.items() if k != "locator"},
+                        "after": after,
+                        "sentLike": True,
+                        "download": download_result,
+                        "resume": download_result,
+                    }
+                return {
+                    "blocked": True,
+                    "message": f"智联已点击要附件简历并检测到附件，但下载失败：{safe_text(str(download_result.get('message') or download_result.get('reason') or ''), 180)}",
+                    "resumeReceived": True,
+                    "candidate": candidate,
+                    "state": {k: v for k, v in target.items() if k != "locator"},
+                    "after": after,
+                    "sentLike": True,
+                    "download": download_result,
+                }
             sent_like = bool(after.get("alreadyRequested") or after.get("hasResumeAttachment"))
             return {
                 "message": (

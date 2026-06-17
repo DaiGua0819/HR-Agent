@@ -917,6 +917,7 @@ function publicRecord(record) {
     detailUrl: record.detailUrl || "",
     platformContact: record.platformContact || null,
     interviewInvite: record.interviewInvite || null,
+    interviewEvaluation: record.interviewEvaluation || null,
     hasPdf: Boolean(record.pdfPath),
     scoringVersion: record.scoringVersion || getCurrentScoringVersion(record.jobType),
     scoringVersionMeta: getScoringVersionMeta(record.scoringVersion || getCurrentScoringVersion(record.jobType), record.jobType),
@@ -982,6 +983,15 @@ function publicResumeListRecord(record) {
           updatedAt: invite.updatedAt || "",
         }
       : null,
+    interviewEvaluation:
+      record.interviewEvaluation && typeof record.interviewEvaluation === "object"
+        ? {
+            overallRecommendation: record.interviewEvaluation.overallRecommendation || "",
+            summary: record.interviewEvaluation.summary || "",
+            humanReviewRequired: Boolean(record.interviewEvaluation.humanReviewRequired),
+            updatedAt: record.interviewEvaluation.updatedAt || "",
+          }
+        : null,
     hasPdf: Boolean(record.pdfPath),
     parseQuality: parseQuality
       ? {

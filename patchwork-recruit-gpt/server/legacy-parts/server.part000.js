@@ -17,6 +17,7 @@ const { normalizeBoolean, normalizeScoreValue, normalizeBoundedScore, normalizeS
 const { safeFilePart, compactSafeFilePart, clipText, normalizeConversationName } = require("./server/utils/text");
 const { createAutomationProxyService } = require("./server/services/automationProxy");
 const { createAutomation24hScheduler } = require("./server/services/automation24h");
+const { createInterviewCenterFeature } = require("./server/features/interview-center");
 const {
   normalizeAutomationPlatformId,
   automationPlatformLabel,
@@ -191,6 +192,13 @@ const DEFAULT_OPENAI_BASE_URL = "http://192.168.254.205:8097/v1";
 const DEFAULT_OPENAI_MODEL = "gpt-5.4pro";
 const FEISHU_APP_ID = process.env.FEISHU_APP_ID || "";
 const FEISHU_APP_SECRET = process.env.FEISHU_APP_SECRET || "";
+const FEISHU_OAUTH_REDIRECT_URI = process.env.FEISHU_OAUTH_REDIRECT_URI || "";
+const FEISHU_INTERVIEW_BITABLE_APP_TOKEN = process.env.FEISHU_INTERVIEW_BITABLE_APP_TOKEN || "";
+const FEISHU_INTERVIEW_BITABLE_TABLE_ID = process.env.FEISHU_INTERVIEW_BITABLE_TABLE_ID || "";
+const FEISHU_OAUTH_AUTHORIZE_URL = process.env.FEISHU_OAUTH_AUTHORIZE_URL || "";
+const INTERVIEW_CENTER_AUTO_MATCH_MIN_SCORE = Number(process.env.INTERVIEW_CENTER_AUTO_MATCH_MIN_SCORE || 85);
+const INTERVIEW_CENTER_AUTO_MATCH_LEAD_SCORE = Number(process.env.INTERVIEW_CENTER_AUTO_MATCH_LEAD_SCORE || 15);
+const INTERVIEW_CENTER_AUTO_PREPARE_LIMIT = Number(process.env.INTERVIEW_CENTER_AUTO_PREPARE_LIMIT || 12);
 const AI_V4_SCORING_VERSION = "v4-agent-depth-human-feedback";
 const AI_V4_SCORING_VERSION_NAME = "历史评分 v4";
 const AI_V4_SCORING_VERSION_DESCRIPTION =
