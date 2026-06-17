@@ -1825,6 +1825,14 @@
           const textOf = el => normalize(el ? (el.innerText || el.textContent || '') : '');
           const candidates = [];
           const seen = new Set();
+          const messageAreaSelector = [
+            '#IMMessageList',
+            '[id*="IMMessageList"]',
+            'div.message-item',
+            'div.im-message-item',
+            '.im-message-item',
+            '[class*="message-item" i]'
+          ].join(',');
           const selector = [
             '#sensor_Bchat_newzxjl',
             '.chat-user-operate .file-style.online',
@@ -1845,7 +1853,8 @@
             if (el.closest('#conversation-list,.conversation-list,[class*="conversation-list" i],nav,header,.menu,.sidebar')) continue;
             const clickable = el.closest('a,button,[role="button"],[onclick],#sensor_Bchat_newzxjl,.chat-user-operate .file-style,.chat-user-operate [tabindex],.resume-element,.item-container-resume,[class*="resume" i],[class*="file-style" i]') || el;
             if (!visible(clickable)) continue;
-            const root = el.closest('div.message-item,div.im-message-item,.im-message-item,[class*="message-item" i]') || clickable;
+            const messageRoot = el.closest(messageAreaSelector) || clickable.closest(messageAreaSelector);
+            const root = messageRoot || clickable;
             const haystack = normalize([
               textOf(el),
               textOf(clickable),
@@ -1864,9 +1873,29 @@
             const key = `${clickable.tagName}:${box.x}:${box.y}:${haystack.slice(0, 80)}`;
             if (seen.has(key)) continue;
             seen.add(key);
+            const classBlob = String(el.className || '') + ' ' + String(clickable.className || '') + ' ' + String(root.className || '');
+            const isHeaderShortcut = !!(
+              el.id === 'sensor_Bchat_newzxjl'
+              || clickable.id === 'sensor_Bchat_newzxjl'
+              || el.closest('.chat-user-operate')
+              || clickable.closest('.chat-user-operate')
+            );
+            const isResumeCard = /resume-element|item-container-resume|resume-card/i.test(classBlob)
+              || !!(el.closest('.resume-element,.item-container-resume,.resume-card') || clickable.closest('.resume-element,.item-container-resume,.resume-card'));
+            const isMessageResumeCard = !!messageRoot && isResumeCard && !isHeaderShortcut;
+            if (!isMessageResumeCard) {
+              candidates.push({
+                score: isHeaderShortcut ? -300 : 20,
+                source: isHeaderShortcut ? 'header_shortcut_ignored' : 'non_message_resume_ignored',
+                text: haystack.slice(0, 260),
+                tag: clickable.tagName,
+                className: String(clickable.className || '').slice(0, 160),
+                rect: box
+              });
+              continue;
+            }
             let score = 100;
-            if (/sensor_Bchat_newzxjl|file-style online|chat-user-operate/i.test(haystack)) score += 80;
-            if (/resume-element|item-container-resume|resume-card/i.test(String(clickable.className || '') + ' ' + String(root.className || ''))) score += 140;
+            if (/resume-element|item-container-resume|resume-card/i.test(classBlob)) score += 140;
             if (/在线简历/.test(textOf(clickable))) score += 60;
             if (/在线简历/.test(textOf(root))) score += 35;
             if (/others|left|message/i.test(String(root.className || ''))) score += 15;
@@ -1874,6 +1903,7 @@
             if (/(批量|职位管理|全部岗位|未读|人才望远镜|主动联系)/.test(haystack)) score -= 120;
             candidates.push({
               score,
+              source: 'message_resume_card',
               text: haystack.slice(0, 260),
               tag: clickable.tagName,
               className: String(clickable.className || '').slice(0, 160),
@@ -1890,6 +1920,7 @@
             token,
             candidate: {
               score: best.score,
+              source: best.source,
               text: best.text,
               tag: best.tag,
               className: best.className,
@@ -1897,6 +1928,7 @@
             },
             candidates: candidates.slice(0, 8).map(item => ({
               score: item.score,
+              source: item.source,
               text: item.text,
               tag: item.tag,
               className: item.className,
@@ -1931,6 +1963,17 @@
           };
           const target = el.closest('a,button,[role="button"],[onclick],#sensor_Bchat_newzxjl,.chat-user-operate .file-style,.chat-user-operate [tabindex],.resume-element,.item-container-resume,[class*="resume" i],[class*="file-style" i]') || el;
           if (!visible(target)) return { ok: false, reason: 'online_resume_dom_element_not_visible' };
+          if (
+            target.id === 'sensor_Bchat_newzxjl'
+            || el.id === 'sensor_Bchat_newzxjl'
+            || target.closest('.chat-user-operate')
+            || el.closest('.chat-user-operate')
+          ) {
+            return { ok: false, reason: 'online_resume_header_shortcut_blocked' };
+          }
+          if (!target.closest('#IMMessageList,[id*="IMMessageList"],div.message-item,div.im-message-item,.im-message-item,[class*="message-item" i]')) {
+            return { ok: false, reason: 'online_resume_not_in_message_list' };
+          }
           target.scrollIntoView({ block: 'center', inline: 'center' });
           if (typeof target.focus === 'function') target.focus({ preventScroll: true });
           target.click();
@@ -1954,6 +1997,47 @@
         detail_page = None
         opened_by = "current_page"
         clicked_entry = False
+        rejected_detail_pages: list[dict] = []
+
+        def page_brief(page) -> dict:
+            try:
+                url = str(getattr(page, "url", "") or "")
+            except Exception:
+                url = ""
+            try:
+                title = page.title()
+            except Exception:
+                title = ""
+            return {"url": safe_text(url, 180), "title": safe_text(title, 80)}
+
+        def validate_detail_candidate(page, source: str):
+            if page is None:
+                return None
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=5000)
+            except Exception:
+                pass
+            try:
+                page.wait_for_selector("body", timeout=3000)
+            except Exception:
+                pass
+            try:
+                if self.job51_is_online_resume_detail_page(page):
+                    return page
+            except Exception:
+                pass
+            brief = page_brief(page)
+            rejected = {"source": source, **brief}
+            rejected_detail_pages.append(rejected)
+            url = str(brief.get("url") or "")
+            if page != origin_page and "ehire.51job.com" in url and "/Revision/chat" not in url:
+                try:
+                    page.close()
+                    rejected["closed"] = True
+                except Exception as error:
+                    rejected["closeError"] = safe_text(str(error), 120)
+            return None
+
         try:
             with origin_page.context.expect_page(timeout=8000) as page_info:
                 if terminal.humanize:
@@ -1984,28 +2068,35 @@
 
         origin_page.wait_for_timeout(random.randint(900, 1400))
         pages = list(getattr(origin_page.context, "pages", []) or [])
+        if detail_page is not None:
+            accepted = validate_detail_candidate(detail_page, opened_by)
+            if accepted is not None:
+                detail_page = accepted
+            else:
+                detail_page = None
         if detail_page is None:
             new_pages = [page for page in pages if page not in before_pages]
             for page in reversed(new_pages + pages):
                 try:
-                    if self.job51_is_online_resume_detail_page(page):
-                        detail_page = page
+                    accepted = validate_detail_candidate(page, "detected_page")
+                    if accepted is not None:
+                        detail_page = accepted
                         opened_by = "detected_page"
                         break
                 except Exception:
                     continue
-        if detail_page is None and self.job51_is_online_resume_detail_page(origin_page):
-            detail_page = origin_page
-            opened_by = "same_page"
+        if detail_page is None:
+            accepted = validate_detail_candidate(origin_page, "same_page")
+            if accepted is not None:
+                detail_page = accepted
+                opened_by = "same_page"
         if detail_page is None:
             return {
                 "ok": False,
                 "reason": "online_resume_detail_not_opened",
                 "entry": {k: v for k, v in entry.items() if k != "token"},
-                "pages": [
-                    {"url": safe_text(str(getattr(page, "url", "") or ""), 180), "title": safe_text(page.title(), 80)}
-                    for page in pages[-6:]
-                ],
+                "rejectedDetailPages": rejected_detail_pages[-6:],
+                "pages": [page_brief(page) for page in pages[-6:]],
             }
 
         try:
