@@ -1690,12 +1690,39 @@ function normalizeBrowserHost(value = "") {
   }
 }
 
+function parseBrowserUrl(value = "") {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeBrowserPathname(value = "") {
+  const pathname = String(value || "/").split(/[?#]/)[0] || "/";
+  if (pathname === "/") return "/";
+  return pathname.replace(/\/+$/g, "").toLowerCase() || "/";
+}
+
 function isBlankBrowserPage(page = {}) {
   const url = String(page.url || "").trim().toLowerCase();
   return !url || url === "about:blank" || url.startsWith("chrome://newtab") || url.startsWith("devtools:");
 }
 
 function pageMatchesStartUrl(page = {}, startUrl = "") {
+  if (isBlankBrowserPage(page)) return false;
+  const target = parseBrowserUrl(startUrl);
+  const current = parseBrowserUrl(page.url || "");
+  if (!target || !current) return false;
+  const targetHost = target.hostname.replace(/^www\./i, "").toLowerCase();
+  const pageHost = current.hostname.replace(/^www\./i, "").toLowerCase();
+  if (!targetHost || targetHost !== pageHost) return false;
+  const targetPath = normalizeBrowserPathname(target.pathname);
+  const pagePath = normalizeBrowserPathname(current.pathname);
+  return pagePath === targetPath || pagePath.startsWith(`${targetPath}/`);
+}
+
+function pageMatchesStartHost(page = {}, startUrl = "") {
   if (isBlankBrowserPage(page)) return false;
   const targetHost = normalizeBrowserHost(startUrl);
   const pageHost = normalizeBrowserHost(page.url || "");
@@ -1705,6 +1732,11 @@ function pageMatchesStartUrl(page = {}, startUrl = "") {
 function pickPlatformPage(pages, startUrl) {
   const pageList = Array.isArray(pages) ? pages.filter((page) => page.type === "page") : [];
   return pageList.find((page) => pageMatchesStartUrl(page, startUrl)) || null;
+}
+
+function pickPlatformHostPage(pages, startUrl) {
+  const pageList = Array.isArray(pages) ? pages.filter((page) => page.type === "page") : [];
+  return pageList.find((page) => pageMatchesStartHost(page, startUrl)) || null;
 }
 
 function pickBlankPage(pages) {
@@ -1854,6 +1886,13 @@ async function openPlatformCdpPage(cdpPort, startUrl) {
   return created;
 }
 
+async function navigateCdpPage(cdpPort, page, startUrl) {
+  if (!page?.webSocketDebuggerUrl) return null;
+  await activateCdpPage(cdpPort, page);
+  const result = await callPageCdp(page, "Page.navigate", { url: startUrl }, 6000).catch(() => null);
+  return result ? page : null;
+}
+
 async function waitForPlatformPageReady(cdpPort, startUrl, platform, account, timeoutMs = 20000) {
   const startedAt = Date.now();
   let lastPage = null;
@@ -1907,18 +1946,29 @@ async function focusOrOpenCdpPage(target, startUrl, platform, account) {
   const pages = await fetchCdpJson(target.cdpPort, "/json/list").catch(() => []);
   const existing = pickPlatformPage(pages, startUrl);
   let openedNewTab = false;
+  let navigatedExistingPage = false;
 
   if (existing?.webSocketDebuggerUrl) {
     await activateCdpPage(target.cdpPort, existing);
   } else {
+    const sameHostPage = pickPlatformHostPage(pages, startUrl);
     const blankPage = pickBlankPage(pages);
-    if (blankPage?.id) await activateCdpPage(target.cdpPort, blankPage);
-    const created = await openPlatformCdpPage(target.cdpPort, startUrl);
-    openedNewTab = Boolean(created);
+    const reusablePage = sameHostPage?.webSocketDebuggerUrl ? sameHostPage : blankPage?.webSocketDebuggerUrl ? blankPage : null;
+    if (reusablePage) {
+      const navigated = await navigateCdpPage(target.cdpPort, reusablePage, startUrl);
+      navigatedExistingPage = Boolean(navigated);
+      if (!navigated) {
+        const created = await openPlatformCdpPage(target.cdpPort, startUrl);
+        openedNewTab = Boolean(created);
+      }
+    } else {
+      const created = await openPlatformCdpPage(target.cdpPort, startUrl);
+      openedNewTab = Boolean(created);
+    }
   }
 
   const result = await waitForPlatformPageReady(target.cdpPort, startUrl, platform, account);
-  return { openedNewTab, ...result };
+  return { openedNewTab, navigatedExistingPage, ...result };
 }
 
 async function startBrowserTarget(account, platform, { waitTimeoutMs = 30000 } = {}) {
