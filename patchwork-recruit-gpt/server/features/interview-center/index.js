@@ -282,6 +282,96 @@ function createInterviewCenterFeature(context) {
     return next || session;
   }
 
+  function backfillAvailableAt(session = {}) {
+    const baseTime = Number(session.endTime || session.startTime || 0);
+    return baseTime ? baseTime + BACKFILL_GRACE_SECONDS : 0;
+  }
+
+  function prematureBackfillGuard(session = {}) {
+    if (!session.interviewEvaluation) return null;
+    const availableAt = backfillAvailableAt(session);
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (availableAt && nowSeconds < availableAt) {
+      return {
+        reason: "interview_not_finished",
+        availableAt,
+        nowSeconds,
+        endTime: Number(session.endTime || 0),
+      };
+    }
+    return null;
+  }
+
+  function statusWithoutBackfill(session = {}) {
+    if (session.feishuDoc?.documentId) return session.feishuDoc.contentSynced === false ? "prepared_local" : "prepared";
+    if (session.questionSet) return "questions_generated";
+    if (session.resumeId) return "matched";
+    if (["backfilling", "backfill_failed", "needs_review", "completed"].includes(session.status)) return "synced";
+    return session.status || "synced";
+  }
+
+  async function clearResumePrematureBackfill(session, stalePayload) {
+    if (!session.resumeId) return false;
+    const { records, index, record } = await getResumeById(session.resumeId);
+    if (!record || index < 0) return false;
+    if (record.interviewEvaluation?.sessionId && record.interviewEvaluation.sessionId !== session.id) return false;
+    if (!record.interviewEvaluation) return false;
+    const nextRecord = {
+      ...record,
+      staleInterviewEvaluation: {
+        ...(stalePayload || {}),
+        evaluation: record.interviewEvaluation,
+      },
+      updatedAt: nowIso(),
+    };
+    delete nextRecord.interviewEvaluation;
+    records[index] = nextRecord;
+    await context.writeDatabase(records);
+    context.invalidateResumeListResponseCache?.();
+    return true;
+  }
+
+  async function clearPrematureBackfill(session, guard, source = "calendar_sync") {
+    const stalePayload = {
+      evaluation: session.interviewEvaluation,
+      backfillSource: session.backfillSource || session.interviewEvaluation?.source || null,
+      ruleSuggestionIds: safeArray(session.ruleSuggestionIds),
+      backfilledAt: session.backfilledAt || "",
+      clearedAt: nowIso(),
+      reason: guard.reason,
+      source,
+      availableAt: guard.availableAt,
+      endTime: guard.endTime,
+    };
+    await clearResumePrematureBackfill(session, stalePayload).catch((error) => {
+      store.appendLog(session.id, "warn", error.message || "清理简历库过早回灌结果失败", error.payload || {});
+    });
+    const history = [stalePayload, ...safeArray(session.staleInterviewEvaluationHistory)].slice(0, 5);
+    const next = store.saveSession({
+      ...session,
+      status: statusWithoutBackfill(session),
+      interviewEvaluation: null,
+      backfillSource: null,
+      ruleSuggestionIds: [],
+      backfillStartedAt: "",
+      backfilledAt: "",
+      lastBackfillError: "",
+      staleInterviewEvaluation: stalePayload,
+      staleInterviewEvaluationHistory: history,
+    });
+    store.appendLog(session.id, "warn", "已清理未到面试时间的历史回灌结果", stalePayload);
+    return next;
+  }
+
+  async function protectPrematureBackfills(sessions = [], source = "sessions") {
+    const protectedSessions = [];
+    for (const session of safeArray(sessions)) {
+      const guard = prematureBackfillGuard(session);
+      protectedSessions.push(guard ? await clearPrematureBackfill(session, guard, source) : session);
+    }
+    return protectedSessions;
+  }
+
   async function matchAndSaveSession(session, resumes) {
     const enriched = enrichSessionWithMatches(session, resumes, {
       minScore: context.autoMatchMinScore || 85,
@@ -497,8 +587,8 @@ function createInterviewCenterFeature(context) {
       throw error;
     }
     const nowSeconds = Math.floor(Date.now() / 1000);
-    const availableAt = Number(session.endTime || session.startTime || 0) + BACKFILL_GRACE_SECONDS;
-    if (!force && availableAt && nowSeconds < availableAt) {
+    const availableAt = backfillAvailableAt(session);
+    if (availableAt && nowSeconds < availableAt) {
       const availableAtText = new Date(availableAt * 1000).toLocaleString("zh-CN", { hour12: false });
       const error = new Error(`面试结束后 10 分钟才可读取纪要，预计 ${availableAtText} 可回灌`);
       error.statusCode = 409;
@@ -704,6 +794,8 @@ function createInterviewCenterFeature(context) {
             }
           }
         }
+        session = await enrichSessionWithInterviewFlow(session);
+        session = (await protectPrematureBackfills([session], source === "auto" ? "auto_calendar_sync" : "calendar_sync"))[0] || session;
         synced.push(session);
       }
 
@@ -721,7 +813,10 @@ function createInterviewCenterFeature(context) {
       }
 
       const interviewLikeCount = synced.filter((item) => item.isInterviewLike).length;
-      const sessions = await enrichSessionsWithInterviewFlow(store.listSessions({ startTime, endTime }).filter((item) => item.isInterviewLike));
+      const sessions = await protectPrematureBackfills(
+        await enrichSessionsWithInterviewFlow(store.listSessions({ startTime, endTime }).filter((item) => item.isInterviewLike)),
+        source === "auto" ? "auto_calendar_sync_result" : "calendar_sync_result"
+      );
       const result = {
         range: { startTime, endTime },
         total: events.length,
@@ -787,7 +882,10 @@ function createInterviewCenterFeature(context) {
     const startTime = Number(url.searchParams.get("startTime") || now - DAY_SECONDS);
     const endTime = Number(url.searchParams.get("endTime") || now + 14 * DAY_SECONDS);
     const status = url.searchParams.get("status") || "";
-    const sessions = await enrichSessionsWithInterviewFlow(store.listSessions({ startTime, endTime, status }).filter((item) => item.isInterviewLike));
+    const sessions = await protectPrematureBackfills(
+      await enrichSessionsWithInterviewFlow(store.listSessions({ startTime, endTime, status }).filter((item) => item.isInterviewLike)),
+      "sessions_response"
+    );
     send(response, 200, {
       ok: true,
       status: feishu.getStatus(),

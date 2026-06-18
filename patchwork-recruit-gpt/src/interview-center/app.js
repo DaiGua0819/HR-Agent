@@ -111,6 +111,28 @@
     };
   }
 
+  function backfillProtection(session) {
+    const flow = sessionFlow(session);
+    const backfill = backfillAvailability(session);
+    if (flow.groupKey === "waiting") {
+      return {
+        blocked: true,
+        reason: flow.stageText ? `当前多维表阶段仍为「${flow.stageText}」` : "当前仍处于等待面试阶段",
+      };
+    }
+    if (!backfill.ready) {
+      return {
+        blocked: true,
+        reason: backfill.label,
+      };
+    }
+    return { blocked: false, reason: "" };
+  }
+
+  function visibleInterviewEvaluation(session) {
+    return backfillProtection(session).blocked ? null : session.interviewEvaluation || null;
+  }
+
   function getSessionBusyAction(sessionOrId) {
     const sessionId = typeof sessionOrId === "string" ? sessionOrId : sessionOrId?.id || "";
     return sessionId ? state.sessionBusy?.[sessionId] || "" : "";
@@ -421,7 +443,7 @@
   }
 
   function evaluationActionsHtml(session) {
-    if (!session.interviewEvaluation) return "";
+    if (!visibleInterviewEvaluation(session)) return "";
     const disabled = isGlobalBusy() || hasSessionBusy(session) ? "disabled" : "";
     return `
       <div class="review-actions">
@@ -434,7 +456,11 @@
   }
 
   function evaluationHtml(session) {
-    const evaluation = session.interviewEvaluation;
+    const protection = backfillProtection(session);
+    const evaluation = visibleInterviewEvaluation(session);
+    if (protection.blocked && session.interviewEvaluation) {
+      return `<div class="empty-state">已隐藏历史回灌内容：${escapeHtml(protection.reason)}</div>`;
+    }
     if (!evaluation) {
       if (session.status === "backfilling") return '<div class="empty-state">正在读取飞书记录并生成回灌结果</div>';
       if (session.status === "backfill_failed") {
@@ -524,19 +550,22 @@
     els.openDocBtn.disabled = !session.feishuDoc?.url || globalBusy;
     els.openDocBtn.dataset.disabledByState = !session.feishuDoc?.url ? "true" : "false";
     const backfill = backfillAvailability(session);
+    const protection = backfillProtection(session);
     let backfillDisabledByState = "";
     if (!session.resumeId) backfillDisabledByState = "先绑定候选人";
     else if (!session.feishuDoc?.documentId) backfillDisabledByState = "先生成面试文档";
     else if (session.status === "backfilling") backfillDisabledByState = "正在回灌";
+    else if (protection.blocked) backfillDisabledByState = protection.reason;
     else if (!backfill.ready) backfillDisabledByState = backfill.label;
+    const visibleEvaluation = visibleInterviewEvaluation(session);
     els.backfillBtn.textContent =
-      sessionBusyAction === "backfill" ? "回灌中..." : backfillDisabledByState || (session.interviewEvaluation ? "重新回灌" : "读取纪要并回灌");
+      sessionBusyAction === "backfill" ? "回灌中..." : backfillDisabledByState || (visibleEvaluation ? "重新回灌" : "读取纪要并回灌");
     els.backfillBtn.disabled = Boolean(backfillDisabledByState) || globalBusy || sessionBusy;
     els.backfillBtn.dataset.disabledByState = backfillDisabledByState ? "true" : "false";
     els.backfillBtn.title = backfillDisabledByState || "";
     els.confirmBtn.textContent = sessionBusyAction === "review" ? "复核中..." : "通过复核";
-    els.confirmBtn.disabled = !session.interviewEvaluation || globalBusy || sessionBusy;
-    els.confirmBtn.dataset.disabledByState = !session.interviewEvaluation ? "true" : "false";
+    els.confirmBtn.disabled = !visibleEvaluation || globalBusy || sessionBusy;
+    els.confirmBtn.dataset.disabledByState = !visibleEvaluation ? "true" : "false";
     const docLinkText = session.feishuDoc?.contentSynced === false ? "已创建，正文未同步" : "已创建";
     const docErrorHtml =
       session.feishuDoc?.contentSynced === false && session.feishuDoc?.contentError
