@@ -10,6 +10,8 @@
     statusFilter: "",
     busy: false,
     busyAction: "",
+    busySessionId: "",
+    sessionBusy: {},
     backfillStatus: null,
     calendarSyncStatus: null,
   };

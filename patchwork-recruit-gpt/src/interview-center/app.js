@@ -81,10 +81,36 @@
     };
   }
 
-  function setBusy(flag, text = "") {
+  function getSessionBusyAction(sessionOrId) {
+    const sessionId = typeof sessionOrId === "string" ? sessionOrId : sessionOrId?.id || "";
+    return sessionId ? state.sessionBusy?.[sessionId] || "" : "";
+  }
+
+  function hasSessionBusy(sessionOrId) {
+    return Boolean(getSessionBusyAction(sessionOrId));
+  }
+
+  function isGlobalBusy() {
+    return Boolean(state.busy && !state.busySessionId);
+  }
+
+  function setSessionBusy(sessionId, action, flag) {
+    if (!sessionId) return;
+    const next = { ...(state.sessionBusy || {}) };
+    if (flag) next[sessionId] = action || "action";
+    else delete next[sessionId];
+    state.sessionBusy = next;
+    state.busySessionId = flag ? sessionId : state.busySessionId === sessionId ? "" : state.busySessionId;
+  }
+
+  function setBusy(flag, text = "", options = {}) {
+    if (options.sessionId) setSessionBusy(options.sessionId, options.busyAction, flag);
+    else if (flag) state.busySessionId = "";
+    else if (!flag) state.busySessionId = "";
     state.busy = flag;
-    [els.connectBtn, els.disconnectBtn, els.syncBtn, els.refreshSessionsBtn, els.prepareBtn, els.backfillBtn, els.confirmBtn].forEach((button) => {
-      if (button) button.disabled = flag || button.dataset.disabledByState === "true";
+    const globalBusy = isGlobalBusy();
+    [els.connectBtn, els.disconnectBtn, els.syncBtn, els.refreshSessionsBtn].forEach((button) => {
+      if (button) button.disabled = globalBusy || button.dataset.disabledByState === "true";
     });
     if (text) els.connectionPill.textContent = text;
   }
@@ -95,6 +121,54 @@
 
   function filteredSessions() {
     return state.sessions.filter((item) => !state.statusFilter || item.status === state.statusFilter);
+  }
+
+  function sessionFlow(session = {}) {
+    const fallbackCompleted = Number(session.endTime || session.startTime || 0) && Number(session.endTime || session.startTime || 0) < Math.floor(Date.now() / 1000);
+    return {
+      groupKey: session.interviewFlow?.groupKey || (fallbackCompleted ? "completed" : "waiting"),
+      groupLabel: session.interviewFlow?.groupLabel || (fallbackCompleted ? "已经面试" : "等待面试"),
+      roundKey: session.interviewFlow?.roundKey || "first",
+      roundLabel: session.interviewFlow?.roundLabel || "初面",
+      stageText: session.interviewFlow?.stageText || "",
+    };
+  }
+
+  function compareByNearTime(left, right) {
+    const now = Math.floor(Date.now() / 1000);
+    const leftTime = Number(left.startTime || 0);
+    const rightTime = Number(right.startTime || 0);
+    const leftDistance = leftTime ? Math.abs(leftTime - now) : Number.MAX_SAFE_INTEGER;
+    const rightDistance = rightTime ? Math.abs(rightTime - now) : Number.MAX_SAFE_INTEGER;
+    return leftDistance - rightDistance || leftTime - rightTime || String(left.id || "").localeCompare(String(right.id || ""));
+  }
+
+  function groupedSessions() {
+    const sessions = filteredSessions().slice().sort(compareByNearTime);
+    const groupDefs = [
+      { key: "waiting", label: "等待面试" },
+      { key: "completed", label: "已经面试" },
+    ];
+    const roundDefs = [
+      { key: "first", label: "初面" },
+      { key: "second", label: "二面" },
+      { key: "other", label: "其他轮次" },
+    ];
+    return groupDefs
+      .map((group) => {
+        const groupItems = sessions.filter((item) => sessionFlow(item).groupKey === group.key);
+        return {
+          ...group,
+          count: groupItems.length,
+          rounds: roundDefs
+            .map((round) => {
+              const items = groupItems.filter((item) => sessionFlow(item).roundKey === round.key);
+              return { ...round, count: items.length, items };
+            })
+            .filter((round) => round.items.length),
+        };
+      })
+      .filter((group) => group.count);
   }
 
   function statusClass(status) {
@@ -117,7 +191,7 @@
     }
     els.connectBtn.hidden = state.connected;
     els.disconnectBtn.hidden = !state.connected;
-    els.syncBtn.disabled = !state.connected || state.busy;
+    els.syncBtn.disabled = !state.connected || isGlobalBusy();
     els.syncBtn.dataset.disabledByState = !state.connected ? "true" : "false";
   }
 
@@ -130,61 +204,109 @@
   }
 
   function renderEvents() {
-    const sessions = filteredSessions();
-    if (!sessions.length) {
+    const groups = groupedSessions();
+    if (!groups.length) {
       els.eventList.innerHTML = '<div class="empty-state">当前筛选下暂无面试日程</div>';
       return;
     }
-    els.eventList.innerHTML = sessions
+    els.eventList.innerHTML = groups
       .map(
-        (item) => `
-          <button class="event-row ${item.id === state.selectedId ? "is-active" : ""}" type="button" data-select-session="${escapeHtml(item.id)}">
-            <span class="event-time">${escapeHtml(formatTime(item.startTime))}</span>
-            <strong>${escapeHtml(item.title || "未命名日程")}</strong>
-            <small>${escapeHtml(item.matchedResume?.name || item.resume?.name || item.matchMessage || "未绑定候选人")}</small>
-            <em class="status-badge ${statusClass(item.status)}">${escapeHtml(statusLabels[item.status] || item.status || "-")}</em>
-          </button>
+        (group) => `
+          <section class="session-group">
+            <div class="session-group-head">
+              <strong>${escapeHtml(group.label)}</strong>
+              <span>${group.count} 场</span>
+            </div>
+            ${group.rounds
+              .map(
+                (round) => `
+                  <div class="round-group">
+                    <div class="round-group-head">${escapeHtml(round.label)} · ${round.count}</div>
+                    ${round.items
+                      .map((item) => {
+                        const flow = sessionFlow(item);
+                        return `
+                          <button class="event-row ${item.id === state.selectedId ? "is-active" : ""}" type="button" data-select-session="${escapeHtml(item.id)}">
+                            <span class="event-time">${escapeHtml(formatTime(item.startTime))}</span>
+                            <strong>${escapeHtml(item.title || "未命名日程")}</strong>
+                            <small>${escapeHtml(item.matchedResume?.name || item.resume?.name || item.matchMessage || "未绑定候选人")}</small>
+                            <em class="status-badge ${statusClass(item.status)}">${escapeHtml(statusLabels[item.status] || item.status || "-")}</em>
+                            <span class="event-tags">
+                              <span>${escapeHtml(flow.roundLabel)}</span>
+                              ${flow.stageText ? `<span>${escapeHtml(flow.stageText)}</span>` : ""}
+                            </span>
+                          </button>
+                        `;
+                      })
+                      .join("")}
+                  </div>
+                `
+              )
+              .join("")}
+          </section>
         `
       )
       .join("");
   }
 
   function renderMatches() {
-    const sessions = filteredSessions();
-    if (!sessions.length) {
+    const groups = groupedSessions();
+    if (!groups.length) {
       els.matchList.innerHTML = '<div class="empty-state">暂无候选人匹配记录</div>';
       return;
     }
-    els.matchList.innerHTML = sessions
-      .map((item) => {
-        const matchedName = item.resume?.name || item.matchedResume?.name || "";
-        const candidates = (item.matchCandidates || [])
-          .slice(0, 3)
-          .map(
-            (candidate) => `
-              <div class="candidate-option">
-                <div>
-                  <strong>${escapeHtml(candidate.name || "-")}</strong>
-                  <small>${escapeHtml(candidate.jobType || "")}</small>
-                  <span>${escapeHtml(candidate.source || "")}</span>
-                </div>
-                <button class="ghost-btn small" type="button" data-bind-session="${escapeHtml(item.id)}" data-resume-id="${escapeHtml(candidate.resumeId)}">绑定</button>
-              </div>
-            `
-          )
-          .join("");
-        return `
-          <article class="match-card ${item.id === state.selectedId ? "is-active" : ""}">
-            <button type="button" class="match-main" data-select-session="${escapeHtml(item.id)}">
-              <span>${escapeHtml(formatTime(item.startTime))}</span>
-              <strong>${escapeHtml(matchedName || item.title || "待匹配日程")}</strong>
-              <small>${escapeHtml(item.resume?.jobType || item.matchedResume?.jobType || item.title || "")}</small>
-              <em>匹配分 ${escapeHtml(item.match?.score ?? "-")}</em>
-            </button>
-            ${item.status === "needs_confirmation" || item.status === "needs_match" ? `<div class="candidate-options">${candidates || '<span class="empty-inline">没有候选建议</span>'}</div>` : ""}
-          </article>
-        `;
-      })
+    els.matchList.innerHTML = groups
+      .map(
+        (group) => `
+          <section class="session-group">
+            <div class="session-group-head">
+              <strong>${escapeHtml(group.label)}</strong>
+              <span>${group.count} 场</span>
+            </div>
+            ${group.rounds
+              .map(
+                (round) => `
+                  <div class="round-group">
+                    <div class="round-group-head">${escapeHtml(round.label)} · ${round.count}</div>
+                    ${round.items
+                      .map((item) => {
+                        const matchedName = item.resume?.name || item.matchedResume?.name || "";
+                        const flow = sessionFlow(item);
+                        const candidates = (item.matchCandidates || [])
+                          .slice(0, 3)
+                          .map(
+                            (candidate) => `
+                              <div class="candidate-option">
+                                <div>
+                                  <strong>${escapeHtml(candidate.name || "-")}</strong>
+                                  <small>${escapeHtml(candidate.jobType || "")}</small>
+                                  <span>${escapeHtml(candidate.source || "")}</span>
+                                </div>
+                                <button class="ghost-btn small" type="button" data-bind-session="${escapeHtml(item.id)}" data-resume-id="${escapeHtml(candidate.resumeId)}">绑定</button>
+                              </div>
+                            `
+                          )
+                          .join("");
+                        return `
+                          <article class="match-card ${item.id === state.selectedId ? "is-active" : ""}">
+                            <button type="button" class="match-main" data-select-session="${escapeHtml(item.id)}">
+                              <span>${escapeHtml(formatTime(item.startTime))}</span>
+                              <strong>${escapeHtml(matchedName || item.title || "待匹配日程")}</strong>
+                              <small>${escapeHtml(item.resume?.jobType || item.matchedResume?.jobType || item.title || "")}</small>
+                              <em>${escapeHtml(flow.roundLabel)}${flow.stageText ? ` · ${escapeHtml(flow.stageText)}` : ""} · 匹配分 ${escapeHtml(item.match?.score ?? "-")}</em>
+                            </button>
+                            ${item.status === "needs_confirmation" || item.status === "needs_match" ? `<div class="candidate-options">${candidates || '<span class="empty-inline">没有候选建议</span>'}</div>` : ""}
+                          </article>
+                        `;
+                      })
+                      .join("")}
+                  </div>
+                `
+              )
+              .join("")}
+          </section>
+        `
+      )
       .join("");
   }
 
@@ -260,7 +382,7 @@
 
   function evaluationActionsHtml(session) {
     if (!session.interviewEvaluation) return "";
-    const disabled = state.busy ? "disabled" : "";
+    const disabled = isGlobalBusy() || hasSessionBusy(session) ? "disabled" : "";
     return `
       <div class="review-actions">
         <button class="primary-btn small" type="button" data-review-decision="passed" ${disabled}>通过复核</button>
@@ -353,10 +475,13 @@
     els.workspaceTitle.textContent = session.resume?.name || session.matchedResume?.name || session.title || "面试日程";
     els.workspaceStatus.textContent = statusLabels[session.status] || session.status || "-";
     els.workspaceStatus.className = `status-badge ${statusClass(session.status)}`;
-    els.prepareBtn.textContent = state.busyAction === "prepare" ? "生成中..." : "生成问题并同步飞书";
-    els.prepareBtn.disabled = !session.resumeId || state.busy;
+    const sessionBusyAction = getSessionBusyAction(session);
+    const sessionBusy = Boolean(sessionBusyAction);
+    const globalBusy = isGlobalBusy();
+    els.prepareBtn.textContent = sessionBusyAction === "prepare" ? "生成中..." : "生成问题并同步飞书";
+    els.prepareBtn.disabled = !session.resumeId || globalBusy || sessionBusy;
     els.prepareBtn.dataset.disabledByState = !session.resumeId ? "true" : "false";
-    els.openDocBtn.disabled = !session.feishuDoc?.url || state.busy;
+    els.openDocBtn.disabled = !session.feishuDoc?.url || globalBusy;
     els.openDocBtn.dataset.disabledByState = !session.feishuDoc?.url ? "true" : "false";
     const backfill = backfillAvailability(session);
     let backfillDisabledByState = "";
@@ -365,12 +490,12 @@
     else if (session.status === "backfilling") backfillDisabledByState = "正在回灌";
     else if (!backfill.ready) backfillDisabledByState = backfill.label;
     els.backfillBtn.textContent =
-      state.busyAction === "backfill" ? "回灌中..." : backfillDisabledByState || (session.interviewEvaluation ? "重新回灌" : "读取纪要并回灌");
-    els.backfillBtn.disabled = Boolean(backfillDisabledByState) || state.busy;
+      sessionBusyAction === "backfill" ? "回灌中..." : backfillDisabledByState || (session.interviewEvaluation ? "重新回灌" : "读取纪要并回灌");
+    els.backfillBtn.disabled = Boolean(backfillDisabledByState) || globalBusy || sessionBusy;
     els.backfillBtn.dataset.disabledByState = backfillDisabledByState ? "true" : "false";
     els.backfillBtn.title = backfillDisabledByState || "";
-    els.confirmBtn.textContent = state.busyAction === "review" ? "复核中..." : "通过复核";
-    els.confirmBtn.disabled = !session.interviewEvaluation || state.busy;
+    els.confirmBtn.textContent = sessionBusyAction === "review" ? "复核中..." : "通过复核";
+    els.confirmBtn.disabled = !session.interviewEvaluation || globalBusy || sessionBusy;
     els.confirmBtn.dataset.disabledByState = !session.interviewEvaluation ? "true" : "false";
     const docLinkText = session.feishuDoc?.contentSynced === false ? "已创建，正文未同步" : "已创建";
     const docErrorHtml =
@@ -385,6 +510,7 @@
     const calendarSyncText = calendarSync
       ? `${calendarSync.enabled ? (calendarSync.running ? "同步中" : "每5分钟自动同步") : "已关闭"}${calendarSync.lastRunAt ? `，上次 ${new Date(calendarSync.lastRunAt).toLocaleTimeString("zh-CN", { hour12: false })}` : ""}`
       : "-";
+    const flow = sessionFlow(session);
 
     els.workspaceBody.innerHTML = `
       <section class="detail-section">
@@ -394,6 +520,8 @@
           <div><dt>标题</dt><dd>${escapeHtml(session.title || "-")}</dd></div>
           <div><dt>候选人</dt><dd>${escapeHtml(session.resume?.name || session.matchedResume?.name || "未绑定")}</dd></div>
           <div><dt>岗位</dt><dd>${escapeHtml(session.resume?.jobType || session.matchedResume?.jobType || "-")}</dd></div>
+          <div><dt>面试分组</dt><dd>${escapeHtml(`${flow.groupLabel} / ${flow.roundLabel}`)}</dd></div>
+          <div><dt>面试阶段</dt><dd>${escapeHtml(flow.stageText || (session.interviewFlow?.source === "calendar" ? "按日程时间判断" : "-"))}</dd></div>
           <div><dt>飞书文档</dt><dd>${session.feishuDoc?.url ? `<a href="${escapeHtml(session.feishuDoc.url)}" target="_blank" rel="noreferrer">${escapeHtml(docLinkText)}</a>${docErrorHtml}` : "未创建"}</dd></div>
           <div><dt>台账</dt><dd>${escapeHtml(session.bitable?.skipped ? "未配置" : session.bitable?.recordId ? "已同步" : "未同步")}</dd></div>
           <div><dt>日历同步</dt><dd>${escapeHtml(calendarSyncText)}</dd></div>
@@ -540,9 +668,10 @@
   }
 
   async function runAction(label, task, options = {}) {
+    const initialSelectedId = state.selectedId;
     try {
       state.busyAction = options.busyAction || "";
-      setBusy(true, label);
+      setBusy(true, label, options);
       renderWorkspace();
       const payload = await task();
       if (payload.sessions) state.sessions = payload.sessions;
@@ -550,7 +679,9 @@
         const index = state.sessions.findIndex((item) => item.id === payload.session.id);
         if (index >= 0) state.sessions[index] = payload.session;
         else state.sessions.unshift(payload.session);
-        state.selectedId = payload.session.id;
+        if (state.selectedId === initialSelectedId || state.selectedId === payload.session.id || !state.selectedId) {
+          state.selectedId = payload.session.id;
+        }
       }
       if (payload.logs) state.logs = payload.logs;
       await loadStatus().catch(() => {});
@@ -560,7 +691,7 @@
       els.connectionPill.className = "connection-pill is-error";
     } finally {
       state.busyAction = "";
-      setBusy(false);
+      setBusy(false, "", options);
       updateConnectionUi();
       renderAll();
     }
@@ -596,7 +727,7 @@
     els.workspaceBody.addEventListener("click", handleDelegatedClick);
     els.prepareBtn.addEventListener("click", () => {
       const session = selectedSession();
-      if (session) runAction("正在生成面试题并同步飞书", () => api.prepare(session.id, true), { busyAction: "prepare" });
+      if (session) runAction("正在生成面试题并同步飞书", () => api.prepare(session.id, true), { busyAction: "prepare", sessionId: session.id });
     });
     els.openDocBtn.addEventListener("click", () => {
       const url = selectedSession()?.feishuDoc?.url;
@@ -604,11 +735,11 @@
     });
     els.backfillBtn.addEventListener("click", () => {
       const session = selectedSession();
-      if (session) runAction("正在读取飞书记录并回灌", () => api.backfill(session.id, true), { busyAction: "backfill" });
+      if (session) runAction("正在读取飞书记录并回灌", () => api.backfill(session.id, true), { busyAction: "backfill", sessionId: session.id });
     });
     els.confirmBtn.addEventListener("click", () => {
       const session = selectedSession();
-      if (session) runAction("正在确认评估", () => api.review(session.id, "passed"), { busyAction: "review" });
+      if (session) runAction("正在确认评估", () => api.review(session.id, "passed"), { busyAction: "review", sessionId: session.id });
     });
   }
 
@@ -623,7 +754,7 @@
     if (bindButton) {
       const sessionId = bindButton.dataset.bindSession;
       const resumeId = bindButton.dataset.resumeId;
-      runAction("正在绑定候选人", () => api.bind(sessionId, resumeId, false));
+      runAction("正在绑定候选人", () => api.bind(sessionId, resumeId, false), { busyAction: "bind", sessionId });
       return;
     }
     const reviewButton = event.target.closest("[data-review-decision]");
@@ -632,13 +763,13 @@
       if (!session) return;
       const decision = reviewButton.dataset.reviewDecision || "passed";
       const labels = { passed: "通过复核", rejected: "淘汰候选人", need_followup: "标记补问" };
-      runAction(`正在${labels[decision] || "复核"}`, () => api.review(session.id, decision), { busyAction: "review" });
+      runAction(`正在${labels[decision] || "复核"}`, () => api.review(session.id, decision), { busyAction: "review", sessionId: session.id });
       return;
     }
     const rerunButton = event.target.closest("[data-rerun-backfill]");
     if (rerunButton) {
       const session = selectedSession();
-      if (session) runAction("正在重新读取飞书记录并回灌", () => api.backfill(session.id, true), { busyAction: "backfill" });
+      if (session) runAction("正在重新读取飞书记录并回灌", () => api.backfill(session.id, true), { busyAction: "backfill", sessionId: session.id });
     }
   }
 
@@ -646,7 +777,7 @@
     bindEvents();
     initColumnResizers();
     window.setInterval(() => {
-      if (!state.busy) renderWorkspace();
+      if (!isGlobalBusy()) renderWorkspace();
     }, 60000);
     if (new URLSearchParams(location.search).get("feishu") === "connected") {
       els.connectionPill.textContent = "飞书授权成功，正在加载";

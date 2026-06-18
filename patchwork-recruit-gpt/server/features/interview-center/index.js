@@ -4,7 +4,7 @@ const { enrichSessionWithMatches } = require("./candidateMatcher");
 const { generateInterviewQuestions, summarizeConversation } = require("./questionGenerator");
 const { generateInterviewEvaluation, formatSkillEvaluationDocumentText } = require("./feedbackBackfill");
 const { ensureBitableResumeImage, ensureBitableInterviewRecordImage, ensureBitableSkillEvaluationDocument } = require("./bitableAssets");
-const { clipText, nowIso, parseJson, randomId, safeArray } = require("./utils");
+const { clipText, compactText, normalizeText, nowIso, parseJson, randomId, safeArray } = require("./utils");
 
 const DAY_SECONDS = 24 * 60 * 60;
 const BACKFILL_GRACE_SECONDS = 10 * 60;
@@ -14,6 +14,8 @@ const AUTO_BACKFILL_MAX_ATTEMPTS = Math.max(1, Math.min(Number(process.env.INTER
 const AUTO_BACKFILL_ENABLED = !/^(0|false|no)$/i.test(String(process.env.INTERVIEW_AUTO_BACKFILL_ENABLED ?? "true"));
 const AUTO_CALENDAR_SYNC_INTERVAL_MS = Math.max(60000, Number(process.env.INTERVIEW_CALENDAR_SYNC_INTERVAL_MS || 5 * 60 * 1000));
 const AUTO_CALENDAR_SYNC_ENABLED = !/^(0|false|no)$/i.test(String(process.env.INTERVIEW_CALENDAR_SYNC_ENABLED ?? "true"));
+const BITABLE_INTERVIEW_STAGE_FIELD = process.env.FEISHU_INTERVIEW_STAGE_FIELD || "面试阶段";
+const BITABLE_SESSION_META_TTL_MS = Math.max(15000, Number(process.env.INTERVIEW_BITABLE_META_TTL_MS || 60000));
 
 function createInterviewCenterFeature(context) {
   const store = createInterviewStore({ getDb: context.getDb });
@@ -41,6 +43,10 @@ function createInterviewCenterFeature(context) {
     lastRunAt: "",
     lastError: "",
     lastResult: null,
+  };
+  const bitableSessionMetaCache = {
+    fetchedAt: 0,
+    records: [],
   };
 
   function send(response, statusCode, payload) {
@@ -120,6 +126,160 @@ function createInterviewCenterFeature(context) {
       makeAbortController: context.makeAbortController,
       timeoutMs: context.gptTextTimeoutMs || 180000,
     };
+  }
+
+  function extractBitableFieldText(value) {
+    if (value === undefined || value === null) return "";
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return compactText(value);
+    if (Array.isArray(value)) return value.map(extractBitableFieldText).filter(Boolean).join(" ");
+    if (typeof value === "object") {
+      return compactText(
+        [
+          value.text,
+          value.name,
+          value.value,
+          value.email,
+          value.id,
+          safeArray(value.text_arr).map(extractBitableFieldText).join(" "),
+        ]
+          .filter(Boolean)
+          .join(" ")
+      );
+    }
+    return "";
+  }
+
+  function bitableRecordId(record = {}) {
+    return record?.record_id || record?.id || "";
+  }
+
+  function sessionBitableRecordId(session = {}) {
+    return (
+      session.bitableRecordId ||
+      session.bitable?.recordId ||
+      session.bitableResumeImage?.recordId ||
+      session.bitableInterviewRecordImage?.recordId ||
+      session.bitableSkillEvaluationDocument?.recordId ||
+      ""
+    );
+  }
+
+  async function listBitableRecordsForSessionMeta() {
+    if (!feishu.getStatus().bitableConfigured) return [];
+    if (bitableSessionMetaCache.records.length && Date.now() - bitableSessionMetaCache.fetchedAt < BITABLE_SESSION_META_TTL_MS) {
+      return bitableSessionMetaCache.records;
+    }
+    const records = await feishu.listBitableRecords({ pageSize: 500, maxRecords: 3000 });
+    bitableSessionMetaCache.records = records;
+    bitableSessionMetaCache.fetchedAt = Date.now();
+    return records;
+  }
+
+  function findBitableRecordForSession(session = {}, records = [], recordsById = new Map()) {
+    const directId = sessionBitableRecordId(session);
+    if (directId && recordsById.has(directId)) return recordsById.get(directId);
+
+    const phone = normalizeText(session.resume?.phone || "");
+    if (phone) {
+      const byPhone = records.find((record) => normalizeText(extractBitableFieldText(record.fields?.候选人联系电话)).includes(phone));
+      if (byPhone) return byPhone;
+    }
+
+    const names = [
+      session.resume?.name,
+      session.matchedResume?.name,
+      session.bitable?.fields?.姓名,
+      session.bitable?.fields?.候选人姓名,
+    ]
+      .map(normalizeText)
+      .filter(Boolean);
+    if (!names.length) return null;
+    return (
+      records.find((record) => {
+        const fields = record.fields || {};
+        const recordNames = [fields.姓名, fields.候选人姓名].map((value) => normalizeText(extractBitableFieldText(value))).filter(Boolean);
+        return recordNames.some((name) => names.includes(name));
+      }) || null
+    );
+  }
+
+  function deriveInterviewRound({ stageText = "", session = {} } = {}) {
+    const rawText = compactText([stageText, session.title, session.description].filter(Boolean).join(" "));
+    const normalized = normalizeText(rawText);
+    if (/二面|二试|复试|复面|second|2面|2试/.test(rawText) || /二面|二试|复试|复面|second|2面|2试/i.test(normalized)) {
+      return { key: "second", label: "二面" };
+    }
+    if (/终面|三面|三试/.test(rawText)) return { key: "other", label: "其他轮次" };
+    if (/初面|初试|一面|一试|简历通过|待面试|面试/.test(rawText) || !rawText) return { key: "first", label: "初面" };
+    return { key: "other", label: "其他轮次" };
+  }
+
+  function deriveInterviewGroup({ stageText = "", record = null, session = {}, nowSeconds = Math.floor(Date.now() / 1000) } = {}) {
+    const rawStage = compactText(stageText);
+    if (rawStage) {
+      if (/简历通过|待面试|待初面|待一面|待二面|待复试|已约|约面|邀约/.test(rawStage)) {
+        return { key: "waiting", label: "等待面试" };
+      }
+      if (/初面|初试|一面|二面|二试|复试|复面|终面|面试|通过|未通过|淘汰|不合适|完成|结束/.test(rawStage)) {
+        return { key: "completed", label: "已经面试" };
+      }
+    }
+    const fields = record?.fields || {};
+    if (
+      session.interviewEvaluation ||
+      session.bitableInterviewRecordImage?.fileToken ||
+      extractBitableFieldText(fields.面试记录) ||
+      extractBitableFieldText(fields.HR面试评价) ||
+      extractBitableFieldText(fields.复试结果评价)
+    ) {
+      return { key: "completed", label: "已经面试" };
+    }
+    const end = Number(session.endTime || session.startTime || 0);
+    return end && end < nowSeconds ? { key: "completed", label: "已经面试" } : { key: "waiting", label: "等待面试" };
+  }
+
+  function makeInterviewFlow(session = {}, record = null, bitableError = "") {
+    const fields = record?.fields || {};
+    const stageText = extractBitableFieldText(fields[BITABLE_INTERVIEW_STAGE_FIELD] ?? fields.面试阶段);
+    const group = deriveInterviewGroup({ stageText, record, session });
+    const round = deriveInterviewRound({ stageText, session });
+    return {
+      groupKey: group.key,
+      groupLabel: group.label,
+      roundKey: round.key,
+      roundLabel: round.label,
+      stageText,
+      source: record ? "bitable" : "calendar",
+      recordId: bitableRecordId(record) || sessionBitableRecordId(session),
+      error: bitableError || "",
+    };
+  }
+
+  async function enrichSessionsWithInterviewFlow(sessions = []) {
+    const items = safeArray(sessions);
+    if (!items.length) return [];
+    let records = [];
+    let bitableError = "";
+    if (feishu.getStatus().bitableConfigured) {
+      try {
+        records = await listBitableRecordsForSessionMeta();
+      } catch (error) {
+        bitableError = error.message || "读取飞书面试表状态失败";
+      }
+    }
+    const recordsById = new Map(records.map((record) => [bitableRecordId(record), record]).filter(([id]) => id));
+    return items.map((session) => {
+      const record = findBitableRecordForSession(session, records, recordsById);
+      return {
+        ...session,
+        interviewFlow: makeInterviewFlow(session, record, bitableError),
+      };
+    });
+  }
+
+  async function enrichSessionWithInterviewFlow(session) {
+    const [next] = await enrichSessionsWithInterviewFlow(session ? [session] : []);
+    return next || session;
   }
 
   async function matchAndSaveSession(session, resumes) {
@@ -561,6 +721,7 @@ function createInterviewCenterFeature(context) {
       }
 
       const interviewLikeCount = synced.filter((item) => item.isInterviewLike).length;
+      const sessions = await enrichSessionsWithInterviewFlow(store.listSessions({ startTime, endTime }).filter((item) => item.isInterviewLike));
       const result = {
         range: { startTime, endTime },
         total: events.length,
@@ -568,7 +729,7 @@ function createInterviewCenterFeature(context) {
         prepared: prepared.length,
         prepareErrors,
         bitableResumeResults,
-        sessions: store.listSessions({ startTime, endTime }).filter((item) => item.isInterviewLike),
+        sessions,
       };
       calendarSyncScheduler.lastResult = {
         source,
@@ -626,10 +787,11 @@ function createInterviewCenterFeature(context) {
     const startTime = Number(url.searchParams.get("startTime") || now - DAY_SECONDS);
     const endTime = Number(url.searchParams.get("endTime") || now + 14 * DAY_SECONDS);
     const status = url.searchParams.get("status") || "";
+    const sessions = await enrichSessionsWithInterviewFlow(store.listSessions({ startTime, endTime, status }).filter((item) => item.isInterviewLike));
     send(response, 200, {
       ok: true,
       status: feishu.getStatus(),
-      sessions: store.listSessions({ startTime, endTime, status }).filter((item) => item.isInterviewLike),
+      sessions,
       logs: store.listLogs("", 50),
     });
   }
@@ -660,7 +822,7 @@ function createInterviewCenterFeature(context) {
       manualBoundAt: nowIso(),
     });
     store.appendLog(id, "info", "已人工绑定候选人", { resumeId: record.id, name: record.name });
-    send(response, 200, { ok: true, session: body.prepare ? await prepareSession(id) : next, logs: store.listLogs("", 50) });
+    send(response, 200, { ok: true, session: await enrichSessionWithInterviewFlow(body.prepare ? await prepareSession(id) : next), logs: store.listLogs("", 50) });
   }
 
   function publicBackfillSource(source = {}) {
@@ -681,12 +843,12 @@ function createInterviewCenterFeature(context) {
 
   async function handlePrepare(id, request, response) {
     const body = await context.readJsonBody(request).catch(() => ({}));
-    send(response, 200, { ok: true, session: await prepareSession(id, { force: Boolean(body.force) }), logs: store.listLogs("", 50) });
+    send(response, 200, { ok: true, session: await enrichSessionWithInterviewFlow(await prepareSession(id, { force: Boolean(body.force) })), logs: store.listLogs("", 50) });
   }
 
   async function handleBackfill(id, request, response) {
     const body = await context.readJsonBody(request).catch(() => ({}));
-    send(response, 200, { ok: true, session: await backfillSession(id, { force: Boolean(body.force) }), logs: store.listLogs("", 50) });
+    send(response, 200, { ok: true, session: await enrichSessionWithInterviewFlow(await backfillSession(id, { force: Boolean(body.force) })), logs: store.listLogs("", 50) });
   }
 
   function normalizeReviewDecision(value) {
@@ -744,7 +906,7 @@ function createInterviewCenterFeature(context) {
       }
     }
     store.appendLog(id, "info", "已完成人工复核", next.humanReview);
-    send(response, 200, { ok: true, session: next, logs: store.listLogs("", 50) });
+    send(response, 200, { ok: true, session: await enrichSessionWithInterviewFlow(next), logs: store.listLogs("", 50) });
   }
 
   async function handleConfirm(id, request, response) {
