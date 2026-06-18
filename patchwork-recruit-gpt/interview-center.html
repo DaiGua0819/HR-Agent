@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>面试中心 - 招聘智能体</title>
-    <link rel="stylesheet" href="./src/interview-center/styles.css?v=20260618-interview-flow-1" />
+    <link rel="stylesheet" href="./src/interview-center/styles.css?v=20260618-stage-fold-1" />
   </head>
   <body>
     <main class="interview-shell">
@@ -48,17 +48,25 @@
               <p>Feishu Calendar</p>
               <h2>日历面试流</h2>
             </div>
-            <select id="statusFilter" aria-label="面试状态筛选">
-              <option value="">全部状态</option>
-              <option value="needs_confirmation">需确认</option>
-              <option value="matched">已绑定</option>
-              <option value="prepared">已准备</option>
-              <option value="prepared_local">本地准备</option>
-              <option value="backfilling">回灌中</option>
-              <option value="backfill_failed">回灌失败</option>
-              <option value="needs_review">待复核</option>
-              <option value="completed">已完成</option>
-            </select>
+            <div class="panel-tools">
+              <div class="date-range-filter" aria-label="面试日期范围筛选">
+                <input id="dateStartFilter" type="date" aria-label="开始日期" />
+                <span>至</span>
+                <input id="dateEndFilter" type="date" aria-label="结束日期" />
+                <button class="ghost-btn small" type="button" id="applyDateFilterBtn">应用</button>
+              </div>
+              <select id="statusFilter" aria-label="面试状态筛选">
+                <option value="">全部状态</option>
+                <option value="needs_confirmation">需确认</option>
+                <option value="matched">已绑定</option>
+                <option value="prepared">已准备</option>
+                <option value="prepared_local">本地准备</option>
+                <option value="backfilling">回灌中</option>
+                <option value="backfill_failed">回灌失败</option>
+                <option value="needs_review">待复核</option>
+                <option value="completed">已完成</option>
+              </select>
+            </div>
           </div>
           <div class="event-list" id="eventList">
             <div class="empty-state">连接飞书后同步近期面试日程</div>
@@ -113,8 +121,8 @@
       </section>
     </main>
 
-    <script src="./src/interview-center/api.js?v=20260618-interview-flow-1"></script>
-    <script src="./src/interview-center/state.js?v=20260618-interview-flow-1"></script>
-    <script src="./src/interview-center/app.js?v=20260618-interview-flow-1"></script>
+    <script src="./src/interview-center/api.js?v=20260618-stage-fold-1"></script>
+    <script src="./src/interview-center/state.js?v=20260618-stage-fold-1"></script>
+    <script src="./src/interview-center/app.js?v=20260618-stage-fold-1"></script>
   </body>
 </html>

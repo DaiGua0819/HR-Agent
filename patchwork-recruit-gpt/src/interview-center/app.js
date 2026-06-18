@@ -10,6 +10,9 @@
     backHomeBtn: document.querySelector("#backHomeBtn"),
     refreshSessionsBtn: document.querySelector("#refreshSessionsBtn"),
     statusFilter: document.querySelector("#statusFilter"),
+    dateStartFilter: document.querySelector("#dateStartFilter"),
+    dateEndFilter: document.querySelector("#dateEndFilter"),
+    applyDateFilterBtn: document.querySelector("#applyDateFilterBtn"),
     workspaceGrid: document.querySelector(".workspace-grid"),
     eventList: document.querySelector("#eventList"),
     matchList: document.querySelector("#matchList"),
@@ -70,6 +73,36 @@
     });
   }
 
+  function toDateInputValue(date) {
+    const value = new Date(date);
+    if (Number.isNaN(value.getTime())) return "";
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, "0");
+    const day = String(value.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function setDefaultDateRange() {
+    if (state.dateStart && state.dateEnd) return;
+    const start = new Date();
+    start.setDate(start.getDate() - 1);
+    const end = new Date();
+    end.setDate(end.getDate() + 14);
+    state.dateStart = toDateInputValue(start);
+    state.dateEnd = toDateInputValue(end);
+    if (els.dateStartFilter) els.dateStartFilter.value = state.dateStart;
+    if (els.dateEndFilter) els.dateEndFilter.value = state.dateEnd;
+  }
+
+  function dateRangeParams() {
+    const start = state.dateStart ? new Date(`${state.dateStart}T00:00:00`) : null;
+    const end = state.dateEnd ? new Date(`${state.dateEnd}T23:59:59`) : null;
+    return {
+      startTime: start && !Number.isNaN(start.getTime()) ? Math.floor(start.getTime() / 1000) : 0,
+      endTime: end && !Number.isNaN(end.getTime()) ? Math.floor(end.getTime() / 1000) : 0,
+    };
+  }
+
   function backfillAvailability(session) {
     const availableAt = Number(session?.endTime || session?.startTime || 0) + backfillGraceSeconds;
     if (!availableAt) return { ready: false, label: "面试结束后可回灌" };
@@ -109,7 +142,7 @@
     else if (!flag) state.busySessionId = "";
     state.busy = flag;
     const globalBusy = isGlobalBusy();
-    [els.connectBtn, els.disconnectBtn, els.syncBtn, els.refreshSessionsBtn].forEach((button) => {
+    [els.connectBtn, els.disconnectBtn, els.syncBtn, els.refreshSessionsBtn, els.applyDateFilterBtn].forEach((button) => {
       if (button) button.disabled = globalBusy || button.dataset.disabledByState === "true";
     });
     if (text) els.connectionPill.textContent = text;
@@ -132,6 +165,40 @@
       roundLabel: session.interviewFlow?.roundLabel || "初面",
       stageText: session.interviewFlow?.stageText || "",
     };
+  }
+
+  function stageLabel(flow = {}) {
+    return [flow.roundLabel || "其他轮次", flow.stageText || "未识别阶段"].filter(Boolean).join(" · ");
+  }
+
+  function stageKey(flow = {}) {
+    return `${flow.roundKey || "other"}:${flow.stageText || "unknown"}`;
+  }
+
+  function stageClass(flow = {}) {
+    const text = `${flow.groupLabel || ""} ${flow.roundLabel || ""} ${flow.stageText || ""}`;
+    if (/未通过|淘汰|不合适|失败|拒绝/.test(text)) return "is-stage-failed";
+    if (/待复核|复核|回灌/.test(text)) return "is-stage-review";
+    if (/二面|二试|复试|复面/.test(text)) return "is-stage-second";
+    if (/简历通过|等待|待面试|已约|邀约/.test(text)) return "is-stage-waiting";
+    if (/通过|完成|已面试|初面/.test(text)) return "is-stage-passed";
+    return "is-stage-default";
+  }
+
+  function collapseKey(type, key) {
+    return `${type}:${key}`;
+  }
+
+  function isCollapsed(type, key) {
+    return Boolean(state.collapsedSections?.[collapseKey(type, key)]);
+  }
+
+  function toggleCollapsed(type, key) {
+    const next = { ...(state.collapsedSections || {}) };
+    const fullKey = collapseKey(type, key);
+    if (next[fullKey]) delete next[fullKey];
+    else next[fullKey] = true;
+    state.collapsedSections = next;
   }
 
   function compareByNearTime(left, right) {
@@ -157,15 +224,36 @@
     return groupDefs
       .map((group) => {
         const groupItems = sessions.filter((item) => sessionFlow(item).groupKey === group.key);
+        const stages = new Map();
+        groupItems.forEach((item) => {
+          const flow = sessionFlow(item);
+          const key = stageKey(flow);
+          if (!stages.has(key)) {
+            stages.set(key, {
+              key,
+              label: stageLabel(flow),
+              roundKey: flow.roundKey,
+              roundLabel: flow.roundLabel,
+              className: stageClass(flow),
+              count: 0,
+              items: [],
+            });
+          }
+          const stage = stages.get(key);
+          stage.items.push(item);
+          stage.count += 1;
+        });
         return {
           ...group,
           count: groupItems.length,
-          rounds: roundDefs
-            .map((round) => {
-              const items = groupItems.filter((item) => sessionFlow(item).roundKey === round.key);
-              return { ...round, count: items.length, items };
-            })
-            .filter((round) => round.items.length),
+          stages: [...stages.values()].sort((left, right) => {
+            const leftRound = roundDefs.findIndex((round) => round.key === left.roundKey);
+            const rightRound = roundDefs.findIndex((round) => round.key === right.roundKey);
+            return (
+              (leftRound < 0 ? 99 : leftRound) - (rightRound < 0 ? 99 : rightRound) ||
+              String(left.label).localeCompare(String(right.label), "zh-CN")
+            );
+          }),
         };
       })
       .filter((group) => group.count);
@@ -211,18 +299,31 @@
     }
     els.eventList.innerHTML = groups
       .map(
-        (group) => `
-          <section class="session-group">
-            <div class="session-group-head">
-              <strong>${escapeHtml(group.label)}</strong>
+        (group) => {
+          const groupCollapsed = isCollapsed("group", group.key);
+          return `
+          <section class="session-group ${groupCollapsed ? "is-collapsed" : ""}">
+            <button class="session-group-head" type="button" data-toggle-collapse="group" data-collapse-key="${escapeHtml(group.key)}" aria-expanded="${groupCollapsed ? "false" : "true"}">
+              <strong><span class="collapse-mark">${groupCollapsed ? "▸" : "▾"}</span>${escapeHtml(group.label)}</strong>
               <span>${group.count} 场</span>
-            </div>
-            ${group.rounds
-              .map(
-                (round) => `
-                  <div class="round-group">
-                    <div class="round-group-head">${escapeHtml(round.label)} · ${round.count}</div>
-                    ${round.items
+            </button>
+            ${
+              groupCollapsed
+                ? ""
+                : group.stages
+                    .map((stage) => {
+                      const stageCollapseKey = `${group.key}:${stage.key}`;
+                      const stageCollapsed = isCollapsed("stage", stageCollapseKey);
+                      return `
+                  <div class="round-group ${stageCollapsed ? "is-collapsed" : ""}">
+                    <button class="round-group-head ${escapeHtml(stage.className)}" type="button" data-toggle-collapse="stage" data-collapse-key="${escapeHtml(stageCollapseKey)}" aria-expanded="${stageCollapsed ? "false" : "true"}">
+                      <span><span class="collapse-mark">${stageCollapsed ? "▸" : "▾"}</span>${escapeHtml(stage.label)}</span>
+                      <strong>${stage.count}</strong>
+                    </button>
+                    ${
+                      stageCollapsed
+                        ? ""
+                        : stage.items
                       .map((item) => {
                         const flow = sessionFlow(item);
                         return `
@@ -232,19 +333,22 @@
                             <small>${escapeHtml(item.matchedResume?.name || item.resume?.name || item.matchMessage || "未绑定候选人")}</small>
                             <em class="status-badge ${statusClass(item.status)}">${escapeHtml(statusLabels[item.status] || item.status || "-")}</em>
                             <span class="event-tags">
-                              <span>${escapeHtml(flow.roundLabel)}</span>
-                              ${flow.stageText ? `<span>${escapeHtml(flow.stageText)}</span>` : ""}
+                              <span class="stage-chip is-stage-round">${escapeHtml(flow.roundLabel)}</span>
+                              ${flow.stageText ? `<span class="stage-chip ${stageClass(flow)}">${escapeHtml(flow.stageText)}</span>` : ""}
                             </span>
                           </button>
                         `;
                       })
-                      .join("")}
+                      .join("")
+                    }
                   </div>
-                `
-              )
-              .join("")}
+                `;
+                    })
+                    .join("")
+            }
           </section>
-        `
+        `;
+        }
       )
       .join("");
   }
@@ -257,18 +361,31 @@
     }
     els.matchList.innerHTML = groups
       .map(
-        (group) => `
-          <section class="session-group">
-            <div class="session-group-head">
-              <strong>${escapeHtml(group.label)}</strong>
+        (group) => {
+          const groupCollapsed = isCollapsed("group", group.key);
+          return `
+          <section class="session-group ${groupCollapsed ? "is-collapsed" : ""}">
+            <button class="session-group-head" type="button" data-toggle-collapse="group" data-collapse-key="${escapeHtml(group.key)}" aria-expanded="${groupCollapsed ? "false" : "true"}">
+              <strong><span class="collapse-mark">${groupCollapsed ? "▸" : "▾"}</span>${escapeHtml(group.label)}</strong>
               <span>${group.count} 场</span>
-            </div>
-            ${group.rounds
-              .map(
-                (round) => `
-                  <div class="round-group">
-                    <div class="round-group-head">${escapeHtml(round.label)} · ${round.count}</div>
-                    ${round.items
+            </button>
+            ${
+              groupCollapsed
+                ? ""
+                : group.stages
+                    .map((stage) => {
+                      const stageCollapseKey = `${group.key}:${stage.key}`;
+                      const stageCollapsed = isCollapsed("stage", stageCollapseKey);
+                      return `
+                  <div class="round-group ${stageCollapsed ? "is-collapsed" : ""}">
+                    <button class="round-group-head ${escapeHtml(stage.className)}" type="button" data-toggle-collapse="stage" data-collapse-key="${escapeHtml(stageCollapseKey)}" aria-expanded="${stageCollapsed ? "false" : "true"}">
+                      <span><span class="collapse-mark">${stageCollapsed ? "▸" : "▾"}</span>${escapeHtml(stage.label)}</span>
+                      <strong>${stage.count}</strong>
+                    </button>
+                    ${
+                      stageCollapsed
+                        ? ""
+                        : stage.items
                       .map((item) => {
                         const matchedName = item.resume?.name || item.matchedResume?.name || "";
                         const flow = sessionFlow(item);
@@ -299,13 +416,16 @@
                           </article>
                         `;
                       })
-                      .join("")}
+                      .join("")
+                    }
                   </div>
-                `
-              )
-              .join("")}
+                `;
+                    })
+                    .join("")
+            }
           </section>
-        `
+        `;
+        }
       )
       .join("");
   }
@@ -656,7 +776,7 @@
   }
 
   async function loadSessions() {
-    const payload = await api.sessions();
+    const payload = await api.sessions(dateRangeParams());
     state.sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
     state.logs = Array.isArray(payload.logs) ? payload.logs : [];
     state.backfillStatus = await api.backfillStatus().catch(() => state.backfillStatus);
@@ -665,6 +785,20 @@
       state.selectedId = state.sessions[0]?.id || "";
     }
     renderAll();
+  }
+
+  function applyDateInputsToState() {
+    const nextStart = els.dateStartFilter?.value || "";
+    const nextEnd = els.dateEndFilter?.value || "";
+    if (nextStart && nextEnd && nextStart > nextEnd) {
+      state.dateStart = nextEnd;
+      state.dateEnd = nextStart;
+    } else {
+      state.dateStart = nextStart;
+      state.dateEnd = nextEnd;
+    }
+    if (els.dateStartFilter) els.dateStartFilter.value = state.dateStart;
+    if (els.dateEndFilter) els.dateEndFilter.value = state.dateEnd;
   }
 
   async function runAction(label, task, options = {}) {
@@ -716,8 +850,24 @@
         return {};
       })
     );
-    els.syncBtn.addEventListener("click", () => runAction("正在同步飞书日历", () => api.sync()));
-    els.refreshSessionsBtn.addEventListener("click", () => runAction("正在刷新面试中心", () => api.sessions()));
+    els.syncBtn.addEventListener("click", () =>
+      runAction("正在同步飞书日历", async () => {
+        await api.sync();
+        return api.sessions(dateRangeParams());
+      })
+    );
+    els.refreshSessionsBtn.addEventListener("click", () => runAction("正在刷新面试中心", () => api.sessions(dateRangeParams())));
+    els.applyDateFilterBtn?.addEventListener("click", () => {
+      applyDateInputsToState();
+      runAction("正在按日期筛选面试", () => api.sessions(dateRangeParams()));
+    });
+    [els.dateStartFilter, els.dateEndFilter].forEach((input) => {
+      input?.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        applyDateInputsToState();
+        runAction("正在按日期筛选面试", () => api.sessions(dateRangeParams()));
+      });
+    });
     els.statusFilter.addEventListener("change", () => {
       state.statusFilter = els.statusFilter.value;
       renderAll();
@@ -750,6 +900,12 @@
       renderAll();
       return;
     }
+    const toggleButton = event.target.closest("[data-toggle-collapse]");
+    if (toggleButton) {
+      toggleCollapsed(toggleButton.dataset.toggleCollapse || "", toggleButton.dataset.collapseKey || "");
+      renderAll();
+      return;
+    }
     const bindButton = event.target.closest("[data-bind-session]");
     if (bindButton) {
       const sessionId = bindButton.dataset.bindSession;
@@ -774,6 +930,7 @@
   }
 
   async function init() {
+    setDefaultDateRange();
     bindEvents();
     initColumnResizers();
     window.setInterval(() => {

@@ -21,7 +21,13 @@
     backfillStatus: () => requestJson("/api/interview-center/backfill/status"),
     authUrl: () => requestJson("/api/interview-center/feishu/auth-url"),
     disconnect: () => requestJson("/api/interview-center/feishu/disconnect", { method: "POST", body: {} }),
-    sessions: () => requestJson("/api/interview-center/sessions"),
+    sessions: (params = {}) => {
+      const query = new URLSearchParams();
+      if (params.startTime) query.set("startTime", String(params.startTime));
+      if (params.endTime) query.set("endTime", String(params.endTime));
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      return requestJson(`/api/interview-center/sessions${suffix}`);
+    },
     sync: () => requestJson("/api/interview-center/sync", { method: "POST", body: { autoPrepare: false } }),
     bind: (sessionId, resumeId, prepare = false) =>
       requestJson(`/api/interview-center/sessions/${encodeURIComponent(sessionId)}/bind`, {
