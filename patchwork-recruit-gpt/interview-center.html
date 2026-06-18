@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>面试中心 - 招聘智能体</title>
-    <link rel="stylesheet" href="./src/interview-center/styles.css?v=20260618-stage-fold-1" />
+    <link rel="stylesheet" href="./src/interview-center/styles.css?v=20260618-two-column-1" />
   </head>
   <body>
     <main class="interview-shell">
@@ -55,6 +55,7 @@
                 <input id="dateEndFilter" type="date" aria-label="结束日期" />
                 <button class="ghost-btn small" type="button" id="applyDateFilterBtn">应用</button>
               </div>
+              <button class="ghost-btn small" type="button" id="refreshSessionsBtn">刷新</button>
               <select id="statusFilter" aria-label="面试状态筛选">
                 <option value="">全部状态</option>
                 <option value="needs_confirmation">需确认</option>
@@ -73,22 +74,7 @@
           </div>
         </aside>
 
-        <div class="column-resizer" data-resizer="calendar-match" role="separator" aria-orientation="vertical" aria-label="调整日历和匹配栏宽度" title="拖拽调整宽度"></div>
-
-        <section class="panel match-panel">
-          <div class="panel-head">
-            <div>
-              <p>Candidate Match</p>
-              <h2>候选人匹配</h2>
-            </div>
-            <button class="ghost-btn small" type="button" id="refreshSessionsBtn">刷新</button>
-          </div>
-          <div class="match-list" id="matchList">
-            <div class="empty-state">暂无候选人匹配记录</div>
-          </div>
-        </section>
-
-        <div class="column-resizer" data-resizer="match-workspace" role="separator" aria-orientation="vertical" aria-label="调整匹配和工作区宽度" title="拖拽调整宽度"></div>
+        <div class="column-resizer" data-resizer="calendar-workspace" role="separator" aria-orientation="vertical" aria-label="调整日历和工作区宽度" title="拖拽调整宽度"></div>
 
         <section class="panel workspace-panel">
           <div class="panel-head">
@@ -108,21 +94,11 @@
             <div class="empty-state large">从左侧选择一个面试日程</div>
           </div>
         </section>
-
-        <section class="log-panel">
-        <div class="panel-head compact">
-          <div>
-            <p>Logs</p>
-            <h2>运行日志</h2>
-          </div>
-        </div>
-        <div class="log-list" id="logList">暂无日志</div>
-        </section>
       </section>
     </main>
 
-    <script src="./src/interview-center/api.js?v=20260618-stage-fold-1"></script>
-    <script src="./src/interview-center/state.js?v=20260618-stage-fold-1"></script>
-    <script src="./src/interview-center/app.js?v=20260618-stage-fold-1"></script>
+    <script src="./src/interview-center/api.js?v=20260618-two-column-1"></script>
+    <script src="./src/interview-center/state.js?v=20260618-two-column-1"></script>
+    <script src="./src/interview-center/app.js?v=20260618-two-column-1"></script>
   </body>
 </html>

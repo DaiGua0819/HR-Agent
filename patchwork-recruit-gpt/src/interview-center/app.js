@@ -15,7 +15,6 @@
     applyDateFilterBtn: document.querySelector("#applyDateFilterBtn"),
     workspaceGrid: document.querySelector(".workspace-grid"),
     eventList: document.querySelector("#eventList"),
-    matchList: document.querySelector("#matchList"),
     workspaceTitle: document.querySelector("#workspaceTitle"),
     workspaceStatus: document.querySelector("#workspaceStatus"),
     workspaceBody: document.querySelector("#workspaceBody"),
@@ -23,7 +22,6 @@
     openDocBtn: document.querySelector("#openDocBtn"),
     backfillBtn: document.querySelector("#backfillBtn"),
     confirmBtn: document.querySelector("#confirmBtn"),
-    logList: document.querySelector("#logList"),
     metricTotal: document.querySelector("#metricTotal"),
     metricMatched: document.querySelector("#metricMatched"),
     metricPrepared: document.querySelector("#metricPrepared"),
@@ -46,10 +44,9 @@
     completed: "已完成",
   };
 
-  const columnStorageKey = "interviewCenter.columnWidths.v1";
+  const columnStorageKey = "interviewCenter.columnWidths.v2";
   const columnMins = {
-    calendar: 280,
-    match: 340,
+    calendar: 360,
     workspace: 420,
   };
   const backfillGraceSeconds = 10 * 60;
@@ -353,83 +350,6 @@
       .join("");
   }
 
-  function renderMatches() {
-    const groups = groupedSessions();
-    if (!groups.length) {
-      els.matchList.innerHTML = '<div class="empty-state">暂无候选人匹配记录</div>';
-      return;
-    }
-    els.matchList.innerHTML = groups
-      .map(
-        (group) => {
-          const groupCollapsed = isCollapsed("group", group.key);
-          return `
-          <section class="session-group ${groupCollapsed ? "is-collapsed" : ""}">
-            <button class="session-group-head" type="button" data-toggle-collapse="group" data-collapse-key="${escapeHtml(group.key)}" aria-expanded="${groupCollapsed ? "false" : "true"}">
-              <strong><span class="collapse-mark">${groupCollapsed ? "▸" : "▾"}</span>${escapeHtml(group.label)}</strong>
-              <span>${group.count} 场</span>
-            </button>
-            ${
-              groupCollapsed
-                ? ""
-                : group.stages
-                    .map((stage) => {
-                      const stageCollapseKey = `${group.key}:${stage.key}`;
-                      const stageCollapsed = isCollapsed("stage", stageCollapseKey);
-                      return `
-                  <div class="round-group ${stageCollapsed ? "is-collapsed" : ""}">
-                    <button class="round-group-head ${escapeHtml(stage.className)}" type="button" data-toggle-collapse="stage" data-collapse-key="${escapeHtml(stageCollapseKey)}" aria-expanded="${stageCollapsed ? "false" : "true"}">
-                      <span><span class="collapse-mark">${stageCollapsed ? "▸" : "▾"}</span>${escapeHtml(stage.label)}</span>
-                      <strong>${stage.count}</strong>
-                    </button>
-                    ${
-                      stageCollapsed
-                        ? ""
-                        : stage.items
-                      .map((item) => {
-                        const matchedName = item.resume?.name || item.matchedResume?.name || "";
-                        const flow = sessionFlow(item);
-                        const candidates = (item.matchCandidates || [])
-                          .slice(0, 3)
-                          .map(
-                            (candidate) => `
-                              <div class="candidate-option">
-                                <div>
-                                  <strong>${escapeHtml(candidate.name || "-")}</strong>
-                                  <small>${escapeHtml(candidate.jobType || "")}</small>
-                                  <span>${escapeHtml(candidate.source || "")}</span>
-                                </div>
-                                <button class="ghost-btn small" type="button" data-bind-session="${escapeHtml(item.id)}" data-resume-id="${escapeHtml(candidate.resumeId)}">绑定</button>
-                              </div>
-                            `
-                          )
-                          .join("");
-                        return `
-                          <article class="match-card ${item.id === state.selectedId ? "is-active" : ""}">
-                            <button type="button" class="match-main" data-select-session="${escapeHtml(item.id)}">
-                              <span>${escapeHtml(formatTime(item.startTime))}</span>
-                              <strong>${escapeHtml(matchedName || item.title || "待匹配日程")}</strong>
-                              <small>${escapeHtml(item.resume?.jobType || item.matchedResume?.jobType || item.title || "")}</small>
-                              <em>${escapeHtml(flow.roundLabel)}${flow.stageText ? ` · ${escapeHtml(flow.stageText)}` : ""} · 匹配分 ${escapeHtml(item.match?.score ?? "-")}</em>
-                            </button>
-                            ${item.status === "needs_confirmation" || item.status === "needs_match" ? `<div class="candidate-options">${candidates || '<span class="empty-inline">没有候选建议</span>'}</div>` : ""}
-                          </article>
-                        `;
-                      })
-                      .join("")
-                    }
-                  </div>
-                `;
-                    })
-                    .join("")
-            }
-          </section>
-        `;
-        }
-      )
-      .join("");
-  }
-
   function questionHtml(session) {
     const questions = session.questionSet?.questions || [];
     if (!questions.length) return '<div class="empty-state">尚未生成面试问题</div>';
@@ -659,37 +579,16 @@
     `;
   }
 
-  function renderLogs() {
-    if (!state.logs.length) {
-      els.logList.textContent = "暂无日志";
-      return;
-    }
-    els.logList.innerHTML = state.logs
-      .slice(0, 30)
-      .map(
-        (log) => `
-          <div class="log-row is-${escapeHtml(log.level || "info")}">
-            <time>${escapeHtml(new Date(log.createdAt || Date.now()).toLocaleString("zh-CN"))}</time>
-            <span>${escapeHtml(log.message || "")}</span>
-          </div>
-        `
-      )
-      .join("");
-  }
-
   function renderAll() {
     updateConnectionUi();
     renderMetrics();
     renderEvents();
-    renderMatches();
     renderWorkspace();
-    renderLogs();
   }
 
   function applyColumnWidths(widths = {}) {
     if (!els.workspaceGrid) return;
     if (widths.calendar) els.workspaceGrid.style.setProperty("--calendar-col", `${Math.round(widths.calendar)}px`);
-    if (widths.match) els.workspaceGrid.style.setProperty("--match-col", `${Math.round(widths.match)}px`);
     if (widths.workspace) els.workspaceGrid.style.setProperty("--workspace-col", `${Math.round(widths.workspace)}px`);
   }
 
@@ -708,14 +607,13 @@
 
   function currentColumnWidths() {
     const calendar = els.workspaceGrid?.querySelector(".calendar-panel")?.getBoundingClientRect().width || 0;
-    const match = els.workspaceGrid?.querySelector(".match-panel")?.getBoundingClientRect().width || 0;
     const workspace = els.workspaceGrid?.querySelector(".workspace-panel")?.getBoundingClientRect().width || 0;
-    return { calendar, match, workspace };
+    return { calendar, workspace };
   }
 
   function resetColumnWidths() {
     if (!els.workspaceGrid) return;
-    ["--calendar-col", "--match-col", "--workspace-col"].forEach((name) => els.workspaceGrid.style.removeProperty(name));
+    ["--calendar-col", "--workspace-col"].forEach((name) => els.workspaceGrid.style.removeProperty(name));
     try {
       localStorage.removeItem(columnStorageKey);
     } catch {}
@@ -737,14 +635,10 @@
         const onMove = (moveEvent) => {
           const delta = moveEvent.clientX - startX;
           const next = { ...start };
-          if (type === "calendar-match") {
-            const total = start.calendar + start.match;
-            next.calendar = Math.max(columnMins.calendar, Math.min(total - columnMins.match, start.calendar + delta));
-            next.match = total - next.calendar;
-          } else if (type === "match-workspace") {
-            const total = start.match + start.workspace;
-            next.match = Math.max(columnMins.match, Math.min(total - columnMins.workspace, start.match + delta));
-            next.workspace = total - next.match;
+          if (type === "calendar-workspace") {
+            const total = start.calendar + start.workspace;
+            next.calendar = Math.max(columnMins.calendar, Math.min(total - columnMins.workspace, start.calendar + delta));
+            next.workspace = total - next.calendar;
           }
           applyColumnWidths(next);
           saveColumnWidths(next);
@@ -873,7 +767,6 @@
       renderAll();
     });
     els.eventList.addEventListener("click", handleDelegatedClick);
-    els.matchList.addEventListener("click", handleDelegatedClick);
     els.workspaceBody.addEventListener("click", handleDelegatedClick);
     els.prepareBtn.addEventListener("click", () => {
       const session = selectedSession();
