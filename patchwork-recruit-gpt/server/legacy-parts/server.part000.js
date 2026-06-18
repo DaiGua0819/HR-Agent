@@ -219,6 +219,26 @@ let resumeListResponseCache = null;
 const batchWorkers = new Map();
 const BOSS_IMPORT_DONE_STATUSES = new Set(["saved", "duplicate"]);
 const BOSS_IMPORT_SKIP_STATUSES = new Set(["pending", "parsing", "saved", "duplicate"]);
+const FOLDER_IMPORT_FAILED_RETRY_LIMIT = Math.max(
+  1,
+  Math.min(Number(process.env.FOLDER_IMPORT_FAILED_RETRY_LIMIT || 2), 10)
+);
+const FOLDER_IMPORT_FAILED_RETRY_COOLDOWN_MS = Math.max(
+  60000,
+  Number(process.env.FOLDER_IMPORT_FAILED_RETRY_COOLDOWN_MS || 60 * 60 * 1000)
+);
+const PDF_TEXT_EXTRACTION_SOURCE_CHAR_LIMIT = Math.max(
+  100000,
+  Number(process.env.PDF_TEXT_EXTRACTION_SOURCE_CHAR_LIMIT || 1000000)
+);
+const PDF_TEXT_EXTRACTION_TOTAL_CHAR_LIMIT = Math.max(
+  PDF_TEXT_EXTRACTION_SOURCE_CHAR_LIMIT,
+  Number(process.env.PDF_TEXT_EXTRACTION_TOTAL_CHAR_LIMIT || 3000000)
+);
+const PDF_TEXT_EXTRACTION_MAX_STREAMS = Math.max(
+  1,
+  Math.min(Number(process.env.PDF_TEXT_EXTRACTION_MAX_STREAMS || 80), 300)
+);
 const FOLDER_IMPORT_STALE_RUNNING_MS = Math.max(
   600000,
   Number(process.env.FOLDER_IMPORT_STALE_RUNNING_MS || 15 * 60 * 1000)

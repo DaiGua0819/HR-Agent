@@ -179,7 +179,7 @@ async function handleCancelBatchJob(jobId, response) {
     updateBatchJobStatus(jobId, "cancelled");
     getDb()
       .prepare(
-        "UPDATE batch_items SET status = 'cancelled', message = ?, updated_at = ? WHERE job_id = ? AND status = 'pending'"
+        "UPDATE batch_items SET status = 'cancelled', message = ?, updated_at = ? WHERE job_id = ? AND status IN ('pending', 'parsing')"
       )
       .run("任务已取消", now, jobId);
     sendJson(response, 200, { job: await getPublicBatchJob(jobId) });
@@ -286,6 +286,42 @@ async function readFolderImportManifest(source) {
 async function writeFolderImportManifest(source, manifest) {
   await fs.mkdir(path.dirname(source.manifestPath), { recursive: true });
   await fs.writeFile(source.manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+}
+
+function getFolderImportFailureSkipReason(entry, nowMs = Date.now()) {
+  if (!entry || entry.status !== "failed") return "";
+  const retryCount = Math.max(0, Number(entry.retryCount || entry.failedAttempts || 0) || 0);
+  if (retryCount >= FOLDER_IMPORT_FAILED_RETRY_LIMIT) return "retry-limit";
+  const failedAtMs = Date.parse(entry.failedAt || entry.importedAt || entry.updatedAt || "");
+  if (Number.isFinite(failedAtMs) && nowMs - failedAtMs < FOLDER_IMPORT_FAILED_RETRY_COOLDOWN_MS) {
+    return "cooldown";
+  }
+  return "";
+}
+
+function getFolderImportManifestEntryMap(manifest = {}) {
+  const entries = Array.isArray(manifest.files) ? manifest.files : [];
+  return new Map(entries.filter((entry) => entry?.hash).map((entry) => [entry.hash, entry]));
+}
+
+function getFolderImportFailedBatchHashStates(source) {
+  const db = getDb();
+  const rows = db.prepare("SELECT payload, message, updated_at FROM batch_items WHERE status = 'failed'").all();
+  const states = new Map();
+  for (const row of rows) {
+    const payload = parsePayload(row.payload, {});
+    if (payload.source !== source.id || !payload.sourceHash) continue;
+    const current = states.get(payload.sourceHash) || { count: 0, failedAt: "", lastError: "" };
+    const currentTime = Date.parse(current.failedAt || "") || 0;
+    const rowTime = Date.parse(row.updated_at || "") || 0;
+    current.count += 1;
+    if (rowTime >= currentTime) {
+      current.failedAt = row.updated_at || current.failedAt;
+      current.lastError = row.message || current.lastError;
+    }
+    states.set(payload.sourceHash, current);
+  }
+  return states;
 }
 
 async function readBossImportManifest() {
@@ -468,6 +504,60 @@ async function markFolderImportCompleted(item, result = {}) {
   await writeFolderImportManifest(source, manifest);
 }
 
+async function markFolderImportFailed(item, error = {}) {
+  const payload = parsePayload(item.payload, {});
+  const source = getFolderImportSourceById(payload.source || "");
+  if (!source || !payload.sourceHash) return;
+
+  const fileResolution = resolveBatchItemFileReference(item, payload);
+  const sourcePath = fileResolution.sourcePath || payload.sourcePath || item.file_path || "";
+  const manifest = await readFolderImportManifest(source);
+  const hash = payload.sourceHash;
+  const previousEntry = (manifest.files || []).find((entry) => entry?.hash === hash) || {};
+  const historicalFailure = getFolderImportFailedBatchHashStates(source).get(hash) || {};
+  const retryCount =
+    Math.max(
+      0,
+      Number(previousEntry.retryCount || previousEntry.failedAttempts || 0) || 0,
+      Number(historicalFailure.count || 0) || 0
+    ) + 1;
+  const nowIso = new Date().toISOString();
+  const accounts = mergeEmailManifestAccounts(previousEntry.accounts, {
+    accountId: payload.accountId || previousEntry.accountId || "",
+    accountLabel: payload.accountLabel || previousEntry.accountLabel || "",
+    email: payload.email || previousEntry.email || "",
+    imapHost: payload.imapHost || previousEntry.imapHost || "",
+  });
+  const message = clipText(String(error.message || error || "resume import failed"), 500);
+
+  manifest.files = (manifest.files || []).filter((entry) => entry.hash !== hash);
+  manifest.files.push({
+    ...previousEntry,
+    hash,
+    filename: item.filename,
+    sourcePath,
+    size: payload.size || previousEntry.size || 0,
+    failedAt: nowIso,
+    importedAt: previousEntry.importedAt || "",
+    jobId: item.job_id,
+    itemId: item.id,
+    status: "failed",
+    retryCount,
+    lastError: message,
+    accountId: payload.accountId || previousEntry.accountId || "",
+    accountLabel: payload.accountLabel || previousEntry.accountLabel || "",
+    email: payload.email || previousEntry.email || "",
+    imapHost: payload.imapHost || previousEntry.imapHost || "",
+    emailSourceKind: payload.emailSourceKind || previousEntry.emailSourceKind || "",
+    sourceLabel: payload.sourceLabel || previousEntry.sourceLabel || "",
+    sourcePlatform: payload.sourcePlatform || previousEntry.sourcePlatform || "",
+    platformContact: payload.platformContact || previousEntry.platformContact || null,
+    accounts,
+  });
+
+  await writeFolderImportManifest(source, manifest);
+}
+
 async function markBossImportCompleted(item, result = {}) {
   await markFolderImportCompleted(item, result);
 }
@@ -603,7 +693,10 @@ async function collectFolderResumeImportCandidates(
   let skippedImported = 0;
   let skippedInvalid = 0;
   let skippedTooNew = 0;
+  let skippedFailed = 0;
   const nowMs = Date.now();
+  const manifestEntryByHash = getFolderImportManifestEntryMap(manifest);
+  const failedBatchStatesByHash = getFolderImportFailedBatchHashStates(source);
 
   for (const filePath of files) {
     const filename = path.basename(filePath);
@@ -621,6 +714,28 @@ async function collectFolderResumeImportCandidates(
     const hash = getFileHash(pdfBuffer);
     if (knownHashes.has(hash)) {
       skippedImported += 1;
+      continue;
+    }
+    const failedSkipReason = getFolderImportFailureSkipReason(manifestEntryByHash.get(hash), nowMs);
+    if (failedSkipReason) {
+      skippedFailed += 1;
+      knownHashes.add(hash);
+      continue;
+    }
+    const failedBatchState = failedBatchStatesByHash.get(hash);
+    const failedBatchSkipReason = getFolderImportFailureSkipReason(
+      failedBatchState
+        ? {
+            status: "failed",
+            retryCount: failedBatchState.count,
+            failedAt: failedBatchState.failedAt,
+          }
+        : null,
+      nowMs
+    );
+    if (failedBatchSkipReason) {
+      skippedFailed += 1;
+      knownHashes.add(hash);
       continue;
     }
     const downloadMetadata = findFolderResumeDownloadMetadata(downloadMetadataIndex, { hash, filePath, filename });
@@ -645,6 +760,7 @@ async function collectFolderResumeImportCandidates(
     skippedImported,
     skippedInvalid,
     skippedTooNew,
+    skippedFailed,
     limit,
   };
 }
@@ -683,6 +799,7 @@ async function handleScanResumeFolderImport(source, request, response) {
         skippedImported: scan.skippedImported,
         skippedInvalid: scan.skippedInvalid,
         skippedTooNew: scan.skippedTooNew,
+        skippedFailed: scan.skippedFailed,
         limit,
       },
       files: selected.map(publicFolderImportCandidate),
@@ -925,6 +1042,7 @@ async function createFolderImportBatchJobFromCandidates(
   const skippedImported = Number(summaryOverrides.skippedImported || 0);
   const skippedInvalid = Number(summaryOverrides.skippedInvalid || 0);
   const skippedTooNew = Number(summaryOverrides.skippedTooNew || 0);
+  const skippedFailed = Number(summaryOverrides.skippedFailed || 0);
   const skippedUnsupported = Number(summaryOverrides.skippedUnsupported || 0);
   const now = new Date().toISOString();
   const summary = {
@@ -935,6 +1053,7 @@ async function createFolderImportBatchJobFromCandidates(
     skippedImported,
     skippedInvalid,
     skippedTooNew,
+    skippedFailed,
     skippedUnsupported,
     limit: normalizedLimit,
   };
@@ -1034,7 +1153,7 @@ async function createFolderImportBatchJob(
     stopAtLimit: true,
     minFileAgeMs,
   });
-  const { files, candidates, skippedImported, skippedInvalid, skippedTooNew } = scan;
+  const { files, candidates, skippedImported, skippedInvalid, skippedTooNew, skippedFailed } = scan;
   return createFolderImportBatchJobFromCandidates(source, candidates, {
     limit: normalizedLimit,
     parseMode: normalizedParseMode,
@@ -1044,6 +1163,7 @@ async function createFolderImportBatchJob(
       skippedImported,
       skippedInvalid,
       skippedTooNew,
+      skippedFailed,
     },
   });
 }

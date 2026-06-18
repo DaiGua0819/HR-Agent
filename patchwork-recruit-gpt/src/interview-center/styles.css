@@ -14,6 +14,8 @@
   --success: #237a57;
   --review: #5b63a6;
   --shadow: 0 18px 48px rgba(23, 32, 51, 0.1);
+  --workspace-main-height: clamp(640px, calc(100vh - 190px), 760px);
+  --workspace-log-height: 118px;
 }
 
 * {
@@ -236,6 +238,7 @@ button:disabled {
     minmax(420px, var(--workspace-col, 1.28fr));
   column-gap: 0;
   row-gap: 14px;
+  grid-template-rows: var(--workspace-main-height) var(--workspace-log-height);
   align-items: stretch;
   margin-top: 14px;
 }
@@ -243,11 +246,17 @@ button:disabled {
 .calendar-panel {
   grid-column: 1;
   grid-row: 1;
+  height: var(--workspace-main-height);
+  min-height: 0;
+  max-height: var(--workspace-main-height);
 }
 
 .match-panel {
   grid-column: 3;
   grid-row: 1;
+  height: var(--workspace-main-height);
+  min-height: 0;
+  max-height: var(--workspace-main-height);
 }
 
 .workspace-panel {
@@ -266,6 +275,8 @@ button:disabled {
 
 .column-resizer[data-resizer="calendar-match"] {
   grid-row: 1;
+  min-height: 0;
+  height: var(--workspace-main-height);
 }
 
 .column-resizer[data-resizer="match-workspace"] {
@@ -326,6 +337,7 @@ button:disabled {
 .event-list,
 .match-list,
 .workspace-body {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   padding: 12px;
@@ -452,7 +464,9 @@ button:disabled {
 }
 
 .workspace-panel {
-  min-height: 100%;
+  align-self: stretch;
+  height: auto;
+  min-height: 0;
   max-height: none;
 }
 
@@ -719,11 +733,18 @@ button:disabled {
   grid-column: 1 / 4;
   grid-row: 2;
   min-width: 0;
+  height: var(--workspace-log-height);
+  min-height: var(--workspace-log-height);
+  max-height: var(--workspace-log-height);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
 .log-list {
-  max-height: 190px;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   padding: 10px 14px 14px;
   color: var(--muted);
@@ -774,6 +795,7 @@ button:disabled {
   .workspace-grid {
     gap: 14px;
     grid-template-columns: minmax(280px, 0.9fr) minmax(380px, 1.1fr);
+    grid-template-rows: auto;
   }
 
   .calendar-panel,
@@ -781,12 +803,17 @@ button:disabled {
   .log-panel {
     grid-column: auto;
     grid-row: auto;
+    height: auto;
+    min-height: 0;
+    max-height: calc(100vh - 190px);
   }
 
   .workspace-panel {
     grid-column: 1 / -1;
     grid-row: auto;
+    height: auto;
     min-height: 560px;
+    max-height: none;
   }
 
   .column-resizer {

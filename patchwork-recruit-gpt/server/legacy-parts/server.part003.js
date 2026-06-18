@@ -965,25 +965,30 @@ function decodePdfHexString(hex) {
 
 function collectPdfTextFromSource(source) {
   const parts = [];
+  const safeSource = String(source || "").slice(0, PDF_TEXT_EXTRACTION_SOURCE_CHAR_LIMIT);
   const literalTextPattern = /\(((?:\\.|[^\\)])*)\)\s*Tj/g;
   const hexTextPattern = /<([0-9A-Fa-f\s]+)>\s*Tj/g;
   const arrayTextPattern = /\[((?:.|\n|\r)*?)\]\s*TJ/g;
 
-  source.replace(literalTextPattern, (_, raw) => {
-    parts.push(decodePdfLiteralString(raw));
-    return "";
-  });
-  source.replace(hexTextPattern, (_, raw) => {
-    parts.push(decodePdfHexString(raw));
-    return "";
-  });
-  source.replace(arrayTextPattern, (_, rawArray) => {
-    rawArray.replace(/\(((?:\\.|[^\\)])*)\)|<([0-9A-Fa-f\s]+)>/g, (_match, literal, hex) => {
-      parts.push(literal !== undefined ? decodePdfLiteralString(literal) : decodePdfHexString(hex));
+  try {
+    safeSource.replace(literalTextPattern, (_, raw) => {
+      parts.push(decodePdfLiteralString(raw));
       return "";
     });
-    return "";
-  });
+    safeSource.replace(hexTextPattern, (_, raw) => {
+      parts.push(decodePdfHexString(raw));
+      return "";
+    });
+    safeSource.replace(arrayTextPattern, (_, rawArray) => {
+      rawArray.slice(0, PDF_TEXT_EXTRACTION_SOURCE_CHAR_LIMIT).replace(/\(((?:\\.|[^\\)])*)\)|<([0-9A-Fa-f\s]+)>/g, (_match, literal, hex) => {
+        parts.push(literal !== undefined ? decodePdfLiteralString(literal) : decodePdfHexString(hex));
+        return "";
+      });
+      return "";
+    });
+  } catch (error) {
+    logResume(`skip unsafe PDF text source: ${error.message || error}`);
+  }
 
   return parts.join(" ");
 }
@@ -993,27 +998,50 @@ function extractPdfStreamSources(pdfBuffer) {
   const streams = [];
   const pattern = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
   let match;
+  let totalChars = 0;
 
-  while ((match = pattern.exec(source))) {
+  while (
+    streams.length < PDF_TEXT_EXTRACTION_MAX_STREAMS &&
+    totalChars < PDF_TEXT_EXTRACTION_TOTAL_CHAR_LIMIT &&
+    (match = pattern.exec(source))
+  ) {
     const dictionary = source.slice(Math.max(0, match.index - 600), match.index);
     const streamBuffer = Buffer.from(match[1], "latin1");
+    let streamSource = "";
     if (/\/FlateDecode\b/.test(dictionary)) {
       try {
-        streams.push(zlib.inflateSync(streamBuffer).toString("latin1"));
+        streamSource = zlib.inflateSync(streamBuffer).toString("latin1");
       } catch {
-        streams.push(streamBuffer.toString("latin1"));
+        streamSource = streamBuffer.toString("latin1");
       }
     } else {
-      streams.push(streamBuffer.toString("latin1"));
+      streamSource = streamBuffer.toString("latin1");
     }
+    streamSource = streamSource.slice(0, PDF_TEXT_EXTRACTION_SOURCE_CHAR_LIMIT);
+    streams.push(streamSource);
+    totalChars += streamSource.length;
   }
 
   return streams;
 }
 
 function extractTextFromPdfBuffer(pdfBuffer) {
-  const sources = [pdfBuffer.toString("latin1"), ...extractPdfStreamSources(pdfBuffer)];
-  return normalizeExtractedPdfText(sources.map(collectPdfTextFromSource).join("\n"));
+  const parts = [];
+  let collectedChars = 0;
+  const appendSource = (source) => {
+    if (collectedChars >= PDF_TEXT_EXTRACTION_TOTAL_CHAR_LIMIT) return;
+    const text = collectPdfTextFromSource(source);
+    if (!text) return;
+    parts.push(text);
+    collectedChars += text.length;
+  };
+
+  appendSource(pdfBuffer.toString("latin1").slice(0, PDF_TEXT_EXTRACTION_SOURCE_CHAR_LIMIT));
+  for (const source of extractPdfStreamSources(pdfBuffer)) {
+    appendSource(source);
+  }
+
+  return normalizeExtractedPdfText(parts.join("\n").slice(0, PDF_TEXT_EXTRACTION_TOTAL_CHAR_LIMIT));
 }
 
 async function askGptText(text, signal) {
@@ -1528,6 +1556,15 @@ async function processBatchJob(jobId) {
       });
     } catch (error) {
       console.error(`[${new Date().toISOString()}] [batch] ${item.filename}: ${error.message}`);
+      try {
+        await markFolderImportFailed(item, error);
+      } catch (manifestError) {
+        console.error(
+          `[${new Date().toISOString()}] [batch] ${item.filename}: failed to update import manifest: ${
+            manifestError.message || manifestError
+          }`
+        );
+      }
       updateBatchItem(item.id, {
         status: "failed",
         message: error.message || "解析失败",
