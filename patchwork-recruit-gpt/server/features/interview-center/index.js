@@ -291,6 +291,9 @@ function createInterviewCenterFeature(context) {
     if (!session.interviewEvaluation) return null;
     const availableAt = backfillAvailableAt(session);
     const nowSeconds = Math.floor(Date.now() / 1000);
+    if (session.earlyBackfillOverride?.usedAt && Number(session.earlyBackfillOverride.availableAt || 0) === availableAt) {
+      return null;
+    }
     if (availableAt && nowSeconds < availableAt) {
       return {
         reason: "interview_not_finished",
@@ -300,6 +303,17 @@ function createInterviewCenterFeature(context) {
       };
     }
     return null;
+  }
+
+  function isEarlyBackfillOverrideAllowed(session = {}, token = "") {
+    const override = session.earlyBackfillOverride || {};
+    if (!override.allowed || override.usedAt || override.failedAt) return false;
+    const expectedToken = compactText(override.token || "");
+    if (!expectedToken) return false;
+    if (expectedToken && expectedToken !== compactText(token || "")) return false;
+    const expiresAt = override.expiresAt ? Date.parse(override.expiresAt) : 0;
+    if (expiresAt && Date.now() > expiresAt) return false;
+    return true;
   }
 
   function statusWithoutBackfill(session = {}) {
@@ -574,7 +588,7 @@ function createInterviewCenterFeature(context) {
     });
   }
 
-  async function backfillSession(sessionId, { force = false } = {}) {
+  async function backfillSession(sessionId, { force = false, earlyOverride = false, earlyOverrideReason = "", earlyOverrideToken = "" } = {}) {
     let session = store.getSession(sessionId);
     if (!session) {
       const error = new Error("面试日程不存在");
@@ -588,7 +602,13 @@ function createInterviewCenterFeature(context) {
     }
     const nowSeconds = Math.floor(Date.now() / 1000);
     const availableAt = backfillAvailableAt(session);
-    if (availableAt && nowSeconds < availableAt) {
+    const allowEarlyBackfill = Boolean(earlyOverride && force && isEarlyBackfillOverrideAllowed(session, earlyOverrideToken));
+    if (availableAt && nowSeconds < availableAt && earlyOverride && force && !allowEarlyBackfill) {
+      const error = new Error("提前回灌未授权或授权已使用，已停止避免误读会议纪要");
+      error.statusCode = 403;
+      throw error;
+    }
+    if (availableAt && nowSeconds < availableAt && !allowEarlyBackfill) {
       const availableAtText = new Date(availableAt * 1000).toLocaleString("zh-CN", { hour12: false });
       const error = new Error(`面试结束后 10 分钟才可读取纪要，预计 ${availableAtText} 可回灌`);
       error.statusCode = 409;
@@ -626,6 +646,15 @@ function createInterviewCenterFeature(context) {
         backfillStartedAt: nowIso(),
         backfillAttempts: Number(session.backfillAttempts || 0) + 1,
         lastBackfillError: "",
+        earlyBackfillOverride: allowEarlyBackfill
+          ? {
+              allowed: true,
+              requestedAt: nowIso(),
+              requestedBeforeAvailableAt: availableAt || 0,
+              availableAt: availableAt || 0,
+              reason: clipText(earlyOverrideReason || "one_off_manual_override", 300),
+            }
+          : session.earlyBackfillOverride || null,
       });
 
       const collected = await feishu.collectBackfillSources(session);
@@ -699,6 +728,15 @@ function createInterviewCenterFeature(context) {
         lastBackfillError: "",
         status: "needs_review",
         backfilledAt: nowIso(),
+        earlyBackfillOverride: allowEarlyBackfill
+          ? {
+              ...(session.earlyBackfillOverride || {}),
+              allowed: true,
+              usedAt: nowIso(),
+              availableAt: availableAt || 0,
+              reason: clipText(earlyOverrideReason || session.earlyBackfillOverride?.reason || "one_off_manual_override", 300),
+            }
+          : session.earlyBackfillOverride || null,
       });
       store.appendLog(session.id, "info", "已完成面试回灌，等待人工复核", { ruleSuggestionIds, source });
       try {
@@ -736,6 +774,15 @@ function createInterviewCenterFeature(context) {
         status: "backfill_failed",
         lastBackfillError: error.message || "面试回灌失败",
         backfilledAt: nowIso(),
+        earlyBackfillOverride: allowEarlyBackfill
+          ? {
+              ...(session.earlyBackfillOverride || {}),
+              allowed: true,
+              failedAt: nowIso(),
+              availableAt: availableAt || 0,
+              reason: clipText(earlyOverrideReason || session.earlyBackfillOverride?.reason || "one_off_manual_override", 300),
+            }
+          : session.earlyBackfillOverride || null,
       });
       store.appendLog(session.id, "error", error.message || "面试回灌失败", error.payload || {});
       return failed;
@@ -946,7 +993,18 @@ function createInterviewCenterFeature(context) {
 
   async function handleBackfill(id, request, response) {
     const body = await context.readJsonBody(request).catch(() => ({}));
-    send(response, 200, { ok: true, session: await enrichSessionWithInterviewFlow(await backfillSession(id, { force: Boolean(body.force) })), logs: store.listLogs("", 50) });
+    send(response, 200, {
+      ok: true,
+      session: await enrichSessionWithInterviewFlow(
+        await backfillSession(id, {
+          force: Boolean(body.force),
+          earlyOverride: Boolean(body.earlyOverride),
+          earlyOverrideReason: body.earlyOverrideReason || "",
+          earlyOverrideToken: body.earlyOverrideToken || "",
+        })
+      ),
+      logs: store.listLogs("", 50),
+    });
   }
 
   function normalizeReviewDecision(value) {

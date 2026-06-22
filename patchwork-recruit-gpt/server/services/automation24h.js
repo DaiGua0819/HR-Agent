@@ -207,6 +207,23 @@ function isBlockedZeroProcessResult(payload, stats) {
   return /unread_tab_not_found|not_found|未读|消息页|聊天页|blocked|阻塞/i.test(reasonText) || Boolean(payload.blocked);
 }
 
+function isFatalProcessPayload(payload, stats) {
+  if (!payload || typeof payload !== "object" || !stats || typeof stats !== "object") return false;
+  const state = stats.state && typeof stats.state === "object" ? stats.state : {};
+  if (payload.ok === false && (payload.blocked || state.blocked || payload.fatalError || state.fatalError)) return true;
+  if (payload.fatalError || state.fatalError) return true;
+  if (payload.blocked && normalizeCount(stats.blocked, 0) > 0) return true;
+  const message = [
+    payload.message,
+    payload.reply,
+    payload.error,
+    state.message,
+    state.reason,
+    state.fatalError,
+  ].filter(Boolean).join(" ");
+  return /未读处理失败|当前聊天头部|选中联系人与刚打开|身份不一致|已停止当前人处理|fatal/i.test(message);
+}
+
 function isHumanVerificationPayload(payload) {
   if (!payload || typeof payload !== "object") return false;
   const state = payload.state && typeof payload.state === "object" ? payload.state : {};
@@ -821,6 +838,23 @@ function createAutomation24hScheduler({
       error.payload = payload;
       throw error;
     }
+    if (isFatalProcessPayload(payload, stats)) {
+      const error = new Error(stats.message || payload.message || payload.reply || payload.error || "任务处理中断");
+      error.payload = payload;
+      if (stats.processed || stats.requestedResume || stats.downloadedResume) {
+        error.partialStats = {
+          ok: true,
+          recovered: true,
+          processed: stats.processed,
+          requestedResume: stats.requestedResume,
+          downloadedResume: stats.downloadedResume,
+          counts: stats.counts,
+          message: stats.message,
+          source: "round_payload_fatal",
+        };
+      }
+      throw error;
+    }
     const observed = await observeTarget(target);
     const remainingUnread = observed.ok ? observed.remainingUnread : null;
     const remainingActionable = observed.ok ? observed.remainingActionable : null;
@@ -936,6 +970,19 @@ function createAutomation24hScheduler({
       if (status === "failed") {
         const error = new Error(task?.error || result?.error || payload?.error || `${routes.label} background task failed`);
         error.payload = result || payload;
+        const stats = extractRunStats(error.payload);
+        if (stats.processed || stats.requestedResume || stats.downloadedResume) {
+          error.partialStats = {
+            ok: true,
+            recovered: true,
+            processed: stats.processed,
+            requestedResume: stats.requestedResume,
+            downloadedResume: stats.downloadedResume,
+            counts: stats.counts,
+            message: stats.message,
+            source: "failed_task_payload",
+          };
+        }
         throw error;
       }
 

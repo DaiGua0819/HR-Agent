@@ -1336,14 +1336,34 @@ class WebAgentService:
                     max_total=max_total,
                     target_position=target_position,
                 )
-            finished_timing = self.finish_operation_timing(timing, "success")
+            result_state = result.get("state") if isinstance(result, dict) and isinstance(result.get("state"), dict) else {}
+            result_blocked = bool(
+                isinstance(result, dict)
+                and (
+                    result.get("blocked")
+                    or result.get("fatalError")
+                    or result_state.get("blocked")
+                    or result_state.get("fatalError")
+                )
+            )
+            finished_timing = self.finish_operation_timing(timing, "failed" if result_blocked else "success")
             if isinstance(result, dict) and finished_timing:
                 result["timings"] = finished_timing
             self._update_boss_process_task(
                 task_id,
-                status="completed",
+                status="failed" if result_blocked else "completed",
                 result=compact_process_messages_response(result),
-                error="",
+                error=safe_text(
+                    str(
+                        (result.get("fatalError") if isinstance(result, dict) else "")
+                        or (result_state.get("fatalError") if isinstance(result_state, dict) else "")
+                        or (result.get("message") if isinstance(result, dict) else "")
+                        or "platform process blocked"
+                    ),
+                    260,
+                )
+                if result_blocked
+                else "",
             )
         except PauseRequested as error:
             finished_timing = self.finish_operation_timing(timing, "paused", str(error))

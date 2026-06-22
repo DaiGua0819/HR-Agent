@@ -397,7 +397,9 @@
             )
         )
         index_match = bool(target_index >= 0 and state.get("selectedIndex") == target_index)
-        opened = bool(label_match or header_name_match or index_match or (selected_name_match and (not target_job or job_match)))
+        # 51job uses a virtualized conversation list, so row index can remain the same
+        # while the chat panel is still showing the previous candidate.
+        opened = bool(label_match or header_name_match or (selected_name_match and (not target_job or job_match)))
         reason = ""
         if not opened:
             if not target_key and not target_name:
@@ -705,8 +707,19 @@
                     })
                     break
                 action = classify_recruiter_screen_result_action(result)
-                counts[action] = counts.get(action, 0) + 1
                 screening = result.get("screening") if isinstance(result.get("screening"), dict) else {}
+                identity_warnings = (
+                    result.get("identityWarnings")
+                    if isinstance(result.get("identityWarnings"), list)
+                    else (
+                        (context_before.get("applicant") or {}).get("identityWarnings", [])
+                        if isinstance(context_before.get("applicant"), dict)
+                        else []
+                    )
+                )
+                if action == "blocked" and (result.get("skippedIdentityMismatch") or identity_warnings):
+                    action = "identity_mismatch_skipped"
+                counts[action] = counts.get(action, 0) + 1
                 results.append({
                     "index": len(results) + 1,
                     "label": safe_text(str((context_before.get("applicant") or {}).get("label") or label), 140),
@@ -729,13 +742,7 @@
                     "action": action,
                     "screeningStatus": safe_text(str(screening.get("status") or ""), 40),
                     "message": safe_text(str(result.get("message") or ""), 260),
-                    "identityWarnings": result.get("identityWarnings")
-                    if isinstance(result.get("identityWarnings"), list)
-                    else (
-                        (context_before.get("applicant") or {}).get("identityWarnings", [])
-                        if isinstance(context_before.get("applicant"), dict)
-                        else []
-                    ),
+                    "identityWarnings": identity_warnings,
                     "knowledgeAnswer": result.get("knowledgeAnswer") if isinstance(result.get("knowledgeAnswer"), dict) else {},
                     "resume": compact_recruiter_resume_result(result.get("resume") if isinstance(result.get("resume"), dict) else {}),
                 })
@@ -761,6 +768,8 @@
                 "counts": counts,
                 "filteredOut": len(filtered),
                 "scanTraceCount": len(scan_trace),
+                "blocked": bool(fatal_error),
+                "fatalError": safe_text(fatal_error, 260) if fatal_error else "",
             },
             "results": results,
             "filteredOut": filtered[:120],
@@ -768,6 +777,9 @@
         })
         self.add_event("chat", message)
         return {
+            "ok": not bool(fatal_error),
+            "blocked": bool(fatal_error),
+            "fatalError": safe_text(fatal_error, 260) if fatal_error else "",
             "message": message,
             "results": results,
             "counts": counts,
@@ -777,6 +789,8 @@
                 "counts": counts,
                 "filteredOut": len(filtered),
                 "scanTraceCount": len(scan_trace),
+                "blocked": bool(fatal_error),
+                "fatalError": safe_text(fatal_error, 260) if fatal_error else "",
             },
             "scanTrace": scan_trace[-80:],
             "batchReportId": batch_report.get("runId"),

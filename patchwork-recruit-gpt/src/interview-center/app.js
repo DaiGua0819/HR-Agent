@@ -112,6 +112,10 @@
   }
 
   function backfillProtection(session) {
+    const availableAt = Number(session?.endTime || session?.startTime || 0) + backfillGraceSeconds;
+    if (session.earlyBackfillOverride?.usedAt && Number(session.earlyBackfillOverride.availableAt || 0) === availableAt) {
+      return { blocked: false, reason: "" };
+    }
     const flow = sessionFlow(session);
     const backfill = backfillAvailability(session);
     if (flow.groupKey === "waiting") {

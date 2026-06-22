@@ -2,6 +2,26 @@ const { clipText, compactText, normalizeDateSeconds, safeArray } = require("./ut
 const fs = require("node:fs/promises");
 
 const FEISHU_API_BASE = "https://open.feishu.cn/open-apis";
+const DOCX_WRITE_DELAY_MS = Math.max(0, Number(process.env.FEISHU_DOCX_WRITE_DELAY_MS || 150));
+const DEFAULT_FEISHU_OAUTH_SCOPES = [
+  "offline_access",
+  "auth:user.id:read",
+  "calendar:calendar:readonly",
+  "calendar:calendar.event:read",
+  "docx:document",
+  "bitable:app",
+  "drive:drive",
+  "drive:drive:readonly",
+  "drive:file:upload",
+  "vc:meeting.meetingevent:read",
+  "vc:meeting.search:read",
+  "vc:record:readonly",
+  "vc:note:read",
+  "minutes:minutes:readonly",
+  "minutes:minutes.artifacts:read",
+  "minutes:minutes.search:read",
+  "minutes:minutes.transcript:export",
+].join(" ");
 
 function createFeishuError(action, payload, status = 500) {
   const message = payload?.msg || payload?.message || payload?.error?.message || `${action}失败`;
@@ -108,6 +128,53 @@ function extractMinuteTokensFromText(text = "") {
     }
   }
   return [...tokens];
+}
+
+function extractMeetingIdsFromText(text = "") {
+  const raw = String(text || "");
+  const ids = new Set();
+  const patterns = [
+    /vc\.feishu\.cn\/j\/([0-9]+)/g,
+    /meetings\/([0-9]+)/g,
+    /"meeting_id"\s*:\s*"([^"]+)"/g,
+    /"meetingId"\s*:\s*"([^"]+)"/g,
+  ];
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(raw))) {
+      if (match[1]) ids.add(match[1]);
+    }
+  }
+  return [...ids];
+}
+
+function appendUnique(target, items) {
+  for (const item of safeArray(items)) {
+    if (item && !target.includes(item)) target.push(item);
+  }
+}
+
+function toRfc3339(seconds) {
+  const value = Number(seconds || 0);
+  if (!value) return "";
+  return new Date(value * 1000).toISOString();
+}
+
+function extractMinuteTokenFromUrl(url = "") {
+  const raw = String(url || "");
+  const match = /\/minutes\/([A-Za-z0-9_-]+)/.exec(raw);
+  return match?.[1] || "";
+}
+
+function stringIds(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (item === null || item === undefined ? "" : String(item)))
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  const single = value === null || value === undefined ? "" : String(value).trim();
+  return single ? [single] : [];
 }
 
 function transcriptPayloadToText(payload = {}) {
@@ -228,12 +295,86 @@ function docTextToBlocks(text = "") {
     .slice(0, 180);
 }
 
+function splitMarkdownTableRow(line = "") {
+  const value = String(line || "").trim();
+  if (!value.includes("|")) return [];
+  const normalized = value.replace(/^\|/, "").replace(/\|$/, "");
+  return normalized.split("|").map((cell) => compactText(cell));
+}
+
+function isMarkdownTableSeparator(line = "") {
+  const cells = splitMarkdownTableRow(line);
+  return cells.length >= 2 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function isMarkdownTableRow(line = "") {
+  const cells = splitMarkdownTableRow(line);
+  return cells.length >= 2 && !isMarkdownTableSeparator(line);
+}
+
+function normalizeTableRows(rows = []) {
+  const rawRows = safeArray(rows)
+    .map((row) => safeArray(row).map((cell) => clipText(compactText(cell) || "-", 1000)))
+    .filter((row) => row.length >= 2);
+  if (!rawRows.length) return [];
+  const columnSize = Math.max(2, Math.min(9, Math.max(...rawRows.map((row) => row.length))));
+  return rawRows.map((row) => {
+    const next = row.slice(0, columnSize);
+    while (next.length < columnSize) next.push("-");
+    return next;
+  });
+}
+
+function docTextToFragments(text = "") {
+  const lines = String(text || "").split(/\r?\n/);
+  const fragments = [];
+  let pendingLines = [];
+
+  const flushPending = () => {
+    const blocks = pendingLines.flatMap((line) => docLineToBlocks(line));
+    if (blocks.length) fragments.push({ type: "blocks", blocks });
+    pendingLines = [];
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] || "";
+    if (isMarkdownTableRow(line) && isMarkdownTableSeparator(lines[index + 1] || "")) {
+      flushPending();
+      const rows = [splitMarkdownTableRow(line)];
+      index += 2;
+      for (; index < lines.length; index += 1) {
+        const rowLine = lines[index] || "";
+        if (!isMarkdownTableRow(rowLine)) break;
+        rows.push(splitMarkdownTableRow(rowLine));
+      }
+      index -= 1;
+      const tableRows = normalizeTableRows(rows);
+      if (tableRows.length) fragments.push({ type: "table", rows: tableRows });
+      continue;
+    }
+    pendingLines.push(line);
+  }
+  flushPending();
+  return fragments;
+}
+
 function chunkArray(items = [], size = 40) {
   const chunks = [];
   for (let index = 0; index < items.length; index += size) {
     chunks.push(items.slice(index, index + size));
   }
   return chunks;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetryFeishuWrite(error) {
+  const status = Number(error?.statusCode || 0);
+  if (status === 429 || status === 409) return true;
+  if (status >= 500 && status < 600) return true;
+  return !status && !Object.keys(error?.payload || {}).length;
 }
 
 function createFeishuClient({
@@ -591,6 +732,8 @@ function createFeishuClient({
     const url = new URL(authorizeUrl);
     url.searchParams.set("app_id", appId);
     url.searchParams.set("redirect_uri", redirectUri);
+    const scope = String(process.env.FEISHU_OAUTH_SCOPES || DEFAULT_FEISHU_OAUTH_SCOPES).trim();
+    if (scope) url.searchParams.set("scope", scope);
     if (state) url.searchParams.set("state", state);
     return url.toString();
   }
@@ -714,24 +857,182 @@ function createFeishuClient({
     return createDocumentFromText({ title, docText, action: "创建飞书面试文档" });
   }
 
-  async function writeDocumentBlocks(documentId, docText, userToken) {
-    const blocks = docTextToBlocks(docText);
-    if (!blocks.length) return;
-    let insertIndex = 0;
-    for (const children of chunkArray(blocks)) {
-      await requestJson(
-        `${FEISHU_API_BASE}/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(documentId)}/children`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${userToken}`,
-            "Content-Type": "application/json; charset=utf-8",
-          },
-          body: JSON.stringify({ index: insertIndex, children }),
+  async function insertDocumentChildren(documentId, parentBlockId, children, userToken, { index = 0, action = "写入飞书文档" } = {}) {
+    return requestJson(
+      `${FEISHU_API_BASE}/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(parentBlockId)}/children`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${userToken}`,
+          "Content-Type": "application/json; charset=utf-8",
         },
-        "写入飞书面试文档"
+        body: JSON.stringify({ index, children }),
+      },
+      action
+    );
+  }
+
+  async function listDocumentBlocks(documentId, userToken) {
+    const blocks = [];
+    let pageToken = "";
+    do {
+      const url = new URL(`${FEISHU_API_BASE}/docx/v1/documents/${encodeURIComponent(documentId)}/blocks`);
+      url.searchParams.set("page_size", "500");
+      if (pageToken) url.searchParams.set("page_token", pageToken);
+      const payload = await requestJson(
+        url.toString(),
+        {
+          method: "GET",
+          headers: { Authorization: `Bearer ${userToken}` },
+        },
+        "读取飞书文档块"
       );
-      insertIndex += children.length;
+      const data = payload.data || {};
+      blocks.push(...safeArray(data.items || data.blocks));
+      pageToken = data.page_token || "";
+      if (!data.has_more) pageToken = "";
+    } while (pageToken);
+    return blocks;
+  }
+
+  function tableColumnWidths(columnSize) {
+    const presets = {
+      4: [150, 90, 330, 240],
+      7: [180, 100, 210, 240, 220, 220, 140],
+      8: [170, 90, 200, 220, 180, 180, 140, 100],
+    };
+    return presets[columnSize] || Array.from({ length: columnSize }, () => 180);
+  }
+
+  async function updateDocumentTextBlock(documentId, blockId, text, userToken, { bold = false } = {}) {
+    let lastError = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        return await requestJson(
+          `${FEISHU_API_BASE}/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(blockId)}`,
+          {
+            method: "PATCH",
+            headers: {
+              Authorization: `Bearer ${userToken}`,
+              "Content-Type": "application/json; charset=utf-8",
+            },
+            body: JSON.stringify({ update_text_elements: richTextPayload(text, { bold }) }),
+          },
+          "写入飞书表格单元格"
+        );
+      } catch (error) {
+        lastError = error;
+        if (attempt >= 3 || !shouldRetryFeishuWrite(error)) break;
+        await sleep(400 * (attempt + 1));
+      }
+    }
+    throw lastError || new Error("写入飞书表格单元格失败");
+  }
+
+  async function insertTableCellText(documentId, cellId, text, userToken, { bold = false } = {}) {
+    let lastError = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        return await insertDocumentChildren(
+          documentId,
+          cellId,
+          [{ block_type: 2, text: richTextPayload(text, { bold }) }],
+          userToken,
+          { index: 0, action: "写入飞书表格单元格" }
+        );
+      } catch (error) {
+        lastError = error;
+        if (attempt >= 3 || !shouldRetryFeishuWrite(error)) break;
+        await sleep(400 * (attempt + 1));
+      }
+    }
+    throw lastError || new Error("写入飞书表格单元格失败");
+  }
+
+  async function writeSingleTableCell(documentId, cellId, textBlockId, cellText, userToken, { bold = false, rowIndex = 0, columnIndex = 0 } = {}) {
+    try {
+      if (textBlockId) {
+        return await updateDocumentTextBlock(documentId, textBlockId, cellText, userToken, { bold });
+      }
+      if (cellId) {
+        return await insertTableCellText(documentId, cellId, cellText, userToken, { bold });
+      }
+      return null;
+    } catch (error) {
+      error.payload = {
+        ...(error.payload || {}),
+        statusCode: error.statusCode || 0,
+        tableCell: {
+          rowIndex,
+          columnIndex,
+          textPreview: clipText(cellText, 120),
+        },
+      };
+      throw error;
+    } finally {
+      if (DOCX_WRITE_DELAY_MS) await sleep(DOCX_WRITE_DELAY_MS);
+    }
+  }
+
+  async function writeDocumentTable(documentId, rows, userToken, insertIndex) {
+    const tableRows = normalizeTableRows(rows);
+    if (!tableRows.length) return null;
+    const rowSize = tableRows.length;
+    const columnSize = tableRows[0].length;
+    const inserted = await insertDocumentChildren(
+      documentId,
+      documentId,
+      [
+        {
+          block_type: 31,
+          table: {
+            property: {
+              row_size: rowSize,
+              column_size: columnSize,
+              column_width: tableColumnWidths(columnSize),
+            },
+          },
+        },
+      ],
+      userToken,
+      { index: insertIndex, action: "创建飞书技能评价表格" }
+    );
+    const tableBlock = safeArray(inserted.data?.children || inserted.children)[0] || {};
+    const cellIds = safeArray(tableBlock.table?.cells || tableBlock.children);
+    if (!cellIds.length) return tableBlock;
+
+    const blockMap = new Map((await listDocumentBlocks(documentId, userToken)).map((block) => [block.block_id, block]));
+    for (let rowIndex = 0; rowIndex < tableRows.length; rowIndex += 1) {
+      for (let columnIndex = 0; columnIndex < columnSize; columnIndex += 1) {
+        const cellId = cellIds[rowIndex * columnSize + columnIndex];
+        const cellBlock = blockMap.get(cellId);
+        const textBlockId = safeArray(cellBlock?.children).find((childId) => blockMap.get(childId)?.block_type === 2) || safeArray(cellBlock?.children)[0];
+        const cellText = tableRows[rowIndex][columnIndex] || "-";
+        await writeSingleTableCell(documentId, cellId, textBlockId, cellText, userToken, {
+          bold: rowIndex === 0,
+          rowIndex,
+          columnIndex,
+        });
+      }
+    }
+    return tableBlock;
+  }
+
+  async function writeDocumentBlocks(documentId, docText, userToken) {
+    const fragments = docTextToFragments(docText);
+    if (!fragments.length) return;
+    let insertIndex = 0;
+    for (const fragment of fragments) {
+      if (fragment.type === "table") {
+        await writeDocumentTable(documentId, fragment.rows, userToken, insertIndex);
+        insertIndex += 1;
+        continue;
+      }
+      const blocks = safeArray(fragment.blocks).slice(0, 180);
+      for (const children of chunkArray(blocks)) {
+        await insertDocumentChildren(documentId, documentId, children, userToken, { index: insertIndex, action: "写入飞书面试文档" });
+        insertIndex += children.length;
+      }
     }
   }
 
@@ -826,6 +1127,260 @@ function createFeishuClient({
     throw finalError;
   }
 
+  function extractNoteArtifactDocTokens(note = {}) {
+    const artifacts = safeArray(note.artifacts);
+    const verbatim = [];
+    const main = [];
+    const other = [];
+    for (const artifact of artifacts) {
+      const docToken = compactText(artifact?.doc_token || artifact?.docToken || "");
+      if (!docToken) continue;
+      const type = Number(artifact?.artifact_type || artifact?.artifactType || 0);
+      if (type === 2) verbatim.push(docToken);
+      else if (type === 1) main.push(docToken);
+      else other.push(docToken);
+    }
+    const refs = safeArray(note.references)
+      .map((item) => compactText(item?.doc_token || item?.docToken || ""))
+      .filter(Boolean);
+    return [...new Set([...verbatim, ...main, ...other, ...refs])];
+  }
+
+  async function readMeetingDetail(meetingId) {
+    if (!meetingId) return { noteId: "", source: null };
+    const userToken = await getValidUserToken();
+    const url = new URL(`${FEISHU_API_BASE}/vc/v1/meetings/${encodeURIComponent(meetingId)}`);
+    url.searchParams.set("with_participants", "false");
+    url.searchParams.set("query_mode", "0");
+    const payload = await requestJson(
+      url.toString(),
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${userToken}` },
+      },
+      "读取飞书会议详情"
+    );
+    const meeting = payload.data?.meeting || payload.meeting || {};
+    const noteId = compactText(meeting.note_id || meeting.noteId || "");
+    return {
+      noteId,
+      source: {
+        type: "meeting_detail",
+        id: compactText(meeting.id || meetingId),
+        length: noteId ? 1 : 0,
+        url: meeting.url || "",
+      },
+    };
+  }
+
+  async function readMeetingNoteDocTokens(noteId) {
+    if (!noteId) return { docTokens: [], source: null };
+    const userToken = await getValidUserToken();
+    const payload = await requestJson(
+      `${FEISHU_API_BASE}/vc/v1/notes/${encodeURIComponent(noteId)}`,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${userToken}` },
+      },
+      "读取飞书会议纪要详情"
+    );
+    const note = payload.data?.note || payload.note || {};
+    const docTokens = extractNoteArtifactDocTokens(note);
+    return {
+      docTokens,
+      source: {
+        type: "meeting_note",
+        id: noteId,
+        length: docTokens.length,
+        url: "",
+      },
+    };
+  }
+
+  async function resolveCalendarMeetingRelations(session = {}) {
+    const eventId = session.feishuEventId || session.rawEvent?.event_id || "";
+    if (!eventId) return { meetingIds: [], meetingNoteIds: [], sources: [], errors: [] };
+    const userToken = await getValidUserToken();
+    const calendarIds = [
+      session.calendarId || "primary",
+      "primary",
+      session.rawEvent?.organizer_calendar_id || "",
+    ].filter(Boolean);
+    const uniqueCalendarIds = [...new Set(calendarIds)];
+    const meetingIds = [];
+    const meetingNoteIds = [];
+    const sources = [];
+    const errors = [];
+    for (const calendarId of uniqueCalendarIds) {
+      try {
+        const payload = await requestJson(
+          `${FEISHU_API_BASE}/calendar/v4/calendars/${encodeURIComponent(calendarId)}/events/mget_instance_relation_info`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${userToken}`,
+              "Content-Type": "application/json; charset=utf-8",
+            },
+            body: JSON.stringify({
+              instance_ids: [eventId],
+              need_meeting_instance_ids: true,
+              need_meeting_notes: true,
+            }),
+          },
+          "读取飞书日程关联会议"
+        );
+        const infos = safeArray(payload.data?.instance_relation_infos || payload.data?.items);
+        for (const info of infos) {
+          appendUnique(meetingIds, [
+            ...stringIds(info.meeting_instance_ids),
+            ...stringIds(info.meeting_ids),
+            ...stringIds(info.meeting_instance_id),
+            ...stringIds(info.meeting_id),
+          ]);
+          appendUnique(meetingNoteIds, [
+            ...stringIds(info.meeting_notes),
+            ...stringIds(info.note_doc_tokens),
+            ...stringIds(info.note_doc_token),
+            ...stringIds(info.verbatim_doc_token),
+          ]);
+        }
+        sources.push({
+          type: "calendar_relation",
+          id: eventId,
+          length: meetingIds.length + meetingNoteIds.length,
+          url: session.rawEvent?.app_link || "",
+        });
+        if (meetingIds.length || meetingNoteIds.length) break;
+      } catch (error) {
+        errors.push(`日程关联会议读取失败(${calendarId})：${error.message}`);
+      }
+    }
+    return { meetingIds, meetingNoteIds, sources, errors };
+  }
+
+  async function readMeetingRecordingMinuteToken(meetingId) {
+    if (!meetingId) return { token: "", source: null };
+    const userToken = await getValidUserToken();
+    const payload = await requestJson(
+      `${FEISHU_API_BASE}/vc/v1/meetings/${encodeURIComponent(meetingId)}/recording`,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${userToken}` },
+      },
+      "读取飞书会议录制"
+    );
+    const recording = payload.data?.recording || payload.recording || {};
+    const recordingUrl = recording.url || recording.recording_url || "";
+    const token = extractMinuteTokenFromUrl(recordingUrl);
+    return {
+      token,
+      source: {
+        type: "meeting_recording",
+        id: meetingId,
+        length: token ? 1 : 0,
+        url: recordingUrl,
+      },
+    };
+  }
+
+  async function searchMeetingIdsForSession(session = {}) {
+    const query = compactText(session.resume?.name || session.matchedResume?.name || session.title || "").slice(0, 50);
+    if (!query && !session.startTime && !session.endTime) return { meetingIds: [], sources: [], errors: [] };
+    const userToken = await getValidUserToken();
+    const start = toRfc3339(Number(session.startTime || 0) - 60 * 60);
+    const end = toRfc3339(Number(session.endTime || session.startTime || 0) + 2 * 60 * 60);
+    const body = {};
+    if (query) body.query = query;
+    const meetingFilter = {};
+    if (start || end) {
+      meetingFilter.start_time = {
+        ...(start ? { start_time: start } : {}),
+        ...(end ? { end_time: end } : {}),
+      };
+    }
+    if (Object.keys(meetingFilter).length) body.meeting_filter = meetingFilter;
+    const url = new URL(`${FEISHU_API_BASE}/vc/v1/meetings/search`);
+    url.searchParams.set("page_size", "10");
+    const payload = await requestJson(
+      url.toString(),
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${userToken}`,
+          "Content-Type": "application/json; charset=utf-8",
+        },
+        body: JSON.stringify(body),
+      },
+      "搜索飞书会议"
+    );
+    const items = safeArray(payload.data?.items || payload.items);
+    const meetingIds = [];
+    for (const item of items) {
+      appendUnique(meetingIds, stringIds(item.id || item.meeting_id || item.meeting_instance_id));
+    }
+    return {
+      meetingIds,
+      sources: [
+        {
+          type: "meeting_search",
+          id: query || `${session.startTime || ""}`,
+          length: meetingIds.length,
+          url: "",
+        },
+      ],
+      errors: [],
+    };
+  }
+
+  async function searchMinuteTokensForSession(session = {}) {
+    const query = compactText(session.resume?.name || session.matchedResume?.name || session.title || "").slice(0, 50);
+    if (!query && !session.startTime && !session.endTime) return { minuteTokens: [], sources: [], errors: [] };
+    const userToken = await getValidUserToken();
+    const start = toRfc3339(Number(session.startTime || 0) - 60 * 60);
+    const end = toRfc3339(Number(session.endTime || session.startTime || 0) + 2 * 60 * 60);
+    const body = {};
+    if (query) body.query = query;
+    const filter = {};
+    if (start || end) {
+      filter.create_time = {
+        ...(start ? { start_time: start } : {}),
+        ...(end ? { end_time: end } : {}),
+      };
+    }
+    if (Object.keys(filter).length) body.filter = filter;
+    const url = new URL(`${FEISHU_API_BASE}/minutes/v1/minutes/search`);
+    url.searchParams.set("page_size", "10");
+    const payload = await requestJson(
+      url.toString(),
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${userToken}`,
+          "Content-Type": "application/json; charset=utf-8",
+        },
+        body: JSON.stringify(body),
+      },
+      "搜索飞书妙记"
+    );
+    const items = safeArray(payload.data?.items || payload.items);
+    const minuteTokens = [];
+    for (const item of items) {
+      appendUnique(minuteTokens, stringIds(item.token || item.minute_token || item.minuteToken));
+    }
+    return {
+      minuteTokens,
+      sources: [
+        {
+          type: "minutes_search",
+          id: query || `${session.startTime || ""}`,
+          length: minuteTokens.length,
+          url: "",
+        },
+      ],
+      errors: [],
+    };
+  }
+
   async function syncBitableRecord(session) {
     if (!bitableAppToken || !bitableTableId) {
       return { skipped: true, reason: "missing_bitable_config", message: "未配置飞书面试台账" };
@@ -876,7 +1431,100 @@ function createFeishuClient({
       }
     }
     const minuteTokens = extractMinuteTokensFromText(sourceText);
-    for (const token of minuteTokens.slice(0, 3)) {
+    const discoveredMinuteTokens = [...minuteTokens];
+    const meetingIds = [];
+    const meetingIdsFromText = extractMeetingIdsFromText(sourceText);
+    try {
+      const relation = await resolveCalendarMeetingRelations(session);
+      appendUnique(meetingIds, relation.meetingIds);
+      appendUnique(sources, relation.sources);
+      appendUnique(errors, relation.errors);
+      const meetingNoteIds = safeArray(relation.meetingNoteIds).filter((token) => token && token !== docId);
+      appendUnique(linkedDocIds, meetingNoteIds);
+      for (const token of meetingNoteIds.slice(0, 3)) {
+        try {
+          const text = await readDocumentText(token);
+          if (text) {
+            documentTexts.push(text);
+            sources.push({ type: "meeting_note_doc", id: token, length: text.length, url: `https://feishu.cn/docx/${token}` });
+          }
+        } catch (error) {
+          errors.push(`飞书会议纪要文档读取失败(${token})：${error.message}`);
+        }
+      }
+    } catch (error) {
+      errors.push(`飞书会议关联解析失败：${error.message}`);
+    }
+    appendUnique(meetingIds, meetingIdsFromText);
+
+    if (!meetingIds.length) {
+      try {
+        const meetingSearch = await searchMeetingIdsForSession(session);
+        appendUnique(meetingIds, meetingSearch.meetingIds);
+        appendUnique(sources, meetingSearch.sources);
+        appendUnique(errors, meetingSearch.errors);
+      } catch (error) {
+        errors.push(`飞书会议搜索失败：${error.message}`);
+      }
+    }
+
+    const discoveredMeetingNoteIds = [];
+    for (const meetingId of meetingIds.slice(0, 5)) {
+      try {
+        const detail = await readMeetingDetail(meetingId);
+        if (detail.source) sources.push(detail.source);
+        appendUnique(discoveredMeetingNoteIds, detail.noteId ? [detail.noteId] : []);
+      } catch (error) {
+        errors.push(`飞书会议详情读取失败(${meetingId})：${error.message}`);
+      }
+    }
+
+    const discoveredNoteDocIds = [];
+    for (const noteId of discoveredMeetingNoteIds.slice(0, 5)) {
+      try {
+        const note = await readMeetingNoteDocTokens(noteId);
+        if (note.source) sources.push(note.source);
+        appendUnique(discoveredNoteDocIds, note.docTokens);
+      } catch (error) {
+        errors.push(`飞书会议纪要详情读取失败(${noteId})：${error.message}`);
+      }
+    }
+
+    for (const token of discoveredNoteDocIds.filter((item) => item && item !== docId).slice(0, 8)) {
+      appendUnique(linkedDocIds, [token]);
+      try {
+        const text = await readDocumentText(token);
+        if (text) {
+          documentTexts.push(text);
+          sources.push({ type: "meeting_note_doc", id: token, length: text.length, url: `https://feishu.cn/docx/${token}` });
+        }
+      } catch (error) {
+        errors.push(`飞书会议纪要文档读取失败(${token})：${error.message}`);
+      }
+    }
+
+    for (const meetingId of meetingIds.slice(0, 5)) {
+      try {
+        const recording = await readMeetingRecordingMinuteToken(meetingId);
+        if (recording.source) sources.push(recording.source);
+        appendUnique(discoveredMinuteTokens, recording.token ? [recording.token] : []);
+      } catch (error) {
+        errors.push(`飞书会议录制读取失败(${meetingId})：${error.message}`);
+      }
+    }
+
+    if (!discoveredMinuteTokens.length) {
+      try {
+        const minutesSearch = await searchMinuteTokensForSession(session);
+        appendUnique(discoveredMinuteTokens, minutesSearch.minuteTokens);
+        appendUnique(sources, minutesSearch.sources);
+        appendUnique(errors, minutesSearch.errors);
+      } catch (error) {
+        errors.push(`飞书妙记搜索失败：${error.message}`);
+      }
+    }
+
+    for (const token of discoveredMinuteTokens.slice(0, 5)) {
       try {
         const text = await readMinutesTranscript(token);
         if (text) {
@@ -894,12 +1542,13 @@ function createFeishuClient({
         types: [...new Set(sources.map((item) => item.type))],
         rawTextLength: text.length,
         linkedDocIds,
-        minuteTokens,
+        minuteTokens: discoveredMinuteTokens,
+        meetingNoteIds: discoveredMeetingNoteIds,
         sources,
         errors,
       },
       linkedDocIds,
-      minuteTokens,
+      minuteTokens: discoveredMinuteTokens,
       sources,
       errors,
     };
