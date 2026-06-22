@@ -802,7 +802,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "recruiter_process_unread_all_positions",
-            "when": "Recruiter-side BOSS high-level workflow: process all unread recruitment messages across configured positions. The backend switches to the unread tab, opens candidates, reads the applied position, applies boss_chat_rules screening/knowledge rules, asks questions, requests resumes, skips unsuitable/unclear cases, and records a batch report. Positions not configured in boss_chat_rules must be recorded and skipped with no reply.",
+            "when": "Recruiter-side BOSS high-level workflow: process all unread recruitment messages across configured positions. The backend switches to the unread tab, opens candidates, reads the applied position, applies boss_chat_rules screening/knowledge rules, asks questions, requests resumes, skips unsuitable/unclear cases, and records a batch report. For BOSS 运营A/运营B direct-resume roles, when no resume has been received/requested yet, the backend must first send '可以发一份简历过来吗' in the chat, then execute the BOSS 求简历 action; do not apply this to 51job/智联 or other BOSS positions. Positions not configured in boss_chat_rules must be recorded and skipped with no reply.",
             "args": {
                 "maxTotal": "optional safety limit, default 80",
                 "dateScope": "optional: today, yesterday, or today_yesterday",
@@ -811,7 +811,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "recruiter_process_current_position",
-            "when": "Recruiter-side BOSS high-level workflow: process the currently opened candidate according to their applied position. Use this after manually opening a candidate or when the user says to handle the current chat.",
+            "when": "Recruiter-side BOSS high-level workflow: process the currently opened candidate according to their applied position. Use this after manually opening a candidate or when the user says to handle the current chat. For BOSS 运营A/运营B direct-resume roles, when no resume has been received/requested yet, first send '可以发一份简历过来吗' in the chat, then execute the BOSS 求简历 action; do not apply this to 51job/智联 or other BOSS positions.",
             "args": {
                 "targetCandidate": "optional candidate name",
                 "openUnreplied": "true to open the next unread candidate first; usually false",
@@ -852,7 +852,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "recruiter_request_resume",
-            "when": "Recruiter-side BOSS chat task: open a named candidate or the next visible candidate with unread/unhandled messages, then use the '求简历' toolbar button and complete the in-page confirm step.",
+            "when": "Recruiter-side BOSS chat task: open a named candidate or the next visible candidate with unread/unhandled messages, then use the '求简历' toolbar button and complete the in-page confirm step. When this action is reached through the BOSS 运营A/运营B direct-resume workflow, the backend sends '可以发一份简历过来吗' before clicking 求简历 if no resume has been received/requested yet; this pre-message is BOSS-only and must not be used for 51job/智联.",
             "args": {
                 "openUnreplied": "true to open the next unread/unhandled candidate first; false to operate on the currently opened candidate",
                 "targetCandidate": "optional candidate name from the user, for example 陈刚",

@@ -832,6 +832,147 @@
             return "direct_resume_blocked"
         return "direct_resume_requested"
 
+    def should_send_boss_operation_resume_prompt(self, platform: str, resume_job_type: str) -> bool:
+        return str(platform or "").strip().lower() == "boss" and resume_job_type in {"运营A", "运营B"}
+
+    def prepare_boss_operation_resume_request_prompt(
+        self,
+        terminal: BrowserTerminal,
+        candidate_label: str,
+        resume_job_type: str,
+    ) -> dict:
+        prompt = "可以发一份简历过来吗"
+        candidate = read_recruiter_selected_candidate(terminal)
+        candidate_label = str(candidate.get("label") or candidate_label or "")
+        resume_state = self.measure_current_timing_stage(
+            "inspect_operation_resume_prompt_state",
+            "检查运营岗位求简历前置状态",
+            lambda: inspect_recruiter_resume_request_state(terminal),
+        )
+        if resume_state.get("hasResumeAttachment"):
+            return {
+                "message": f"已打开候选人：{safe_text(candidate_label, 80)}。检测到候选人已发送附件简历，本次不再发送运营求简历话术。",
+                "candidate": candidate,
+                "skipped": True,
+                "skipReason": "resume_attachment_received",
+                "resumeReceived": True,
+                "resumeState": resume_state,
+                "operationResumePrompt": {"skipped": True, "skipReason": "resume_attachment_received", "prompt": prompt},
+            }
+
+        incoming_resume = accept_recruiter_incoming_resume_consent_if_present(terminal, candidate_label)
+        if incoming_resume.get("clicked"):
+            message = "检测到候选人主动发送附件简历，已点击“同意”接收，本次不再发送运营求简历话术。"
+            self.add_event("chat", message)
+            return {
+                "message": message,
+                "candidate": candidate,
+                "acceptedIncomingResume": True,
+                "incomingResume": incoming_resume,
+                "skipped": True,
+                "skipReason": "resume_attachment_received",
+                "resumeReceived": True,
+                "after": incoming_resume.get("after") if isinstance(incoming_resume.get("after"), dict) else {},
+                "operationResumePrompt": {"skipped": True, "skipReason": "resume_attachment_received", "prompt": prompt},
+            }
+        if incoming_resume.get("found") and incoming_resume.get("blocked"):
+            return {
+                "blocked": True,
+                "message": (
+                    "检测到候选人主动发送附件简历，但未能稳定点击“同意”，"
+                    f"已停止运营岗位前置话术发送：{safe_text(str(incoming_resume.get('error') or incoming_resume.get('reason') or ''), 120)}"
+                ),
+                "candidate": candidate,
+                "incomingResume": incoming_resume,
+                "operationResumePrompt": {"blocked": True, "prompt": prompt},
+            }
+
+        if resume_state.get("alreadyRequested"):
+            return {
+                "message": f"已打开候选人：{safe_text(candidate_label, 80)}。检测到之前已经求过简历，本次不再发送运营求简历话术。",
+                "candidate": candidate,
+                "skipped": True,
+                "skipReason": "already_requested",
+                "resumeState": resume_state,
+                "operationResumePrompt": {"skipped": True, "skipReason": "already_requested", "prompt": prompt},
+            }
+
+        button = self.measure_current_timing_stage(
+            "find_operation_request_resume_button",
+            "查找运营岗位求简历按钮",
+            lambda: find_recruiter_request_resume_button(terminal),
+        )
+        if not button.get("found"):
+            return {
+                "blocked": True,
+                "message": "当前候选人聊天区没有找到“求简历”按钮，本次不发送运营求简历前置话术。",
+                "candidate": candidate,
+                "state": button,
+                "operationResumePrompt": {"blocked": True, "prompt": prompt},
+            }
+        reason = str(button.get("reason") or "")
+        if button.get("disabled"):
+            already_hint = reason + " " + str(resume_state.get("summary") or "")
+            if any(term in already_hint for term in ("简历请求已发送", "已发送简历请求", "已求简历", "请求过简历", "已请求")):
+                return {
+                    "message": f"已打开候选人：{safe_text(candidate_label, 80)}。页面显示已经求过简历，本次不再发送运营求简历话术。",
+                    "candidate": candidate,
+                    "skipped": True,
+                    "skipReason": "already_requested",
+                    "state": {k: v for k, v in button.items() if k != "locator"},
+                    "resumeState": resume_state,
+                    "operationResumePrompt": {"skipped": True, "skipReason": "already_requested", "prompt": prompt},
+                }
+            message = f"已打开候选人：{safe_text(candidate_label, 80)}。但“求简历”当前不可用，本次不发送运营求简历前置话术。"
+            if reason:
+                message += f" 页面提示：{safe_text(reason, 120)}"
+            return {
+                "blocked": True,
+                "message": message,
+                "candidate": candidate,
+                "state": {k: v for k, v in button.items() if k != "locator"},
+                "operationResumePrompt": {"blocked": True, "prompt": prompt},
+            }
+
+        existing_prompt = self.verify_reply_sent_in_current_chat(terminal, prompt)
+        if existing_prompt.get("verified"):
+            return {
+                "message": f"BOSS {resume_job_type} 求简历前置话术已在当前会话发送过，继续执行求简历。",
+                "candidate": candidate,
+                "alreadySent": True,
+                "continueRequestResume": True,
+                "operationResumePrompt": {"alreadySent": True, "prompt": prompt, "verification": existing_prompt},
+            }
+
+        fill_label = self.smart_fill(terminal, "聊天", prompt)
+        terminal.current_page().wait_for_timeout(random.randint(260, 520))
+        send_package = self.send_current_chat_reply_with_verification(terminal, prompt, max_attempts=2)
+        send_result = send_package.get("send") if isinstance(send_package.get("send"), dict) else {}
+        verification = send_package.get("verification") if isinstance(send_package.get("verification"), dict) else {}
+        if send_result.get("blocked") or not verification.get("verified"):
+            return {
+                "blocked": True,
+                "message": (
+                    f"BOSS {resume_job_type} 求简历前置话术发送失败，已停止后续“求简历”动作，避免顺序错误。"
+                    f"原因：{safe_text(str(send_result.get('message') or verification.get('reason') or ''), 120)}"
+                ),
+                "candidate": candidate,
+                "send": send_result,
+                "verification": verification,
+                "operationResumePrompt": {"blocked": True, "prompt": prompt, "fillLabel": fill_label},
+            }
+        message = f"已先发送 BOSS {resume_job_type} 求简历前置话术：{prompt}"
+        self.add_event("chat", message)
+        return {
+            "message": message,
+            "candidate": candidate,
+            "sent": True,
+            "continueRequestResume": True,
+            "send": send_result,
+            "verification": verification,
+            "operationResumePrompt": {"sent": True, "prompt": prompt, "fillLabel": fill_label},
+        }
+
     def handle_direct_resume_operations_candidate(
         self,
         terminal: BrowserTerminal,
@@ -850,9 +991,19 @@
             "jobType": resume_job_type,
             "directResume": True,
         }
-        if callable(request_resume):
+        operation_prompt_result: dict = {}
+        resume_result = None
+        if self.should_send_boss_operation_resume_prompt(platform, resume_job_type):
+            operation_prompt_result = self.prepare_boss_operation_resume_request_prompt(
+                terminal,
+                candidate_label,
+                resume_job_type,
+            )
+            if operation_prompt_result.get("blocked") or operation_prompt_result.get("skipped"):
+                resume_result = operation_prompt_result
+        if resume_result is None and callable(request_resume):
             resume_result = request_resume()
-        else:
+        elif resume_result is None:
             resume_result = self.request_resume_from_recruiter_conversation(
                 terminal,
                 confirmed=False,
@@ -867,6 +1018,13 @@
             "resumeJobType": resume_job_type,
             "lastScreening": "direct_resume_operations_position",
         }
+        if operation_prompt_result:
+            prompt_state = operation_prompt_result.get("operationResumePrompt")
+            state_payload["operationResumePrompt"] = prompt_state if isinstance(prompt_state, dict) else {
+                "sent": bool(operation_prompt_result.get("sent")),
+                "alreadySent": bool(operation_prompt_result.get("alreadySent")),
+                "skipped": bool(operation_prompt_result.get("skipped")),
+            }
         if conversation_key:
             self.set_chat_state(conversation_key, status, candidateLabel=safe_text(candidate_label, 160), **state_payload)
         if candidate_state_key:
@@ -882,6 +1040,11 @@
             f"{platform} 运营岗位已按直求简历流程处理：{safe_text(candidate_label, 80)}；"
             f"简历岗位={resume_job_type}；结果={safe_text(str((resume_result or {}).get('message') or ''), 180)}"
         )
+        if operation_prompt_result and not (operation_prompt_result.get("blocked") or operation_prompt_result.get("skipped")):
+            message = (
+                f"{platform} 运营岗位已先发送求简历前置话术，再按直求简历流程处理：{safe_text(candidate_label, 80)}；"
+                f"简历岗位={resume_job_type}；结果={safe_text(str((resume_result or {}).get('message') or ''), 180)}"
+            )
         candidate = context.get("applicant") if isinstance(context.get("applicant"), dict) else {}
         if platform == "boss":
             candidate = read_recruiter_selected_candidate(terminal) or candidate
@@ -893,6 +1056,7 @@
             "blocked": bool(isinstance(resume_result, dict) and resume_result.get("blocked")),
             "directResume": True,
             "resumeJobType": resume_job_type,
+            "operationResumePrompt": operation_prompt_result.get("operationResumePrompt") if operation_prompt_result else {},
         }
 
     def handle_basic_acceptance_and_request_resume(
