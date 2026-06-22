@@ -334,9 +334,117 @@ async function collectProactiveReportMetricTotals(platform = "boss", accountId =
   return totals;
 }
 
+function automationProactiveActionTimestamp(action = {}) {
+  const raw = action?.createdAtTs || action?.updatedAtTs || "";
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric > 100000000000 ? numeric : numeric * 1000;
+  }
+  const idMatch = String(action?.actionLogId || "").match(/pal_(\d{10,13})/);
+  if (idMatch) {
+    const fromId = Number(idMatch[1]);
+    if (Number.isFinite(fromId) && fromId > 0) return fromId > 100000000000 ? fromId : fromId * 1000;
+  }
+  return 0;
+}
+
+function automationProactiveActionDateKey(action = {}) {
+  const timestamp = automationProactiveActionTimestamp(action);
+  if (timestamp) return automationChinaDateKey(new Date(timestamp));
+  return automationDateKeyFromValue(action?.createdAt || action?.updatedAt || action?.time || "");
+}
+
+function automationProactiveActionDateMatches(action = {}, selectedDate = automationChinaDateKey()) {
+  if (selectedDate === "all") return true;
+  const dateKey = automationProactiveActionDateKey(action);
+  if (!dateKey) return false;
+  const dates = automationDateListFromState(selectedDate);
+  return dates.length ? dates.includes(dateKey) : dateKey === selectedDate;
+}
+
+function automationProactiveActionCheckpointPassed(action = {}, patterns = []) {
+  const checkpoints = Array.isArray(action?.checkpoints) ? action.checkpoints : [];
+  return checkpoints.some((checkpoint) => {
+    const name = String(checkpoint?.name || "").toLowerCase();
+    const status = String(checkpoint?.status || "").toLowerCase();
+    return patterns.some((pattern) => pattern.test(name)) && /passed|clicked|success|sent|completed|done/.test(status);
+  });
+}
+
+function automationProactiveActionWasGreeted(action = {}) {
+  const decision = String(action?.decision || action?.status || "").toLowerCase();
+  if (/greeted|proactive_greeted/.test(decision)) return true;
+  return automationProactiveActionCheckpointPassed(action, [/greet/, /say_hi/, /greeting/]);
+}
+
+function automationProactiveActionWasOpened(action = {}) {
+  if (automationProactiveActionWasGreeted(action)) return true;
+  return automationProactiveActionCheckpointPassed(action, [/open_resume_dialog/, /open.*candidate/, /open.*resume/, /read_resume/]);
+}
+
+function automationProactiveActionIdentityKey(action = {}, sourceKey = "", dateKey = "") {
+  const identity = String(
+    action?.candidateKey ||
+      action?.candidateId ||
+      action?.platformCandidateId ||
+      action?.candidateName ||
+      action?.name ||
+      action?.cardPreview ||
+      action?.actionLogId ||
+      ""
+  ).trim();
+  return [sourceKey || "unknown", dateKey || "", identity || JSON.stringify(action).slice(0, 300)].join("|");
+}
+
+async function collectProactiveActionLogMetricTotals(platform = "boss", accountId = "all", selectedDate = automationChinaDateKey()) {
+  let filenames = [];
+  try {
+    filenames = await fs.readdir(AUTOMATION_WORKSPACE);
+  } catch {
+    return {};
+  }
+  const normalizedPlatform = normalizeAutomationPlatformId(platform);
+  const openedKeys = new Set();
+  const greetedKeys = new Set();
+  for (const filename of filenames) {
+    if (!/^recruiter_proactive_action_log\b.*\.jsonl$/i.test(filename)) continue;
+    let content = "";
+    try {
+      content = await fs.readFile(path.join(AUTOMATION_WORKSPACE, filename), "utf8");
+    } catch {
+      continue;
+    }
+    for (const line of content.split(/\r?\n/)) {
+      const text = line.trim();
+      if (!text) continue;
+      let action = null;
+      try {
+        action = JSON.parse(text);
+      } catch {
+        continue;
+      }
+      if (action?.dryRun) continue;
+      const actionPlatform = normalizeAutomationPlatformId(
+        action?.platform || action?.sourcePlatform || action?.source || automationPlatformFromValue(filename, "boss")
+      );
+      if (!automationPlatformMatches(actionPlatform, normalizedPlatform)) continue;
+      const sourceKey = automationSourceKeyFromRecord(action || {}, filename);
+      if (!automationAccountMatches(sourceKey, accountId)) continue;
+      if (!automationProactiveActionDateMatches(action, selectedDate)) continue;
+      const dateKey = automationProactiveActionDateKey(action);
+      const identityKey = automationProactiveActionIdentityKey(action, sourceKey, dateKey);
+      if (automationProactiveActionWasOpened(action)) openedKeys.add(identityKey);
+      if (automationProactiveActionWasGreeted(action)) greetedKeys.add(identityKey);
+    }
+  }
+  return { proactiveOpened: openedKeys.size, proactiveGreeted: greetedKeys.size };
+}
+
 async function applyProactiveReportMetricFallback(metrics = [], { platform = "boss", accountId = "all", date = "" } = {}) {
-  const totals = await collectProactiveReportMetricTotals(platform, accountId, normalizeAutomationDetailDate(date));
-  return automationMetricMaxMerge(metrics, totals);
+  const selectedDate = normalizeAutomationDetailDate(date);
+  const reportTotals = await collectProactiveReportMetricTotals(platform, accountId, selectedDate);
+  const actionLogTotals = await collectProactiveActionLogMetricTotals(platform, accountId, selectedDate);
+  return automationMetricMaxMerge(automationMetricMaxMerge(metrics, reportTotals), actionLogTotals);
 }
 
 function automationDetailTimestamp(value = "") {
