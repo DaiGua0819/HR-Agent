@@ -797,14 +797,50 @@ class WebAgentService:
             self.clear_common_phrase_cache(key)
             return {"clicked": False, "usedCache": True, "error": safe_text(str(error), 160)}
 
+    def _count_phrase_in_current_chat(self, terminal: BrowserTerminal, phrase: str) -> int:
+        phrase_key = re.sub(r"\s+", "", str(phrase or ""))
+        if not phrase_key:
+            return 0
+        try:
+            context = self.read_chat_context(terminal)
+        except Exception:
+            return -1
+        messages = context.get("messages") if isinstance(context, dict) else []
+        if not isinstance(messages, list):
+            return -1
+        count = 0
+        for message in messages:
+            if isinstance(message, dict):
+                text = str(message.get("text") or message.get("rawText") or "")
+            else:
+                text = str(message or "")
+            if phrase_key in re.sub(r"\s+", "", text):
+                count += 1
+        return count
+
     def click_cached_common_phrase_send(self, terminal: BrowserTerminal, phrase: str, item: dict | None = None, key: str = "basic_conditions") -> dict:
         cache = self.get_common_phrase_cache(key)
         send_box = self._cached_box(cache.get("sendBox"))
         row_box = self._cached_box((item or {}).get("rowBox")) or self._cached_box(item) or self._cached_box(cache.get("rowBox"))
         if not send_box or not row_box:
             return {"clicked": False, "reason": "no_cached_send"}
+        if send_box["width"] > 180 or send_box["height"] > 80:
+            self.clear_common_phrase_cache(key)
+            return {
+                "clicked": False,
+                "found": False,
+                "usedCache": True,
+                "reason": "cached_send_box_untrusted",
+                "box": {
+                    "x": round(send_box["x"]),
+                    "y": round(send_box["y"]),
+                    "w": round(send_box["width"]),
+                    "h": round(send_box["height"]),
+                },
+            }
         page = terminal.current_page()
         try:
+            before_count = self._count_phrase_in_current_chat(terminal, phrase)
             hover_x = row_box["x"] + row_box["width"] * random.uniform(0.66, 0.82)
             hover_y = row_box["y"] + row_box["height"] * random.uniform(0.42, 0.58)
             move_cursor_like_person(
@@ -822,7 +858,41 @@ class WebAgentService:
             x = adjusted_send_box["x"] + adjusted_send_box["width"] * random.uniform(0.42, 0.58)
             y = adjusted_send_box["y"] + adjusted_send_box["height"] * random.uniform(0.42, 0.58)
             humanized_point_click(terminal, x, y, target_box=adjusted_send_box)
-            page.wait_for_timeout(random.randint(520, 980))
+            after_count = -1
+            for _ in range(3):
+                page.wait_for_timeout(random.randint(520, 820))
+                after_count = self._count_phrase_in_current_chat(terminal, phrase)
+                verified = after_count >= 0 and (
+                    after_count > before_count if before_count >= 0 else after_count > 0
+                )
+                if verified:
+                    break
+            editor_text = read_chat_editor_text(terminal)
+            verified = after_count >= 0 and (
+                after_count > before_count if before_count >= 0 else after_count > 0
+            )
+            if not verified:
+                self.clear_common_phrase_cache(key)
+                return {
+                    "clicked": False,
+                    "found": True,
+                    "usedCache": True,
+                    "strategy": "cached_common_phrase_send",
+                    "reason": "cached_send_not_verified",
+                    "beforeCount": before_count,
+                    "afterCount": after_count,
+                    "draftInserted": phrase[:20] in editor_text,
+                    "x": round(adjusted_send_box["x"]),
+                    "y": round(adjusted_send_box["y"]),
+                    "w": round(adjusted_send_box["width"]),
+                    "h": round(adjusted_send_box["height"]),
+                    "rowBox": {
+                        "x": round(row_box["x"]),
+                        "y": round(row_box["y"]),
+                        "w": round(row_box["width"]),
+                        "h": round(row_box["height"]),
+                    },
+                }
             return {
                 "clicked": True,
                 "found": True,

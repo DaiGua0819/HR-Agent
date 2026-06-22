@@ -917,7 +917,7 @@ def click_common_phrase_row_send_button(terminal: BrowserTerminal, phrase: str, 
     phrase = str(phrase or "").strip()
     item_info = item if isinstance(item, dict) else {}
     real_hover = click_common_phrase_row_send_button_real_hover(terminal, phrase, item_info)
-    if isinstance(real_hover, dict) and (real_hover.get("clicked") or real_hover.get("found")):
+    if isinstance(real_hover, dict) and real_hover.get("clicked"):
         return real_hover
     try:
         info = page.evaluate(

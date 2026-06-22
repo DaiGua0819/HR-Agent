@@ -885,16 +885,8 @@
                 "h": item.get("h"),
             }, phrase=safe_text(phrase, 240))
         if not direct_send.get("clicked"):
-            return {
-                "blocked": True,
-                "message": "已打开“常用语”并找到目标话术，但没有成功触发/点击该话术右侧的“发送”按钮；已停止，避免误点聊天输入框。",
-                "candidate": candidate,
-                "state": {k: v for k, v in item.items() if k != "locator"},
-                "directSend": direct_send,
-            }
-        if not direct_send.get("clicked"):
-            item_locator = item.get("locator")
-            if item_locator is None:
+            item_locator = None if direct_send.get("draftInserted") else item.get("locator")
+            if item_locator is None and not direct_send.get("draftInserted"):
                 fallback_item = click_common_phrase_item_by_text(terminal, phrase)
                 if not fallback_item.get("clicked"):
                     return {
