@@ -270,6 +270,75 @@ function automationMetricPayloadFromRecords(records = [], options = {}) {
   ];
 }
 
+function automationMetricMaxMerge(metrics = [], updates = {}) {
+  const labels = {
+    proactiveOpened: "点开人数",
+    proactiveGreeted: "主动打招呼",
+  };
+  const next = (Array.isArray(metrics) ? metrics : []).map((metric) => ({ ...metric }));
+  for (const [key, rawValue] of Object.entries(updates || {})) {
+    const value = automationMetricCount(rawValue);
+    if (!value) continue;
+    let metric = next.find((item) => item?.key === key);
+    if (!metric) {
+      metric = { key, label: labels[key] || key, value: 0 };
+      next.push(metric);
+    }
+    if (value > automationMetricCount(metric.value)) metric.value = value;
+  }
+  return next;
+}
+
+function automationProactiveReportCountValue(source = {}, ...keys) {
+  for (const key of keys) {
+    const value = automationMetricCount(source?.[key]);
+    if (value) return value;
+  }
+  return 0;
+}
+
+function automationProactiveCountsFromReport(report = {}) {
+  const state = report?.state && typeof report.state === "object" ? report.state : {};
+  const counts = state.counts && typeof state.counts === "object" ? state.counts : report?.counts || {};
+  const text = `${report?.type || ""} ${report?.message || ""} ${state.platform || ""} ${state.targetPosition || ""}`.toLowerCase();
+  const opened = automationProactiveReportCountValue(counts, "proactiveOpened", "openedCandidates", "opened");
+  const greeted = automationProactiveReportCountValue(counts, "proactiveGreeted", "greeted", "proactive_greeted");
+  const isProactiveReport = /proactive|recommend|主动|推荐|打招呼|人才望远镜|推荐人才/.test(text);
+  if (!isProactiveReport && !opened && !greeted) return null;
+  return { proactiveOpened: opened, proactiveGreeted: greeted };
+}
+
+async function collectProactiveReportMetricTotals(platform = "boss", accountId = "all", selectedDate = automationChinaDateKey()) {
+  let filenames = [];
+  try {
+    filenames = await fs.readdir(AUTOMATION_WORKSPACE);
+  } catch {
+    return {};
+  }
+  const normalizedPlatform = normalizeAutomationPlatformId(platform);
+  const totals = { proactiveOpened: 0, proactiveGreeted: 0 };
+  for (const filename of filenames) {
+    if (!/^recruiter_batch_reports\b.*\.json$/i.test(filename)) continue;
+    const payload = await readAutomationJsonFile(filename);
+    if (!Array.isArray(payload)) continue;
+    for (const report of payload) {
+      const item = automationItemContext(filename, report || {});
+      if (!automationPlatformMatches(item.platform, normalizedPlatform) || !automationAccountMatches(item.sourceKey, accountId)) continue;
+      if (!automationDetailDateMatches(report?.createdAt || report?.updatedAt, selectedDate)) continue;
+      const counts = automationProactiveCountsFromReport(report);
+      if (!counts) continue;
+      totals.proactiveOpened += counts.proactiveOpened;
+      totals.proactiveGreeted += counts.proactiveGreeted;
+    }
+  }
+  return totals;
+}
+
+async function applyProactiveReportMetricFallback(metrics = [], { platform = "boss", accountId = "all", date = "" } = {}) {
+  const totals = await collectProactiveReportMetricTotals(platform, accountId, normalizeAutomationDetailDate(date));
+  return automationMetricMaxMerge(metrics, totals);
+}
+
 function automationDetailTimestamp(value = "") {
   const text = String(value || "").trim();
   const parsedIso = Date.parse(text);
@@ -938,8 +1007,9 @@ async function buildAutomationDetailsPayload(platform, sourceKeys, options = {})
           accountId: options.accountId,
           date: selectedDate,
         });
+  const mergedSourceMetrics = await applyProactiveReportMetricFallback(sourceMetrics, { platform, accountId, date: selectedDate });
   const metricsPayload = applyAutomation24hProgressFallback(
-    { metrics: sourceMetrics, date: selectedDate },
+    { metrics: mergedSourceMetrics, date: selectedDate },
     { platform, accountId, date: selectedDate }
   );
   return {
@@ -947,7 +1017,7 @@ async function buildAutomationDetailsPayload(platform, sourceKeys, options = {})
     date: selectedDate,
     today: automationChinaDateKey(),
     updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
-    metrics: metricsPayload.metrics || sourceMetrics,
+    metrics: metricsPayload.metrics || mergedSourceMetrics,
     records,
     recoveredFrom24hStatus: Boolean(metricsPayload.recoveredFrom24hStatus),
     recoveryNote: metricsPayload.recoveredFrom24hStatus

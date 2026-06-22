@@ -524,10 +524,12 @@ async function handleBossAutomationSummary(request, response) {
     }
     const deepRecords = await collectDeepAutomationDetailRecords("boss", accountId, date || automationChinaDateKey());
     if (deepRecords.length) {
-      const payload = applyAutomation24hProgressFallback(
-        buildAutomationSummaryPayloadFromRecords(deepRecords, { platform: "boss", accountId, date }),
-        { platform: "boss", accountId, date }
-      );
+      let payload = buildAutomationSummaryPayloadFromRecords(deepRecords, { platform: "boss", accountId, date });
+      payload = {
+        ...payload,
+        metrics: await applyProactiveReportMetricFallback(payload.metrics, { platform: "boss", accountId, date: date || payload.date }),
+      };
+      payload = applyAutomation24hProgressFallback(payload, { platform: "boss", accountId, date });
       setAutomationSummaryResponseCache(cacheKey, payload);
       sendJson(response, 200, payload);
       return;
@@ -543,6 +545,10 @@ async function handleBossAutomationSummary(request, response) {
         error: error.message || "BOSS 自动化 agent 未启动",
       };
     }
+    payload = {
+      ...payload,
+      metrics: await applyProactiveReportMetricFallback(payload.metrics, { platform: "boss", accountId, date: date || payload.date }),
+    };
     payload = applyAutomation24hProgressFallback(payload, { platform: "boss", accountId, date });
     setAutomationSummaryResponseCache(cacheKey, payload);
     sendJson(response, 200, payload);
@@ -616,13 +622,15 @@ async function handlePlatformAutomationSummary(request, response) {
     }
     const deepRecords = await collectDeepAutomationDetailRecords(platform, accountId, date || automationChinaDateKey());
     if (deepRecords.length) {
-      const payload = applyAutomation24hProgressFallback(
-        {
-          ...buildAutomationSummaryPayloadFromRecords(deepRecords, { platform, accountId, date }),
-          sourceKeys: platformAutomationSources(platform, accountId),
-        },
-        { platform, accountId, date }
-      );
+      let payload = {
+        ...buildAutomationSummaryPayloadFromRecords(deepRecords, { platform, accountId, date }),
+        sourceKeys: platformAutomationSources(platform, accountId),
+      };
+      payload = {
+        ...payload,
+        metrics: await applyProactiveReportMetricFallback(payload.metrics, { platform, accountId, date: date || payload.date }),
+      };
+      payload = applyAutomation24hProgressFallback(payload, { platform, accountId, date });
       setAutomationSummaryResponseCache(cacheKey, payload);
       sendJson(response, 200, payload);
       return;
@@ -644,6 +652,10 @@ async function handlePlatformAutomationSummary(request, response) {
         error: error.message || "自动化 agent 未启动",
       };
     }
+    payload = {
+      ...payload,
+      metrics: await applyProactiveReportMetricFallback(payload.metrics, { platform, accountId, date: date || payload.date }),
+    };
     payload = applyAutomation24hProgressFallback(payload, { platform, accountId, date });
     setAutomationSummaryResponseCache(cacheKey, payload);
     sendJson(response, 200, payload);
