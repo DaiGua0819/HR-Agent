@@ -2,6 +2,9 @@ const { clipText, parseMaybeJsonObject, safeArray, uniqStrings } = require("./ut
 const { summarizeResume } = require("./questionGenerator");
 
 const EVALUATION_VERSION = "v2_qa_evidence";
+const SKILL_EVALUATION_TEMPLATE_URL =
+  process.env.FEISHU_SKILL_EVALUATION_TEMPLATE_URL ||
+  "https://rnftvujbd6.feishu.cn/docx/OGw0d6cT9o5LDXxdbePccZSgnwd";
 const SIGNALS = new Set(["强", "中", "弱", "风险", "未回答"]);
 const RECOMMENDATIONS = new Set(["通过", "淘汰", "补问", "待复核"]);
 
@@ -298,64 +301,66 @@ function formatSkillEvaluationDocumentText({ resume = {}, session = {}, evaluati
   const technicalItems = technicalRows.length ? technicalRows : qa.slice(0, 6);
   const sourceTitle = source.sources?.[0]?.id ? `飞书会议纪要 ${source.sources[0].id}` : `${candidateName}初试（${dateText}）`;
   const scoreRows = abilityScoreRows(evaluation);
+  const role = evaluation.targetRole || resume.jobType || session.matchedResume?.jobType || "目标岗位";
+  const recommendation = evaluation.overallRecommendation || "待复核";
+  const summary = evaluation.summary || "建议结合原始纪要进行人工复核。";
+  const followUps = safeArray(evaluation.qaEvidence)
+    .map((item) => item.followUpSuggestion)
+    .filter(Boolean)
+    .slice(0, 5);
   return [
-    `# 候选人初试总结-${candidateName}-${dateText}`,
+    `# ${candidateName}初试总结-${dateText}`,
     "",
-    `本报告基于《智能纪要：${sourceTitle}》生成，按“模板严格版”结构输出。说明：当前依据为智能纪要/面试文档，涉及行为判断与技术评估已按证据强弱标注。`,
+    `参考模板：${SKILL_EVALUATION_TEMPLATE_URL}`,
     "",
-    "## Behavior question 部分",
-    `本场初试重点评估候选人的求职动机、职业规划、经历真实性、工程迁移能力，以及对公司工作节奏和实习安排的适配度。`,
+    `本报告基于《智能纪要：${sourceTitle}》生成，按照指定飞书技能评价模板输出。说明：当前依据为智能纪要/面试文档，涉及行为判断与技术评估已按证据强弱标注。`,
     "",
-    "### 你问了什么、能测什么、哪里不够",
-    ...formatBehaviorTable(behaviorItems),
+    "## 总结",
+    summary,
+    `- 初步结论：${role}（初试）${recommendation}`,
+    `- 主要优势：${safeArray(evaluation.strengths).slice(0, 3).join("；") || "暂未形成明确优势，需要结合原始纪要复核。"}`,
+    `- 主要风险：${safeArray(evaluation.risks).slice(0, 3).join("；") || "暂未形成明确风险，需要结合原始纪要复核。"}`,
     "",
-    "### 这一部分暴露出来的问题",
-    ...formatList(evaluation.risks, "行为面暂未暴露明确风险，建议结合原始纪要复核。"),
+    "## 公司与求职者基本情况",
+    tableRow(["项目", "内容"]),
+    tableRow(["---", "---"]),
+    tableRow(["候选人", candidateName]),
+    tableRow(["应聘岗位", role]),
+    tableRow(["面试时间", dateText]),
+    tableRow(["资料来源", sourceTitle]),
+    tableRow(["当前建议", recommendation]),
     "",
-    "### 这部分建议怎么打分",
-    `- 自我表达 / 结构化表达：${scoreRows[0][1]}/10`,
-    `- owner意识 / 主动性：${scoreRows[2][1]}/10`,
-    `- 协作 / 复盘 / 稳定性：${scoreRows[6][1]}/10`,
-    "",
-    "## Technical question 部分",
-    `本场技术交流覆盖岗位核心技能、项目真实性、工程化能力、系统边界意识和问题复盘能力，重点检验其是否具备 ${evaluation.targetRole || resume.jobType || session.matchedResume?.jobType || "目标岗位"} 的成长潜力。`,
-    "",
-    "### 逐题分析",
+    "## 项目技术交流",
+    "### 技术与项目问题记录",
     ...formatTechnicalTable(technicalItems),
     "",
-    "### 能力画像（技术岗位视角）",
-    ...formatList(evaluation.strengths, "暂未形成明确优势，需要继续结合面试原文复核。"),
-    ...formatList(evaluation.risks, "暂未形成明确风险，需要继续结合面试原文复核。"),
+    "### 技术侧观察",
+    ...formatList(evaluation.strengths, "暂未形成明确技术优势，需要继续结合面试原文复核。"),
+    ...formatList(evaluation.risks, "暂未形成明确技术风险，需要继续结合面试原文复核。"),
     "",
-    "### 这轮“问题展开”里哪些地方有点问题",
-    "#### 问得对的地方",
-    "- 已覆盖候选人经历真实性、岗位匹配度和核心能力验证。",
-    "- 已结合候选人回答抽取证据短句，方便后续复核。",
-    "#### 可优化点",
-    "- 增加现场任务或 coding 验证，确认独立完成能力。",
-    "- 增加量化追问，例如效果指标、失败场景、异常处理和复盘标准。",
-    "- 对风险点继续追问，避免只停留在概念描述。",
+    "## 公司相关问题交流",
+    "### 动机、稳定性与匹配度记录",
+    ...formatBehaviorTable(behaviorItems),
     "",
-    "## 我会怎么给这个人打分（10分制）",
+    "### 风险与待确认",
+    ...formatList(evaluation.risks, "行为面暂未暴露明确风险，建议结合原始纪要复核。"),
+    "",
+    "## 初步评价",
     tableRow(["维度", "分数", "证据", "备注"]),
     tableRow(["---", "---", "---", "---"]),
     ...scoreRows.map(tableRow),
     "",
     "## 综合结论",
-    `${evaluation.targetRole || resume.jobType || session.matchedResume?.jobType || "目标岗位"}（初试）：${evaluation.overallRecommendation || "待复核"}。${evaluation.summary || "建议结合原始纪要进行人工复核。"}`,
+    `${role}（初试）：${recommendation}。${summary}`,
+    `下一步建议：${evaluation.nextAction || "结合原始纪要和业务面需求进行人工复核。"}`,
     "",
-    "## 下一轮重点追问（直接可用）",
+    "## 下一轮重点追问",
     "### Behavior 题",
     "- 你为什么选择这个方向？什么条件会让你稳定投入？",
     "- 讲一个你自己解决问题、而不是主要靠别人或 AI 的案例。",
     "- 如果入职后节奏比预期更快，你会怎么调整？",
     "### 技术/业务场景题",
-    ...safeArray(evaluation.qaEvidence)
-      .map((item) => item.followUpSuggestion)
-      .filter(Boolean)
-      .slice(0, 5)
-      .map((item) => `- ${item}`),
-    "- 选择一个真实项目，展开讲技术方案、关键取舍、失败场景和复盘结果。",
+    ...(followUps.length ? followUps.map((item) => `- ${item}`) : ["- 选择一个真实项目，展开讲技术方案、关键取舍、失败场景和复盘结果。"]),
   ].join("\n");
 }
 
@@ -399,6 +404,7 @@ async function generateInterviewEvaluation({ resume, session, interviewText, sou
 }
 
 module.exports = {
+  SKILL_EVALUATION_TEMPLATE_URL,
   generateInterviewEvaluation,
   fallbackEvaluation,
   formatSkillEvaluationDocumentText,
