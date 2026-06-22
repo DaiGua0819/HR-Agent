@@ -477,6 +477,84 @@
         knowledge_answered = 0
         passes = 0
         page = terminal.current_page()
+
+        def detect_recruiter_captcha(phase: str) -> dict | None:
+            try:
+                context = terminal.collect_page_context(limit=80)
+            except Exception as error:
+                return {"checked": False, "phase": phase, "error": safe_text(str(error), 160)}
+            body = str(context.get("bodyTextPreview") or "")
+            title = str(context.get("title") or "")
+            url = str(context.get("url") or "")
+            haystack = f"{title}\n{body}"
+            if not (
+                any(word in haystack for word in ("验证码", "安全验证", "请完成验证", "人机验证", "滑块验证", "验证后继续"))
+                or re.search(r"captcha|security\s*check|verify\.html", haystack + "\n" + url, re.I)
+            ):
+                return None
+            return {
+                "checked": True,
+                "phase": phase,
+                "title": safe_text(title, 120),
+                "url": safe_text(url, 240),
+                "text": safe_text(haystack, 500),
+            }
+
+        def stop_for_recruiter_captcha(phase: str, unread_filter_state: dict | None = None) -> dict | None:
+            captcha = detect_recruiter_captcha(phase)
+            if not captcha or not captcha.get("checked"):
+                return None
+            message = "检测到页面出现人机验证/验证码/安全验证，已停止 BOSS 消息处理，等待人工处理后再继续。"
+            state = {
+                "blocked": blocked + 1,
+                "reason": "human_verification",
+                "captcha": True,
+                "captchaPhase": phase,
+                "captchaPage": captcha,
+                "sentBasic": sent_basic,
+                "requestedResume": requested_resume,
+                "downloadedResume": downloaded_resume,
+                "alreadyRequestedResume": already_requested_resume,
+                "skippedWaiting": skipped_waiting,
+                "unconfiguredPosition": unconfigured_position,
+                "rejected": rejected,
+                "knowledgeAnswered": knowledge_answered,
+                "repeatedUnread": len(repeated_labels),
+                "filteredOut": len(skipped_filter),
+                "unclearQuestionCount": len(unclear_questions),
+                "targetPosition": target_position,
+                "dateScope": date_scope,
+                "unreadFilterClicked": bool((unread_filter_state or {}).get("clicked")),
+                "processedPeople": len(results),
+                "passes": passes,
+                "counts": {
+                    "human_verification": 1,
+                    "blocked": blocked + 1,
+                },
+            }
+            if isinstance(unread_filter_state, dict):
+                state["unreadFilter"] = unread_filter_state
+            self.add_event("system", message, state)
+            batch_report = append_recruiter_batch_report({
+                "type": "screen_all_recruiter_unread_basic_conditions",
+                "message": safe_text(message, 800),
+                "state": state,
+                "results": results,
+                "filteredOut": skipped_filter[:120],
+                "unclearQuestions": unclear_questions[:120],
+            })
+            return {
+                "captcha": True,
+                "blocked": True,
+                "message": message,
+                "results": results,
+                "passes": passes,
+                "state": state,
+                "batchReportId": batch_report.get("runId"),
+                "filteredOut": skipped_filter[:30],
+                "unclearQuestions": unclear_questions[:30],
+            }
+
         current_url = str(getattr(page, "url", "") or "")
         if "zhipin.com" not in current_url or "/web/chat" not in current_url:
             self.measure_current_timing_stage(
@@ -485,11 +563,17 @@
                 lambda: page.goto("https://www.zhipin.com/web/chat/index", wait_until="domcontentloaded", timeout=20000),
             )
             page.wait_for_timeout(random.randint(1400, 2200))
+        captcha_stop = stop_for_recruiter_captcha("after_open_chat_page")
+        if captcha_stop:
+            return captcha_stop
         unread_filter = self.measure_current_timing_stage(
             "prepare_unread_filter",
             "切换/检查未读筛选",
             lambda: prepare_recruiter_unread_candidate_list(terminal),
         )
+        captcha_stop = stop_for_recruiter_captcha("after_prepare_unread_filter", unread_filter)
+        if captcha_stop:
+            return captcha_stop
         if not unread_filter.get("found"):
             page = terminal.current_page()
             message = (
@@ -656,6 +740,9 @@
             passes += 1
             scroll_recruiter_candidate_list_to_top(terminal)
             terminal.current_page().wait_for_timeout(random.randint(650, 1150))
+            captcha_stop = stop_for_recruiter_captcha("before_pass_scan", unread_filter)
+            if captcha_stop:
+                return captcha_stop
 
             excluded_this_pass: list[str] = []
             pass_handled = 0
@@ -672,6 +759,9 @@
                 if not target:
                     scrolled = scroll_recruiter_candidate_list(terminal)
                     no_target_attempts += 1
+                    captcha_stop = stop_for_recruiter_captcha("after_no_target_scroll", unread_filter)
+                    if captcha_stop:
+                        return captcha_stop
                     if scrolled.get("scrolled") and no_target_attempts < max_scan_attempts:
                         terminal.current_page().wait_for_timeout(random.randint(560, 980))
                         continue
@@ -744,6 +834,9 @@
                         ok=True,
                         extra={"candidate": safe_text(target_label, 80)},
                     )
+                    captcha_stop = stop_for_recruiter_captcha("after_open_candidate", unread_filter)
+                    if captcha_stop:
+                        return captcha_stop
                 except Exception as error:
                     self.record_current_timing_stage(
                         "open_candidate",
@@ -803,12 +896,22 @@
                 record_result(candidate_label or target_label, "auto", result, target, context_before)
                 pass_handled += 1
                 maybe_human_batch_pause(terminal, len(results))
+                captcha_stop = stop_for_recruiter_captcha("after_screen_candidate", unread_filter)
+                if captcha_stop:
+                    return captcha_stop
 
             scroll_recruiter_candidate_list_to_top(terminal)
             terminal.current_page().wait_for_timeout(random.randint(900, 1450))
+            captcha_stop = stop_for_recruiter_captcha("after_pass_scroll_top", unread_filter)
+            if captcha_stop:
+                return captcha_stop
             if pass_handled == 0:
                 break
             maybe_human_reading_pause(terminal, reason="page_change", text_hint=f"第 {passes} 轮未读处理完成")
+
+        captcha_stop = stop_for_recruiter_captcha("before_final_report", unread_filter)
+        if captcha_stop:
+            return captcha_stop
 
         parts = [
             f"所有未读消息处理完成：共扫描 {passes} 轮，处理 {len(results)} 条未读。",

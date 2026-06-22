@@ -207,6 +207,40 @@ function isBlockedZeroProcessResult(payload, stats) {
   return /unread_tab_not_found|not_found|未读|消息页|聊天页|blocked|阻塞/i.test(reasonText) || Boolean(payload.blocked);
 }
 
+function isHumanVerificationPayload(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  const state = payload.state && typeof payload.state === "object" ? payload.state : {};
+  if (
+    payload.captcha
+    || payload.humanVerification
+    || payload.human_verification
+    || state.captcha
+    || state.humanVerification
+    || state.human_verification
+    || state.reason === "human_verification"
+  ) {
+    return true;
+  }
+  const captchaPage = state.captchaPage && typeof state.captchaPage === "object" ? state.captchaPage : {};
+  const page = payload.page && typeof payload.page === "object" ? payload.page : {};
+  const text = [
+    payload.error,
+    payload.message,
+    payload.reply,
+    payload.reason,
+    state.error,
+    state.message,
+    state.reason,
+    state.captchaPhase,
+    captchaPage.title,
+    captchaPage.url,
+    captchaPage.text,
+    page.title,
+    page.url,
+  ].filter(Boolean).join(" ");
+  return /人机|验证码|captcha|安全验证|请完成验证|滑块验证|verify\.html/i.test(text);
+}
+
 function normalizeRecoveredStats(payload) {
   if (!payload || typeof payload !== "object") {
     return {
@@ -765,6 +799,23 @@ function createAutomation24hScheduler({
       throw new Error(payload.reply || payload.message || "任务已暂停");
     }
     const stats = extractRunStats(payload);
+    if (isHumanVerificationPayload(payload)) {
+      const error = new Error(stats.message || payload.message || payload.reply || payload.error || "检测到人机验证");
+      error.payload = payload;
+      if (stats.processed || stats.requestedResume || stats.downloadedResume) {
+        error.partialStats = {
+          ok: true,
+          recovered: true,
+          processed: stats.processed,
+          requestedResume: stats.requestedResume,
+          downloadedResume: stats.downloadedResume,
+          counts: stats.counts,
+          message: stats.message,
+          source: "round_payload_human_verification",
+        };
+      }
+      throw error;
+    }
     if (isBlockedZeroProcessResult(payload, stats)) {
       const error = new Error(stats.message || payload.message || payload.reply || "任务未实际开始：页面阻塞或未找到可处理消息入口");
       error.payload = payload;
@@ -1075,7 +1126,9 @@ function createAutomation24hScheduler({
             });
             break;
           }
-          const partialResult = await recoverInterruptedRound(target, round, roundStartedAt, error);
+          const partialResult = error.partialStats?.recovered
+            ? { stats: error.partialStats, observed: lastObserved }
+            : await recoverInterruptedRound(target, round, roundStartedAt, error);
           if (partialResult?.stats?.recovered) {
             totalProcessed += partialResult.stats.processed;
             totalRequested += partialResult.stats.requestedResume;
@@ -1155,7 +1208,7 @@ function createAutomation24hScheduler({
         downloadedResume: totalDownloaded,
       });
     } catch (error) {
-      const reason = detectInterruption(error);
+      const reason = detectInterruption(error, error.payload);
       const partialStats = error.partialStats && typeof error.partialStats === "object" ? error.partialStats : null;
       setTarget(target.id, {
         status: reason === "human_verification" ? "captcha" : reason === "needs_login" ? "needs_login" : reason === "account_abnormal" ? "account_abnormal" : "failed",
