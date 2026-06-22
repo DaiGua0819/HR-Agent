@@ -2214,7 +2214,7 @@ def inspect_interview_wechat_exchange_state(page, platform: str = "") -> dict:
               const text = normalize(document.body ? document.body.innerText || '' : '');
               const confirmVisible = /确定与对方交换微信|是否.{0,12}交换微信|确认.{0,12}交换微信/.test(text);
               const alreadyExchanged = /对方已同意交换微信|已同意交换微信|微信号[:：]|复制微信号|查看微信/.test(text);
-              const requestVisible = /我想.{0,12}交换微信|交换微信.{0,18}方便沟通|等待.{0,12}同意|已.{0,8}申请.{0,8}微信|已.{0,8}发起.{0,8}微信/.test(text);
+              const requestVisible = /我想.{0,12}交换微信|交换微信.{0,18}方便沟通|等待.{0,12}同意|已.{0,8}申请.{0,8}微信|已.{0,8}发起.{0,8}微信|请求.{0,8}交换微信.{0,8}已发送|交换微信.{0,8}请求.{0,8}已发送|已.{0,8}发送.{0,8}交换微信/.test(text);
               const actionStillAvailable = /换微信|交换微信/.test(text);
               return {
                 platform,
