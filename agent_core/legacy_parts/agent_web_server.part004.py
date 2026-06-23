@@ -1021,6 +1021,55 @@
         if download_result.get("reason") in fallback_to_request_reasons:
             self.job51_close_resume_download_surfaces(terminal)
         request_result = self.job51_request_resume_from_current_conversation(terminal)
+        screening = accepted_by_flow.get("screening") if isinstance(accepted_by_flow, dict) and isinstance(accepted_by_flow.get("screening"), dict) else {}
+        is_direct_resume_flow = bool(screening.get("directResume"))
+        if request_result.get("blocked") and is_direct_resume_flow:
+            context = self.job51_read_chat_context(terminal)
+            position_reply = context.get("positionReply") if isinstance(context.get("positionReply"), dict) else {}
+            resume_job_type = direct_resume_operations_job_type(context, position_reply) or normalize_direct_resume_operations_job_type(str(screening.get("jobType") or ""))
+            prompt = direct_resume_request_prompt_from_context(context, position_reply, resume_job_type)
+            candidate = context.get("applicant") if isinstance(context.get("applicant"), dict) else {}
+            candidate_label = str(candidate.get("label") or candidate.get("name") or "")
+            if prompt:
+                prompt_result = self.prepare_direct_resume_request_prompt(
+                    terminal,
+                    candidate_label,
+                    resume_job_type,
+                    "51job",
+                    prompt,
+                    context=context,
+                )
+                prompt_ok = bool(
+                    isinstance(prompt_result, dict)
+                    and not prompt_result.get("blocked")
+                    and (prompt_result.get("sent") or prompt_result.get("alreadySent"))
+                )
+                if prompt_ok:
+                    return {
+                        "action": "request_resume_prompt",
+                        "message": (
+                            "51job 当前会话没有可用求简历按钮，已按直求简历兜底发送求简历话术："
+                            f"{safe_text(prompt, 80)}"
+                        ),
+                        "download": download_result,
+                        "request": request_result,
+                        "prompt": prompt_result,
+                        "resume": prompt_result,
+                        "blocked": False,
+                        "downloaded": False,
+                        "requested": True,
+                    }
+                if isinstance(prompt_result, dict) and prompt_result.get("blocked"):
+                    return {
+                        "action": "request_resume_prompt_blocked",
+                        "message": prompt_result.get("message") or "51job 求简历按钮不可用，兜底求简历话术发送失败",
+                        "download": download_result,
+                        "request": request_result,
+                        "prompt": prompt_result,
+                        "resume": prompt_result,
+                        "blocked": True,
+                        "downloaded": False,
+                    }
         return {
             "action": "request_resume",
             "message": request_result.get("message") or "51job 未找到在线简历入口，已尝试求简历",
