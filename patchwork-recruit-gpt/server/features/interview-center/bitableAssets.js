@@ -9,6 +9,7 @@ const DEFAULT_ALLOWED_JOBS = ["AI应用开发实习生", "AI应用开发", "AI A
 const RESUME_FIELD = "简历";
 const INTERVIEW_RECORD_FIELD = "面试记录";
 const SKILL_EVALUATION_FIELD = process.env.FEISHU_INTERVIEW_SKILL_EVALUATION_FIELD || "技能评价";
+const SECOND_INTERVIEW_EVALUATION_FIELD = process.env.FEISHU_INTERVIEW_SECOND_EVALUATION_FIELD || "复试结果评价";
 
 function splitConfigList(value, fallback = []) {
   const items = String(value || "")
@@ -349,16 +350,30 @@ async function ensureBitableInterviewRecordImage({ feishu, store, session, resum
   return { ok: true, session: next, recordId: nextRecordId, interviewRecordImage };
 }
 
-async function ensureBitableSkillEvaluationDocument({ feishu, store, session, resume, createDocument, fieldText = "" }) {
+async function ensureBitableSkillEvaluationDocument({
+  feishu,
+  store,
+  session,
+  resume,
+  createDocument,
+  fieldText = "",
+  fieldName = SKILL_EVALUATION_FIELD,
+  sessionDocumentKey = "bitableSkillEvaluationDocument",
+  bitableDocumentKey = "skillEvaluationDocument",
+  resultKey = "skillEvaluationDocument",
+  alreadySyncedReason = "skill_evaluation_document_already_synced",
+  fieldMissingReason = "skill_evaluation_field_missing",
+  fieldAlreadyHasDocReason = "bitable_skill_evaluation_field_already_has_docx_link",
+} = {}) {
   if (!session?.isInterviewLike || !resume?.id || !session.interviewEvaluation) return { skipped: true, reason: "missing_interview_evaluation" };
   if (!feishu.getStatus().bitableConfigured) return { skipped: true, reason: "missing_bitable_config" };
-  if (session.bitableSkillEvaluationDocument?.documentId && session.bitableRecordId) {
-    return { skipped: true, reason: "skill_evaluation_document_already_synced", recordId: session.bitableRecordId };
+  if (session[sessionDocumentKey]?.documentId && session.bitableRecordId) {
+    return { skipped: true, reason: alreadySyncedReason, recordId: session.bitableRecordId, field: fieldName };
   }
 
   const fieldMap = await feishu.getBitableFields();
-  const skillField = fieldMap.byName?.get(SKILL_EVALUATION_FIELD);
-  if (!skillField) return { skipped: true, reason: "skill_evaluation_field_missing", field: SKILL_EVALUATION_FIELD };
+  const targetField = fieldMap.byName?.get(fieldName);
+  if (!targetField) return { skipped: true, reason: fieldMissingReason, field: fieldName };
 
   const tableInfo = await feishu.getBitableTableInfo();
   const allow = positionAllowedForTable({ session, resume, tableInfo });
@@ -371,30 +386,30 @@ async function ensureBitableSkillEvaluationDocument({ feishu, store, session, re
   }
   const existingRecord = existing.record || null;
   const existingRecordId = recordId(existingRecord);
-  const existingSkillText = compactText(extractFieldText(existingRecord?.fields?.[SKILL_EVALUATION_FIELD] || ""));
-  if (hasDocxLink(existingSkillText)) {
+  const existingFieldText = compactText(extractFieldText(existingRecord?.fields?.[fieldName] || ""));
+  if (hasDocxLink(existingFieldText)) {
     return {
       skipped: true,
-      reason: "bitable_skill_evaluation_field_already_has_docx_link",
+      reason: fieldAlreadyHasDocReason,
       recordId: existingRecordId,
-      field: SKILL_EVALUATION_FIELD,
+      field: fieldName,
     };
   }
 
   const doc =
-    session.bitableSkillEvaluationDocument?.documentId && session.bitableSkillEvaluationDocument?.url
-      ? session.bitableSkillEvaluationDocument
+    session[sessionDocumentKey]?.documentId && session[sessionDocumentKey]?.url
+      ? session[sessionDocumentKey]
       : await createDocument();
   const attempts = [];
   let record = null;
   let lastError = null;
-  const preservedManualText = existingSkillText || compactText(fieldText);
-  for (const value of documentFieldValueCandidates(skillField, doc, preservedManualText)) {
+  const preservedManualText = existingFieldText || compactText(fieldText);
+  for (const value of documentFieldValueCandidates(targetField, doc, preservedManualText)) {
     try {
       const fields = {
         姓名: resume.name || session.matchedResume?.name || "",
         候选人联系电话: resume.phone || "",
-        [SKILL_EVALUATION_FIELD]: value,
+        [fieldName]: value,
       };
       record = existingRecordId ? await feishu.updateBitableRecord(existingRecordId, fields) : await feishu.createBitableRecord(fields);
       attempts.push({ ok: true, valueKind: Array.isArray(value) ? "attachment" : typeof value });
@@ -404,21 +419,21 @@ async function ensureBitableSkillEvaluationDocument({ feishu, store, session, re
       attempts.push({
         ok: false,
         valueKind: Array.isArray(value) ? "attachment" : typeof value,
-        error: error.message || "写入技能评价字段失败",
+        error: error.message || `写入${fieldName}字段失败`,
         payload: error.payload || null,
       });
     }
   }
   if (!record) {
-    const error = new Error(lastError?.message || "写入技能评价字段失败");
+    const error = new Error(lastError?.message || `写入${fieldName}字段失败`);
     error.payload = { attempts };
     throw error;
   }
 
   const nextRecordId = recordId(record) || existingRecordId;
-  const skillEvaluationDocument = {
+  const evaluationDocument = {
     status: "synced",
-    field: SKILL_EVALUATION_FIELD,
+    field: fieldName,
     recordId: nextRecordId,
     documentId: doc.documentId,
     url: doc.url,
@@ -432,15 +447,17 @@ async function ensureBitableSkillEvaluationDocument({ feishu, store, session, re
   const next = store.saveSession({
     ...session,
     bitableRecordId: nextRecordId,
-    bitableSkillEvaluationDocument: skillEvaluationDocument,
-    bitable: { ...(session.bitable || {}), recordId: nextRecordId, skillEvaluationDocument },
+    [sessionDocumentKey]: evaluationDocument,
+    bitable: { ...(session.bitable || {}), recordId: nextRecordId, [bitableDocumentKey]: evaluationDocument },
   });
-  return { ok: true, session: next, recordId: nextRecordId, skillEvaluationDocument };
+  return { ok: true, session: next, recordId: nextRecordId, [resultKey]: evaluationDocument, evaluationDocument };
 }
 
 module.exports = {
   ensureBitableResumeImage,
   ensureBitableInterviewRecordImage,
   ensureBitableSkillEvaluationDocument,
+  SECOND_INTERVIEW_EVALUATION_FIELD,
+  SKILL_EVALUATION_FIELD,
   positionAllowedForTable,
 };

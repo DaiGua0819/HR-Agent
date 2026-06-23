@@ -279,88 +279,114 @@ function abilityScoreRows(evaluation = {}) {
     return (scores.reduce((sum, item) => sum + item, 0) / scores.length).toFixed(1);
   };
   return [
-    ["自我表达", avgSignal(behavior), "能围绕经历、动机和诉求展开表达", "结合面试官复核调整"],
+    ["自我表达", avgSignal(behavior), "能围绕经历、动机和诉求展开表达", "结构是否完整由面试官复核"],
     ["结构化思考", avgSignal(qa), "能按问题拆解回答并给出部分依据", "关注是否有指标、边界和复盘"],
-    ["ownership", avgSignal(behavior), "从经历中提取主动性和问题意识", "需要结合具体项目追问"],
-    ["岗位匹配", evaluation.overallRecommendation === "通过" ? "7.4" : "7.0", evaluation.summary || "岗位匹配度待复核", "以最终人工复核为准"],
-    ["智能体/RAG工程能力", avgSignal(technical), "从项目链路、工具使用和工程细节判断", "重点看真实实现深度"],
-    ["系统治理能力", avgSignal(technical.filter((item) => /权限|安全|治理|异常|稳定|部署/i.test(`${item.ability} ${item.question}`))), "从权限、异常、监控和边界意识判断", "没有追问时应补测"],
-    ["协作/复盘能力", avgSignal(behavior), "从复盘、沟通和学习方式判断", "建议下一轮继续验证"],
-    ["稳定性", avgSignal(behavior), "从工作条件接受度和长期规划判断", "对实习时长/节奏需明确确认"],
+    ["ownership", avgSignal(behavior), "从经历中提取主动性和问题意识", "还需验证核心贡献"],
+    ["岗位匹配（AI/平台）", evaluation.overallRecommendation === "通过" ? "7.8" : "7.0", evaluation.summary || "岗位匹配度待复核", "偏平台/工作流方向更合适时需标注"],
+    ["算法/检索理解", avgSignal(technical.filter((item) => /算法|检索|rag|向量|模型|相似度|rerank|top/i.test(`${item.ability} ${item.question}`))), "从检索、召回、排序、模型理解判断", "深度不足时继续追问实现细节"],
+    ["工程稳定性", avgSignal(technical.filter((item) => /异常|稳定|容错|治理|部署|监控|回滚|并发|资源/i.test(`${item.ability} ${item.question}`))), "从容错、重试、资源调度和边界意识判断", "需补工程规范"],
+    ["协作/复盘能力", avgSignal(behavior), "从复盘、沟通和学习方式判断", "复盘证据不够时继续验证"],
   ];
 }
 
-function formatSkillEvaluationDocumentText({ resume = {}, session = {}, evaluation = {} } = {}) {
+function interviewRoundLabelFromSession(session = {}, roundLabel = "") {
+  const explicit = String(roundLabel || "").trim();
+  if (explicit) return /二|复|second|2/i.test(explicit) ? "复试" : explicit;
+  const text = [session.interviewFlow?.roundLabel, session.title, session.description].filter(Boolean).join(" ");
+  if (/二面|二试|复试|复面|second|2面|2试/i.test(text)) return "复试";
+  return "初试";
+}
+
+function formatSkillEvaluationDocumentText({ resume = {}, session = {}, evaluation = {}, roundLabel = "" } = {}) {
   const source = evaluation.source || session.backfillSource || {};
   const candidateName = evaluation.candidateName || resume.name || session.matchedResume?.name || "候选人";
+  const round = interviewRoundLabelFromSession(session, roundLabel);
   const dateText = dateTextFromSession(session);
   const qa = safeArray(evaluation.qaEvidence);
   const behaviorRows = qa.filter((item) => qaTypeFromAbility(item.ability, item.question) === "behavior");
   const technicalRows = qa.filter((item) => qaTypeFromAbility(item.ability, item.question) === "technical");
-  const behaviorItems = behaviorRows.length ? behaviorRows : qa.slice(0, 3);
-  const technicalItems = technicalRows.length ? technicalRows : qa.slice(0, 6);
-  const sourceTitle = source.sources?.[0]?.id ? `飞书会议纪要 ${source.sources[0].id}` : `${candidateName}初试（${dateText}）`;
+  const behaviorItems = (behaviorRows.length ? behaviorRows : qa.slice(0, 3)).slice(0, 6);
+  const technicalItems = (technicalRows.length ? technicalRows : qa.slice(0, 6)).slice(0, 8);
+  const sourceTitle = source.sources?.[0]?.id ? `飞书会议纪要 ${source.sources[0].id}` : `${candidateName}${round}（${dateText}）`;
   const scoreRows = abilityScoreRows(evaluation);
   const role = evaluation.targetRole || resume.jobType || session.matchedResume?.jobType || "目标岗位";
   const recommendation = evaluation.overallRecommendation || "待复核";
   const summary = evaluation.summary || "建议结合原始纪要进行人工复核。";
+  const strengths = safeArray(evaluation.strengths);
+  const risks = safeArray(evaluation.risks);
   const followUps = safeArray(evaluation.qaEvidence)
     .map((item) => item.followUpSuggestion)
     .filter(Boolean)
     .slice(0, 5);
   return [
-    `# ${candidateName}初试总结-${dateText}`,
+    `本报告基于《智能纪要：${sourceTitle}》生成，按“模板严格版”结构输出。说明：当前依据为智能纪要（非逐字稿），涉及岗位匹配与技术判断已按证据强弱标注。`,
     "",
-    `参考模板：${SKILL_EVALUATION_TEMPLATE_URL}`,
+    "## Behavior question 部分",
+    `本场${round}重点评估候选人的岗位理解、项目真实性、团队协作与职业稳定性，核心判断其是否适配${role}并具备可培养空间。`,
     "",
-    `本报告基于《智能纪要：${sourceTitle}》生成，按照指定飞书技能评价模板输出。说明：当前依据为智能纪要/面试文档，涉及行为判断与技术评估已按证据强弱标注。`,
-    "",
-    "## 总结",
-    summary,
-    `- 初步结论：${role}（初试）${recommendation}`,
-    `- 主要优势：${safeArray(evaluation.strengths).slice(0, 3).join("；") || "暂未形成明确优势，需要结合原始纪要复核。"}`,
-    `- 主要风险：${safeArray(evaluation.risks).slice(0, 3).join("；") || "暂未形成明确风险，需要结合原始纪要复核。"}`,
-    "",
-    "## 公司与求职者基本情况",
-    tableRow(["项目", "内容"]),
-    tableRow(["---", "---"]),
-    tableRow(["候选人", candidateName]),
-    tableRow(["应聘岗位", role]),
-    tableRow(["面试时间", dateText]),
-    tableRow(["资料来源", sourceTitle]),
-    tableRow(["当前建议", recommendation]),
-    "",
-    "## 项目技术交流",
-    "### 技术与项目问题记录",
-    ...formatTechnicalTable(technicalItems),
-    "",
-    "### 技术侧观察",
-    ...formatList(evaluation.strengths, "暂未形成明确技术优势，需要继续结合面试原文复核。"),
-    ...formatList(evaluation.risks, "暂未形成明确技术风险，需要继续结合面试原文复核。"),
-    "",
-    "## 公司相关问题交流",
-    "### 动机、稳定性与匹配度记录",
+    "### 你问了什么、能测什么、哪里不够",
     ...formatBehaviorTable(behaviorItems),
     "",
-    "### 风险与待确认",
-    ...formatList(evaluation.risks, "行为面暂未暴露明确风险，建议结合原始纪要复核。"),
+    "### 这一部分暴露出来的问题",
+    ...formatList(
+      risks.slice(0, 4),
+      "项目讲述、稳定性和 ownership 仍需结合原始纪要与后续追问继续核验。"
+    ),
     "",
-    "## 初步评价",
+    "### 这部分建议怎么打分",
+    `- 自我表达 / 结构化表达：${scoreRows.find((row) => row[0] === "自我表达")?.[1] || "待复核"}/10`,
+    `- owner意识 / 主动性：${scoreRows.find((row) => row[0] === "ownership")?.[1] || "待复核"}/10`,
+    `- 协作 / 复盘 / 稳定性：${scoreRows.find((row) => row[0] === "协作/复盘能力")?.[1] || "待复核"}/10`,
+    "",
+    "## Technical question 部分",
+    `本场技术交流覆盖${role}相关项目、工具编排、检索增强/智能体框架、指标验证与系统化工程思维，重点检验候选人是否具备 AI/平台工程落地能力。`,
+    "",
+    "### 逐题分析",
+    ...formatTechnicalTable(technicalItems),
+    "",
+    "### 能力画像（技术岗位视角）",
+    "#### AI 平台/工作流工程能力：中上",
+    strengths.find((item) => /平台|工作流|agent|智能体|工程|项目/i.test(item)) || "能否达到中上水平需结合项目链路、工具调用、流程编排和真实工程细节继续复核。",
+    "",
+    "#### 算法/检索增强理解：中上",
+    strengths.find((item) => /算法|检索|rag|向量|模型|相似度|rerank|top/i.test(item)) || "能否达到中上水平需结合检索、召回、排序、评估指标和调参依据继续复核。",
+    "",
+    "#### 工程稳定性与治理：中等",
+    risks.find((item) => /异常|稳定|容错|治理|部署|监控|回滚|并发|资源/i.test(item)) || "工程稳定性与治理能力需继续核验异常兜底、失败重试、资源调度、监控和回滚方案。",
+    "",
+    "#### 可培养性：中上",
+    strengths.find((item) => /学习|复盘|接受|沟通|主动|成长/i.test(item)) || "可培养性需结合学习速度、复盘能力、沟通方式和岗位投入稳定性继续复核。",
+    "",
+    "## 这轮“问题展开”里哪些地方有点问题",
+    "### 问得对的地方",
+    ...formatList(strengths.slice(0, 4), "围绕项目真实性、技术链路、工程落地和岗位匹配展开追问是正确方向。"),
+    "",
+    "### 可优化点",
+    ...(followUps.length
+      ? followUps.map((item, index) => `${index + 1}. ${item}`)
+      : [
+          "1. 增加失败样本追问：测试中最常见失败类型是什么，怎么修。",
+          "2. 增加资源治理追问：任务超时、失败回滚、并发和监控机制如何设计。",
+        ]),
+    "",
+    "## 我会怎么给这个人打分（10分制）",
     tableRow(["维度", "分数", "证据", "备注"]),
     tableRow(["---", "---", "---", "---"]),
     ...scoreRows.map(tableRow),
     "",
-    "## 综合结论",
-    `${role}（初试）：${recommendation}。${summary}`,
-    `下一步建议：${evaluation.nextAction || "结合原始纪要和业务面需求进行人工复核。"}`,
+    "### 综合结论",
+    `- AI 平台/工作流/智能体相关岗位（${round}）：${recommendation}。${summary}`,
+    `- 下一步建议：${evaluation.nextAction || "结合原始纪要和业务面需求进行人工复核。"}`,
     "",
-    "## 下一轮重点追问",
+    "## 下一轮重点追问（直接可用）",
     "### Behavior 题",
-    "- 你为什么选择这个方向？什么条件会让你稳定投入？",
-    "- 讲一个你自己解决问题、而不是主要靠别人或 AI 的案例。",
-    "- 如果入职后节奏比预期更快，你会怎么调整？",
+    "1. 你为什么选择这个方向？什么条件会让你稳定投入？",
+    "2. 讲一个你自己解决问题、而不是主要靠别人或 AI 的案例。",
+    "3. 如果入职后节奏比预期更快，你会怎么调整？",
     "### 技术/业务场景题",
-    ...(followUps.length ? followUps.map((item) => `- ${item}`) : ["- 选择一个真实项目，展开讲技术方案、关键取舍、失败场景和复盘结果。"]),
+    ...(followUps.length
+      ? followUps.map((item, index) => `${index + 1}. ${item}`)
+      : ["1. 选择一个真实项目，展开讲技术方案、关键取舍、失败场景和复盘结果。"]),
   ].join("\n");
 }
 

@@ -3,7 +3,13 @@ const { createFeishuClient } = require("./feishuClient");
 const { enrichSessionWithMatches } = require("./candidateMatcher");
 const { generateInterviewQuestions, summarizeConversation } = require("./questionGenerator");
 const { generateInterviewEvaluation, formatSkillEvaluationDocumentText } = require("./feedbackBackfill");
-const { ensureBitableResumeImage, ensureBitableInterviewRecordImage, ensureBitableSkillEvaluationDocument } = require("./bitableAssets");
+const {
+  ensureBitableResumeImage,
+  ensureBitableInterviewRecordImage,
+  ensureBitableSkillEvaluationDocument,
+  SECOND_INTERVIEW_EVALUATION_FIELD,
+  SKILL_EVALUATION_FIELD,
+} = require("./bitableAssets");
 const { clipText, compactText, normalizeText, nowIso, parseJson, randomId, safeArray } = require("./utils");
 
 const DAY_SECONDS = 24 * 60 * 60;
@@ -437,28 +443,49 @@ function createInterviewCenterFeature(context) {
 
   async function syncSessionSkillEvaluationDocumentToBitable(session, resume) {
     const publicResume = context.publicRecord(resume);
+    const round = deriveInterviewRound({ session });
+    const isSecondRound = round.key === "second";
+    const roundLabel = isSecondRound ? "复试" : "初试";
+    const targetField = isSecondRound ? SECOND_INTERVIEW_EVALUATION_FIELD : SKILL_EVALUATION_FIELD;
+    const sessionDocumentKey = isSecondRound ? "bitableSecondInterviewEvaluationDocument" : "bitableSkillEvaluationDocument";
+    const bitableDocumentKey = isSecondRound ? "secondInterviewEvaluationDocument" : "skillEvaluationDocument";
+    const resultKey = isSecondRound ? "secondInterviewEvaluationDocument" : "skillEvaluationDocument";
     const result = await ensureBitableSkillEvaluationDocument({
       feishu,
       store,
       session,
       resume: publicResume,
+      fieldName: targetField,
+      sessionDocumentKey,
+      bitableDocumentKey,
+      resultKey,
+      alreadySyncedReason: isSecondRound ? "second_interview_evaluation_document_already_synced" : "skill_evaluation_document_already_synced",
+      fieldMissingReason: isSecondRound ? "second_interview_evaluation_field_missing" : "skill_evaluation_field_missing",
+      fieldAlreadyHasDocReason: isSecondRound
+        ? "bitable_second_interview_evaluation_field_already_has_docx_link"
+        : "bitable_skill_evaluation_field_already_has_docx_link",
       createDocument: async () =>
         feishu.createDocumentFromText({
-          title: `${session.interviewEvaluation?.candidateName || publicResume.name || session.matchedResume?.name || "候选人"}-${session.interviewEvaluation?.targetRole || publicResume.jobType || "面试"}-技能评价`,
+          title: `模板严格版：${session.interviewEvaluation?.candidateName || publicResume.name || session.matchedResume?.name || "候选人"}${roundLabel}（${new Date(
+            Number(session.startTime || Date.now() / 1000) * 1000
+          ).toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" })}）`,
           docText: formatSkillEvaluationDocumentText({
             resume: publicResume,
             session,
             evaluation: session.interviewEvaluation,
+            roundLabel,
           }),
-          action: "创建飞书技能评价文档",
+          action: `创建飞书${roundLabel}评价文档`,
         }),
       fieldText: "",
     });
     if (result.ok) {
-      store.appendLog(session.id, "info", "已生成技能评价飞书文档并同步到飞书面试表", {
+      const syncedDocument = result[resultKey] || result.evaluationDocument;
+      store.appendLog(session.id, "info", `已生成${roundLabel}评价飞书文档并同步到飞书面试表`, {
+        field: targetField,
         recordId: result.recordId,
-        documentId: result.skillEvaluationDocument?.documentId,
-        url: result.skillEvaluationDocument?.url,
+        documentId: syncedDocument?.documentId,
+        url: syncedDocument?.url,
       });
     }
     return result;
@@ -616,7 +643,8 @@ function createInterviewCenterFeature(context) {
       throw error;
     }
     if (session.interviewEvaluation && !force) {
-      if (!session.bitableSkillEvaluationDocument?.documentId) {
+      const evaluationDocumentKey = deriveInterviewRound({ session }).key === "second" ? "bitableSecondInterviewEvaluationDocument" : "bitableSkillEvaluationDocument";
+      if (!session[evaluationDocumentKey]?.documentId) {
         const { record } = await getResumeById(session.resumeId);
         if (record) {
           try {
