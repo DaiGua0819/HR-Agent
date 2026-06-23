@@ -1030,7 +1030,7 @@ def ask_agent_model_for_actions(task: str, context: dict, role_prompt: str, rela
 - job51_process_unread_all_positions：招聘端/51job 账号中，处理 51job 全部岗位未读消息；后端连接 9224 的 51job CloakBrowser，先点击“未读”，再点击“全部岗位”，然后从全岗位未读列表连续打开联系人、识别岗位并复用 boss_chat_rules 的岗位筛选/知识库规则。不要按岗位标签逐个切换。
 - job51_process_current_position：招聘端/51job 账号中，处理当前已打开候选人的岗位流程。
 - job51_answer_candidate_questions：招聘端/51job 账号中，只回答当前候选人最近未回复问题。
-- job51_request_resume：招聘端/51job 账号中，只能在候选人已判断为合适后处理简历：优先检查本地下载记忆，已下载过则跳过；51 和新红/job51_b 禁止点击聊天里的“在线简历”或打开在线简历详情页，因为 51job 会重定向到人才管理页，此账号应直接在当前聊天里执行求简历；其他 51job 账号可保留在线简历 PDF 保存流程。
+- job51_request_resume：招聘端/51job 账号中，只能在候选人已判断为合适后处理简历：优先检查本地下载记忆，已下载过则跳过；51 和新红/job51_b 禁止点击聊天里的“在线简历”或打开在线简历详情页，因为 51job 会重定向到人才管理页；此账号应先在当前聊天内安全保存已可见的附件/在线简历内容，不能安全保存时才执行当前聊天里的求简历；其他 51job 账号可保留在线简历 PDF 保存流程。
 - job51_proactive_contact_recommended_candidates：招聘端/51job 人才望远镜主动联系流程；必须点击“人才望远镜”入口进入，不能直接打开推荐页 URL；进入后切到目标岗位，关闭推荐 AI 回复/广告/引导等遮挡层，读取推荐卡片，先跳过左上角显示“已看”的候选人，再按 BOSS 主动联系门槛筛选，dryRun=true 时只预览，非 dryRun 才点击“立即Hi聊”。
 
 如果用户要求“回复/聊天/沟通/发送消息”，推荐流程是：

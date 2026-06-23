@@ -261,6 +261,308 @@
                 "confirm": {k: v for k, v in confirm.items() if k != "token"},
             }
 
+    def job51_visible_resume_text_from_chat(self, terminal: BrowserTerminal, context: dict | None = None) -> dict:
+        page = terminal.current_page()
+        context = context if isinstance(context, dict) else {}
+        attachment_scan = self.job51_find_resume_attachment(terminal)
+        dom_scan = safe_eval(page, r"""() => {
+          const normalize = value => String(value || '').replace(/\r/g, '\n').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+          const compact = value => String(value || '').replace(/\s+/g, '');
+          const visible = el => {
+            if (!el || !el.isConnected) return false;
+            const box = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return box.width > 8 && box.height > 8
+              && box.bottom >= 0
+              && box.right >= 0
+              && box.top <= window.innerHeight
+              && box.left <= window.innerWidth
+              && style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && style.opacity !== '0';
+          };
+          const rows = Array.from(document.querySelectorAll([
+            '#IMMessageList div.message-item.others',
+            '[id*="IMMessageList"] div.message-item.others',
+            'div.message-item.others',
+            'div.im-message-item.others',
+            '.im-message-item.others',
+            '[class*="message-item" i]'
+          ].join(','))).filter(visible);
+          const candidates = [];
+          const resumeSelector = [
+            '.resume-element',
+            '.item-container-resume',
+            '.resume-card',
+            '[class*="resume" i]',
+            '[class*="jianli" i]',
+            '[class*="file-style" i]',
+            '[class*="attach" i]'
+          ].join(',');
+          const markerPattern = /(在线简历|附件简历|简历附件|求职意向|工作经历|教育经历|项目经历|个人优势|自我评价|期望职位|期望薪资|学历|专业|学校|公司|年龄|岁)/;
+          for (const row of rows) {
+            const text = normalize(row.innerText || row.textContent || '');
+            const dense = compact(text);
+            if (!text || !markerPattern.test(text)) continue;
+            const resumeNode = row.querySelector(resumeSelector);
+            let score = text.length;
+            if (resumeNode) score += 120;
+            if (/在线简历|附件简历|简历附件/.test(text)) score += 80;
+            if (/(求职意向|工作经历|教育经历|项目经历|个人优势)/.test(text)) score += 120;
+            if (/(人才管理|人才望远镜|职位管理|全部岗位|批量|主动联系)/.test(dense)) score -= 220;
+            candidates.push({
+              score,
+              text: text.slice(0, 9000),
+              className: String(row.className || '').slice(0, 160)
+            });
+          }
+          candidates.sort((a, b) => b.score - a.score);
+          return { candidates: candidates.slice(0, 8) };
+        }""") or {}
+        text_candidates: list[dict] = []
+        if isinstance(attachment_scan, dict) and attachment_scan.get("found"):
+            attachment_candidate = attachment_scan.get("candidate") if isinstance(attachment_scan.get("candidate"), dict) else {}
+            for key in ("rootText", "text"):
+                value = safe_text(str(attachment_candidate.get(key) or ""), 6000)
+                if value:
+                    text_candidates.append({
+                        "source": f"attachment_scan.{key}",
+                        "text": value,
+                        "score": len(value) + (120 if "在线简历" in value else 0),
+                        "attachment": attachment_candidate,
+                    })
+        for item in (dom_scan.get("candidates") if isinstance(dom_scan, dict) and isinstance(dom_scan.get("candidates"), list) else []):
+            if not isinstance(item, dict):
+                continue
+            value = safe_text(str(item.get("text") or ""), 9000)
+            if value:
+                text_candidates.append({
+                    "source": "visible_message_dom",
+                    "text": value,
+                    "score": int(item.get("score") or 0),
+                    "dom": {k: v for k, v in item.items() if k != "text"},
+                })
+        for message in (context.get("messages") if isinstance(context.get("messages"), list) else [])[-20:]:
+            if not isinstance(message, dict) or str(message.get("sender") or "") != "other":
+                continue
+            value = safe_text(str(message.get("rawText") or message.get("text") or ""), 3000)
+            if value and re.search(r"(在线简历|附件简历|简历附件|求职意向|工作经历|教育经历|项目经历|个人优势)", value):
+                text_candidates.append({
+                    "source": "chat_context_message",
+                    "text": value,
+                    "score": len(value) + 40,
+                })
+        seen: set[str] = set()
+        usable: list[dict] = []
+        marker_pattern = re.compile(r"(求职意向|工作经历|教育经历|项目经历|个人优势|自我评价|期望职位|期望薪资|学历|专业|学校|公司|年龄|岁|在线简历)")
+        for item in sorted(text_candidates, key=lambda row: int(row.get("score") or 0), reverse=True):
+            text = str(item.get("text") or "").strip()
+            normalized = re.sub(r"\s+", "", text)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            marker_count = len(set(marker_pattern.findall(text)))
+            enough_text = len(normalized) >= 120 or (len(normalized) >= 60 and marker_count >= 2)
+            if not enough_text:
+                continue
+            usable.append({**item, "text": text, "markerCount": marker_count, "length": len(normalized)})
+        best = usable[0] if usable else {}
+        return {
+            "found": bool(best),
+            "reason": "" if best else "visible_online_resume_text_not_enough",
+            "text": safe_text(str(best.get("text") or ""), 9000) if best else "",
+            "source": safe_text(str(best.get("source") or ""), 80) if best else "",
+            "best": {k: v for k, v in best.items() if k != "text"},
+            "attachmentScan": {k: v for k, v in attachment_scan.items() if k != "token"} if isinstance(attachment_scan, dict) else {},
+            "domScan": {
+                "candidateCount": len(dom_scan.get("candidates") or []) if isinstance(dom_scan, dict) else 0,
+                "candidates": [
+                    {**{k: v for k, v in item.items() if k != "text"}, "textPreview": safe_text(str(item.get("text") or ""), 240)}
+                    for item in ((dom_scan.get("candidates") if isinstance(dom_scan, dict) else []) or [])[:4]
+                    if isinstance(item, dict)
+                ],
+            },
+        }
+
+    def job51_save_resume_content_from_chat(
+        self,
+        context: dict,
+        candidate_name: str,
+        applied_position: str,
+        content: bytes | bytearray,
+        download_method: str,
+        original_filename: str = "",
+        source: str = "51job-visible-online-resume",
+        attachment: dict | None = None,
+        suitability_guard: dict | None = None,
+    ) -> dict:
+        if not isinstance(content, (bytes, bytearray)) or not content:
+            return {"ok": False, "blocked": True, "reason": "empty_visible_resume_content", "message": "51job 当前聊天简历内容为空，未保存。"}
+        target_path = make_job51_resume_target_path(
+            candidate_name=candidate_name,
+            applied_position=applied_position,
+            original_filename=original_filename,
+            fallback_text=f"{candidate_name}_{applied_position}.pdf",
+        )
+        file_hash = job51_resume_content_hash(content)
+        pre_hash_guard = job51_resume_hash_guard(file_hash, candidate_name, applied_position) if file_hash else {}
+        if pre_hash_guard.get("conflict"):
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "job51_visible_resume_hash_conflict_before_save",
+                "message": "51job 当前聊天简历内容与其他候选人已保存简历完全一致，已停止保存，避免串人入库。",
+                "candidateName": candidate_name,
+                "appliedPosition": applied_position,
+                "fileHash": file_hash,
+                "hashGuard": pre_hash_guard,
+                "attachment": attachment or {},
+            }
+        if pre_hash_guard.get("alreadyDownloaded"):
+            existing = (pre_hash_guard.get("sameCandidate") or [{}])[0]
+            memory_update = self.job51_mark_resume_downloaded(context, {
+                "candidateName": candidate_name,
+                "appliedPosition": applied_position,
+                "filePath": existing.get("filePath") or "",
+                "filename": existing.get("filename") or "",
+                "fileHash": file_hash,
+                "fileSize": existing.get("fileSize") or 0,
+                "downloadMethod": f"existing_hash_match_before_{download_method}",
+            })
+            return {
+                "ok": True,
+                "downloaded": True,
+                "skipped": True,
+                "skipReason": "already_downloaded_same_hash",
+                "alreadyDownloaded": True,
+                "platform": "51job",
+                "accountId": AGENT_ACCOUNT_ID,
+                "accountName": AGENT_ACCOUNT_NAME,
+                "candidateName": candidate_name,
+                "appliedPosition": applied_position,
+                "filePath": existing.get("filePath") or "",
+                "filename": existing.get("filename") or "",
+                "fileHash": file_hash,
+                "fileSize": existing.get("fileSize") or 0,
+                "folder": str(Path(str(existing.get("filePath") or "")).parent) if existing.get("filePath") else "",
+                "memory": memory_update,
+                "downloadMethod": f"existing_hash_match_before_{download_method}",
+                "attachment": attachment or {},
+                "message": f"51job 已存在相同哈希的该候选人简历，跳过重复保存：{safe_text(str(existing.get('filename') or candidate_name), 100)}",
+            }
+        target_path.write_bytes(bytes(content))
+        file_hash = file_hash or job51_resume_file_hash(target_path)
+        try:
+            file_size = target_path.stat().st_size
+        except Exception:
+            file_size = len(content)
+        hash_guard = job51_resume_hash_guard(file_hash, candidate_name, applied_position, ignore_path=target_path) if file_hash else {}
+        if hash_guard.get("conflict"):
+            try:
+                target_path.unlink()
+            except Exception:
+                pass
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "job51_visible_resume_hash_conflict_after_save",
+                "message": "51job 当前聊天简历内容与其他候选人已保存简历完全一致，已删除本次文件，避免串人入库。",
+                "candidateName": candidate_name,
+                "appliedPosition": applied_position,
+                "fileHash": file_hash,
+                "hashGuard": hash_guard,
+                "attachment": attachment or {},
+            }
+        result = {
+            "ok": True,
+            "downloaded": True,
+            "platform": "51job",
+            "accountId": AGENT_ACCOUNT_ID,
+            "accountName": AGENT_ACCOUNT_NAME,
+            "candidateName": candidate_name,
+            "appliedPosition": applied_position,
+            "filePath": str(target_path),
+            "filename": target_path.name,
+            "fileHash": file_hash,
+            "fileSize": file_size,
+            "folder": str(target_path.parent),
+            "source": source,
+            "attachment": attachment or {},
+            "onlineResume": attachment or {},
+            "downloadMethod": download_method,
+            "hashGuard": hash_guard,
+            "suitabilityGuard": suitability_guard or {},
+            "message": f"51job 当前聊天在线简历已安全保存：{target_path.name}",
+        }
+        result["memory"] = self.job51_mark_resume_downloaded(context, result)
+        return result
+
+    def job51_save_hexinhong_visible_online_resume_from_chat(
+        self,
+        terminal: BrowserTerminal,
+        context: dict,
+        candidate_name: str,
+        applied_position: str,
+        suitability_guard: dict | None = None,
+    ) -> dict:
+        page = terminal.current_page()
+        attachment_scan = self.job51_find_resume_attachment(terminal)
+        attachment_candidate = attachment_scan.get("candidate") if isinstance(attachment_scan.get("candidate"), dict) else {}
+        href = str(attachment_candidate.get("href") or "").strip()
+        if href and not href.startswith(("blob:", "javascript:", "#")):
+            href_download = self.job51_fetch_attachment_href(page, href, str(attachment_candidate.get("download") or attachment_candidate.get("text") or ""))
+            if href_download.get("ok") and href_download.get("bytes"):
+                return self.job51_save_resume_content_from_chat(
+                    context,
+                    candidate_name,
+                    applied_position,
+                    href_download.get("bytes"),
+                    "hexinhong_visible_attachment_href",
+                    original_filename=str(href_download.get("filename") or ""),
+                    source="51job-visible-attachment-href",
+                    attachment={"scan": {k: v for k, v in attachment_scan.items() if k != "token"}, "hrefDownload": {k: v for k, v in href_download.items() if k != "bytes"}},
+                    suitability_guard=suitability_guard,
+                )
+        visible_text = self.job51_visible_resume_text_from_chat(terminal, context)
+        if not visible_text.get("found"):
+            return {
+                "ok": False,
+                "blocked": False,
+                "reason": visible_text.get("reason") or "visible_online_resume_text_not_found",
+                "message": f"51job 和新红当前聊天没有足够可归档的在线简历文本：{safe_text(candidate_name, 60)}",
+                "candidateName": candidate_name,
+                "appliedPosition": applied_position,
+                "visibleResume": visible_text,
+                "attachmentScan": {k: v for k, v in attachment_scan.items() if k != "token"} if isinstance(attachment_scan, dict) else {},
+            }
+        pdf_bytes = job51_build_visible_resume_text_pdf(
+            candidate_name=candidate_name,
+            applied_position=applied_position,
+            resume_text=str(visible_text.get("text") or ""),
+            source_label=f"51job 当前聊天在线简历/{visible_text.get('source') or 'visible_dom'}",
+        )
+        if not pdf_bytes.startswith(b"%PDF-"):
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "visible_online_resume_pdf_build_failed",
+                "message": "51job 当前聊天在线简历 PDF 构建失败，已停止保存。",
+                "candidateName": candidate_name,
+                "appliedPosition": applied_position,
+                "visibleResume": visible_text,
+            }
+        return self.job51_save_resume_content_from_chat(
+            context,
+            candidate_name,
+            applied_position,
+            pdf_bytes,
+            "hexinhong_visible_online_resume_text_pdf",
+            original_filename=f"{candidate_name}_{applied_position}.pdf",
+            source="51job-visible-online-resume-text",
+            attachment=visible_text,
+            suitability_guard=suitability_guard,
+        )
+
     @timed_agent_stage("job51_download_resume_attachment", "51job保存在线简历PDF")
     def job51_download_resume_attachment(
         self,
@@ -349,15 +651,34 @@
             }
 
         if self.job51_is_hexinhong_runtime():
+            visible_resume_result = self.job51_save_hexinhong_visible_online_resume_from_chat(
+                terminal,
+                context,
+                candidate_name,
+                applied_position,
+                suitability_guard=suitability_guard,
+            )
+            if visible_resume_result.get("ok") and visible_resume_result.get("downloaded"):
+                return visible_resume_result
+            if visible_resume_result.get("blocked"):
+                return {
+                    **visible_resume_result,
+                    "candidate": applicant,
+                    "suitabilityGuard": suitability_guard,
+                }
             return {
                 "ok": False,
                 "blocked": True,
                 "reason": "online_resume_detail_open_disabled_to_prevent_talent_management",
-                "message": f"51job Hexinhong online resume detail opening is disabled to avoid talent management tabs: {safe_text(candidate_name, 60)}",
+                "message": (
+                    "51job 和新红已禁止点击在线简历详情以避免打开人才管理页；"
+                    f"当前聊天未能安全保存可见在线简历，将回退求简历：{safe_text(candidate_name, 60)}"
+                ),
                 "candidate": applicant,
                 "candidateName": candidate_name,
                 "appliedPosition": applied_position,
                 "suitabilityGuard": suitability_guard,
+                "visibleResumeResult": visible_resume_result,
             }
 
         if self.job51_is_online_resume_detail_page(page):

@@ -915,6 +915,75 @@ def job51_resume_file_hash(file_path: Path | str) -> str:
         return ""
 
 
+def job51_pdf_utf16_hex(text: str) -> str:
+    data = ("\ufeff" + str(text or "")).encode("utf-16-be", errors="ignore")
+    return data.hex().upper()
+
+
+def job51_wrap_visible_resume_pdf_lines(text: str, line_chars: int = 42, max_lines: int = 240) -> list[str]:
+    normalized = str(text or "").replace("\r", "\n")
+    normalized = re.sub(r"[ \t]+", " ", normalized)
+    lines: list[str] = []
+    for raw_line in normalized.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            if lines and lines[-1]:
+                lines.append("")
+            continue
+        while len(line) > line_chars:
+            lines.append(line[:line_chars])
+            line = line[line_chars:]
+            if len(lines) >= max_lines:
+                return lines[:max_lines]
+        lines.append(line)
+        if len(lines) >= max_lines:
+            return lines[:max_lines]
+    return lines[:max_lines]
+
+
+def job51_build_visible_resume_text_pdf(
+    candidate_name: str,
+    applied_position: str,
+    resume_text: str,
+    source_label: str = "51job 当前聊天在线简历",
+) -> bytes:
+    header_lines = [
+        "51job 在线简历文本归档",
+        f"候选人：{safe_text(str(candidate_name or '未知候选人'), 80)}",
+        f"应聘岗位：{safe_text(str(applied_position or '未知岗位'), 120)}",
+        f"来源：{safe_text(str(source_label or '51job 当前聊天在线简历'), 120)}",
+        "",
+    ]
+    body_lines = job51_wrap_visible_resume_pdf_lines(resume_text)
+    lines = (header_lines + body_lines)[:260]
+    content_parts = ["BT", "/F1 10 Tf", "50 800 Td", "14 TL"]
+    for line in lines:
+        content_parts.append(f"<{job51_pdf_utf16_hex(line)}> Tj")
+        content_parts.append("T*")
+    content_parts.append("ET")
+    content = ("\n".join(content_parts) + "\n").encode("ascii")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /ProcSet [/PDF /Text] /Font << /F1 4 0 R >> >> /Contents 7 0 R >>",
+        b"<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H /DescendantFonts [5 0 R] >>",
+        b"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 2 >> /FontDescriptor 6 0 R >>",
+        b"<< /Type /FontDescriptor /FontName /STSong-Light /Flags 4 /FontBBox [0 -200 1000 900] /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 700 /StemV 80 >>",
+        b"<< /Length " + str(len(content)).encode("ascii") + b" >>\nstream\n" + content + b"endstream",
+    ]
+    pdf = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"
+    offsets = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(len(pdf))
+        pdf += f"{index} 0 obj\n".encode("ascii") + obj + b"\nendobj\n"
+    xref_pos = len(pdf)
+    pdf += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode("ascii")
+    for offset in offsets[1:]:
+        pdf += f"{offset:010d} 00000 n \n".encode("ascii")
+    pdf += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n".encode("ascii")
+    return pdf
+
+
 def job51_resume_path_matches_candidate(file_path: Path | str, candidate_name: str, applied_position: str) -> bool:
     name_part = safe_resume_file_part(candidate_name, "")
     position_part = safe_resume_file_part(applied_position, "")
