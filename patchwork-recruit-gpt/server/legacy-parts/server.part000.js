@@ -1785,6 +1785,12 @@ function normalizeJobTypeBySignal(text = "") {
   if (/运营B|B端社交媒体运营|社交媒体运营|B端.*运营/i.test(text)) {
     return "运营B";
   }
+  if (/外部财务产品顾问|业财智能化顾问|AI财务场景顾问|财务场景顾问|财务产品顾问|财务数字化顾问|CFO顾问/i.test(text)) {
+    return "外部财务产品顾问";
+  }
+  if (/AI智能体解决方案负责人|智能体解决方案负责人|AI\s*Solution\s*Architect|Solution\s*Architect|AI\s*FDE|\bFDE\b|AI\s*Workflow\s*Engineer|Workflow\s*Engineer|Agent解决方案/i.test(text)) {
+    return "AI智能体解决方案负责人";
+  }
   if (/应用技术经理|应用技术管培|应用技术|技术服务|技术支持|工业涂料|涂料领域|涂料应用|涂料研发|材料应用|流变助剂/i.test(text)) {
     return "应用技术经理（工业涂料领域）";
   }
@@ -1857,7 +1863,7 @@ function isAiScoringJobType(jobType, context = "") {
   return normalizeJobType(jobType || DEFAULT_JOB_TYPE, context) === AI_SCORING_JOB_TYPE;
 }
 
-const NO_SCORE_DIRECT_IMPORT_JOB_TYPES = new Set(["运营A", "运营B"]);
+const NO_SCORE_DIRECT_IMPORT_JOB_TYPES = new Set(["运营A", "运营B", "外部财务产品顾问", "AI智能体解决方案负责人"]);
 
 function isNoScoreDirectImportJobType(jobType, context = "") {
   return NO_SCORE_DIRECT_IMPORT_JOB_TYPES.has(normalizeJobType(jobType || "", context));

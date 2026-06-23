@@ -77,6 +77,49 @@
         "简历入库岗位归类为运营B。",
         "不进行简历评分。"
       ]
+    },
+    "外部财务产品顾问": {
+      "category": "finance_ai_direct_resume",
+      "template": "该岗位不发送筛选问题，先发送“你好，方便发一份简历过来吗”，再点击求简历。",
+      "directResume": true,
+      "resumeJobType": "外部财务产品顾问",
+      "resumeRequestPrompt": "你好，方便发一份简历过来吗",
+      "rolePrompt": "外部财务产品顾问 / 业财智能化顾问 / AI财务场景顾问按直求简历流程处理：不发送筛选问题；若未收到简历且未求过简历，先发送“你好，方便发一份简历过来吗”，再执行求简历；若候选人已发送简历则直接接收/下载，入库岗位为外部财务产品顾问。",
+      "talkingPoints": [
+        "财务产品顾问",
+        "业财智能化",
+        "AI财务场景",
+        "直接获取简历"
+      ],
+      "screeningQuestions": [],
+      "nextSteps": [
+        "未收到简历且未求过简历时，先发送“你好，方便发一份简历过来吗”，再点击求简历。",
+        "已收到或已求过简历时不重复发送话术、不重复求简历。",
+        "简历入库岗位归类为外部财务产品顾问。",
+        "不进行简历评分。"
+      ]
+    },
+    "AI智能体解决方案负责人": {
+      "category": "finance_ai_direct_resume",
+      "template": "该岗位不发送筛选问题，先发送“你好，可以看看简历吗”，再点击求简历。",
+      "directResume": true,
+      "resumeJobType": "AI智能体解决方案负责人",
+      "resumeRequestPrompt": "你好，可以看看简历吗",
+      "rolePrompt": "AI智能体解决方案负责人 / AI Solution Architect / AI FDE / AI Workflow Engineer按直求简历流程处理：不发送筛选问题；若未收到简历且未求过简历，先发送“你好，可以看看简历吗”，再执行求简历；若候选人已发送简历则直接接收/下载，入库岗位为AI智能体解决方案负责人。",
+      "talkingPoints": [
+        "AI智能体解决方案",
+        "AI Solution Architect",
+        "FDE",
+        "Workflow Engineer",
+        "直接获取简历"
+      ],
+      "screeningQuestions": [],
+      "nextSteps": [
+        "未收到简历且未求过简历时，先发送“你好，可以看看简历吗”，再点击求简历。",
+        "已收到或已求过简历时不重复发送话术、不重复求简历。",
+        "简历入库岗位归类为AI智能体解决方案负责人。",
+        "不进行简历评分。"
+      ]
     }
   },
   "rules": [
@@ -2535,6 +2578,47 @@
             "answer": "具体工作内容目前还不清楚"
           }
         ]
+      },
+      "外部财务产品顾问": {
+        "matchPositions": [
+          "外部财务产品顾问",
+          "业财智能化顾问",
+          "AI财务场景顾问",
+          "财务场景顾问",
+          "财务产品顾问",
+          "财务数字化顾问",
+          "CFO顾问"
+        ],
+        "inheritsRoot": true,
+        "description": "外部财务产品顾问 / 业财智能化顾问 / AI财务场景顾问直求简历岗位。六个账号、BOSS/51job/智联均不发送筛选问题；未收到简历且未求过简历时先发送“你好，方便发一份简历过来吗”，再点击求简历；已收到或已求过则不重复，入库岗位为外部财务产品顾问。",
+        "directResume": true,
+        "resumeJobType": "外部财务产品顾问",
+        "resumeRequestPrompt": "你好，方便发一份简历过来吗",
+        "screening": {},
+        "topics": {},
+        "faq": []
+      },
+      "AI智能体解决方案负责人": {
+        "matchPositions": [
+          "AI智能体解决方案负责人",
+          "智能体解决方案负责人",
+          "AI Solution Architect",
+          "Solution Architect",
+          "AI FDE",
+          "FDE",
+          "AI Workflow Engineer",
+          "Workflow Engineer",
+          "AI智能体方案",
+          "Agent解决方案"
+        ],
+        "inheritsRoot": true,
+        "description": "AI智能体解决方案负责人 / AI Solution Architect / AI FDE / AI Workflow Engineer直求简历岗位。六个账号、BOSS/51job/智联均不发送筛选问题；未收到简历且未求过简历时先发送“你好，可以看看简历吗”，再点击求简历；已收到或已求过则不重复，入库岗位为AI智能体解决方案负责人。",
+        "directResume": true,
+        "resumeJobType": "AI智能体解决方案负责人",
+        "resumeRequestPrompt": "你好，可以看看简历吗",
+        "screening": {},
+        "topics": {},
+        "faq": []
       },
       "运营A": {
         "matchPositions": [

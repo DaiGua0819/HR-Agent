@@ -348,6 +348,18 @@
                 "message": f"51job 已记忆该候选人简历下载记录，跳过重复下载：{safe_text(str(remembered.get('filename') or candidate_name), 100)}",
             }
 
+        if self.job51_is_hexinhong_runtime():
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "online_resume_detail_open_disabled_to_prevent_talent_management",
+                "message": f"51job Hexinhong online resume detail opening is disabled to avoid talent management tabs: {safe_text(candidate_name, 60)}",
+                "candidate": applicant,
+                "candidateName": candidate_name,
+                "appliedPosition": applied_position,
+                "suitabilityGuard": suitability_guard,
+            }
+
         if self.job51_is_online_resume_detail_page(page):
             online_resume = {
                 "found": True,
@@ -653,6 +665,7 @@
                 "downloaded": False,
             }
         fallback_to_request_reasons = {
+            "online_resume_detail_open_disabled_to_prevent_talent_management",
             "online_resume_detail_open_failed",
             "online_resume_pdf_save_failed",
             "online_resume_pdf_download_failed",

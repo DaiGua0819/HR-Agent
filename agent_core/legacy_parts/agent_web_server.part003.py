@@ -1,14 +1,18 @@
                 if terminal.humanize:
                     terminal.pause_like_person("post_action")
                 page.wait_for_timeout(random.randint(900, 1300))
-                return {"found": True, "clicked": True, "state": state}
+                close_result = self.job51_close_stale_non_chat_pages(terminal, origin_page=page, reason="after_prepare_unread_filter_dom_click")
+                return {"found": True, "clicked": True, "state": state, "click": locals().get("click_result") if isinstance(locals().get("click_result"), dict) else {}, "closeResult": close_result}
             return {"found": True, "clicked": False, "state": state}
         except Exception as error:
             return {"found": False, "reason": safe_text(str(error), 160)}
 
     def job51_prepare_all_messages_filter(self, terminal: BrowserTerminal) -> dict:
         page = terminal.current_page()
-        self.job51_dismiss_interruptions(terminal, reason="before_all_messages_filter")
+        if not self.job51_is_chat_page(page):
+            return {"found": False, "reason": "not_chat_page", "url": safe_text(str(getattr(page, "url", "") or ""), 180)}
+        self.job51_install_chat_navigation_guard(page, reason="before_all_messages_filter")
+        self.job51_dismiss_interruptions(terminal, reason="before_all_messages_filter", chat_only=True)
         unread = page.locator("label.el-checkbox.btn.unread-checkbox").first
         try:
             if not unread.count():
@@ -23,11 +27,25 @@
                 if terminal.humanize:
                     terminal.pause_like_person("pre_action")
                     highlight_target(unread)
-                humanized_locator_click(terminal, unread, force=True)
+                click_result = unread.evaluate("""el => {
+                  const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+                  const href = String(el.getAttribute('href') || el.closest('a')?.getAttribute('href') || '');
+                  const guardText = normalize([el.innerText, el.textContent, href, el.className, el.id].filter(Boolean).join(' '));
+                  if (/Revision\\/talent\\/management|Revision\\/talent\\/search-recommend|人才管理|人才望远镜/.test(guardText)) {
+                    return { ok: false, reason: 'blocked_talent_navigation_target', text: guardText.slice(0, 160), href };
+                  }
+                  el.scrollIntoView({ block: 'center', inline: 'center' });
+                  if (typeof el.click === 'function') el.click();
+                  else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                  return { ok: true, text: normalize(el.innerText || el.textContent || '').slice(0, 80), href };
+                }""")
+                if isinstance(click_result, dict) and not click_result.get("ok"):
+                    return {"found": False, "reason": str(click_result.get("reason") or "all_messages_filter_dom_click_blocked"), "state": state, "click": click_result}
                 if terminal.humanize:
                     terminal.pause_like_person("post_action")
                 page.wait_for_timeout(random.randint(900, 1300))
-                return {"found": True, "clicked": True, "state": state}
+                close_result = self.job51_close_stale_non_chat_pages(terminal, origin_page=page, reason="after_prepare_all_messages_filter_dom_click")
+                return {"found": True, "clicked": True, "state": state, "click": locals().get("click_result") if isinstance(locals().get("click_result"), dict) else {}, "closeResult": close_result}
             return {"found": True, "clicked": False, "state": state}
         except Exception as error:
             return {"found": False, "reason": safe_text(str(error), 160)}
@@ -329,20 +347,22 @@
             try:
                 amount = int(result.get("amount") or (direction * random.randint(320, 560)))
                 if terminal.humanize:
-                    humanized_scroll(terminal, amount, box=box, corrective=random.random() < 0.72)
-                else:
-                    page.evaluate(
-                        r"""({ token, amount }) => {
-                          const container = document.querySelector(`[data-codex-job51-scroll="${token}"]`);
-                          if (!container) return;
-                          const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
-                          const next = Math.max(0, Math.min(maxTop, (container.scrollTop || 0) + amount));
-                          if (container.scrollTo) container.scrollTo({ top: next, behavior: 'smooth' });
-                          else container.scrollTop = next;
-                          container.dispatchEvent(new Event('scroll', { bubbles: true }));
-                        }""",
-                        {"token": token, "amount": amount},
-                    )
+                    terminal.pause_like_person("pre_action")
+                page.evaluate(
+                    r"""({ token, amount }) => {
+                      const container = document.querySelector(`[data-codex-job51-scroll="${token}"]`);
+                      if (!container) return;
+                      const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+                      const next = Math.max(0, Math.min(maxTop, (container.scrollTop || 0) + amount));
+                      if (container.scrollTo) container.scrollTo({ top: next, behavior: 'auto' });
+                      else container.scrollTop = next;
+                      container.dispatchEvent(new Event('scroll', { bubbles: true }));
+                      container.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: amount }));
+                    }""",
+                    {"token": token, "amount": amount},
+                )
+                if terminal.humanize:
+                    terminal.pause_like_person("post_action")
                 page.wait_for_timeout(random.randint(220, 420))
                 after = page.evaluate(
                     r"""({ token, beforeSignature, plannedAfter }) => {
@@ -393,7 +413,8 @@
                         "afterSignature": after.get("afterSignature"),
                         "signatureChanged": bool(after.get("signatureChanged")),
                         "scrolled": abs(actual_after - before) > 4 or bool(after.get("signatureChanged")),
-                        "mode": "human_wheel" if terminal.humanize else "direct_scroll",
+                        "mode": "dom_container_scroll",
+                        "domOnly": True,
                     })
                 if not result.get("scrolled"):
                     fallback = page.evaluate(
@@ -444,33 +465,12 @@
             except Exception as error:
                 result["scrollError"] = safe_text(str(error), 160)
         elif box:
-            try:
-                before_signature = str(result.get("beforeSignature") or "")
-                humanized_scroll(terminal, direction * random.randint(320, 560), box=box, corrective=random.random() < 0.6)
-                page.wait_for_timeout(random.randint(220, 420))
-                after_signature = safe_eval(page, r"""() => {
-                  const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
-                  const visible = el => {
-                    const box = el.getBoundingClientRect();
-                    const style = window.getComputedStyle(el);
-                    return box.width > 80 && box.height > 35 && box.bottom > 0 && box.right > 0
-                      && box.top < window.innerHeight && box.left < window.innerWidth
-                      && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') > 0.02;
-                  };
-                  return Array.from(document.querySelectorAll('#conversation-list .list-item'))
-                    .filter(visible)
-                    .slice(0, 14)
-                    .map(row => normalize(row.innerText || row.textContent || '').slice(0, 90))
-                    .join('|');
-                }""")
-                result.update({
-                    "afterSignature": after_signature,
-                    "signatureChanged": bool(before_signature and after_signature and before_signature != after_signature),
-                    "scrolled": bool(before_signature and after_signature and before_signature != after_signature),
-                    "mode": "wheel_without_container",
-                })
-            except Exception as error:
-                result["scrollError"] = safe_text(str(error), 160)
+            result.update({
+                "scrolled": False,
+                "mode": "dom_only_no_container",
+                "reason": result.get("reason") or "no_scroll_container",
+                "domOnly": True,
+            })
         try:
             page.locator("[data-codex-job51-scroll]").evaluate_all("els => els.forEach(el => { el.removeAttribute('data-codex-job51-scroll'); el.removeAttribute('data-codex-before-scroll-top'); })")
         except Exception:
@@ -774,7 +774,10 @@
         if not text:
             return {"blocked": True, "message": "51job 待发送内容为空"}
         page = terminal.current_page()
-        self.job51_dismiss_interruptions(terminal, reason="before_send_message")
+        if not self.job51_is_chat_page(page):
+            return {"blocked": True, "message": "51job 当前不是聊天页，已停止避免误操作。", "url": safe_text(str(getattr(page, "url", "") or ""), 180)}
+        self.job51_install_chat_navigation_guard(page, reason="before_send_message")
+        self.job51_dismiss_interruptions(terminal, reason="before_send_message", chat_only=True)
         input_locator = page.locator("#drop-area.input-textarea_self, #drop-area, [contenteditable='true']").first
         try:
             if not input_locator.count():
@@ -795,7 +798,7 @@
                 "message": f"51job 填写聊天输入框失败，已停止避免填错位置：{safe_text(str(error), 160)}",
             }
         page.wait_for_timeout(random.randint(260, 520))
-        self.job51_dismiss_interruptions(terminal, reason="after_fill_before_send")
+        self.job51_dismiss_interruptions(terminal, reason="after_fill_before_send", chat_only=True)
         send_button = page.locator("button.el-button.new-send-button.el-button--primary, button.new-send-button").first
         if not send_button.count():
             send_package = self.send_current_chat_reply_with_verification(terminal, text, max_attempts=CHAT_SEND_MAX_ATTEMPTS)
@@ -810,14 +813,37 @@
         if terminal.humanize:
             terminal.pause_like_person("pre_action")
             highlight_target(send_button)
-        send_button.click(timeout=8000, force=True)
+        try:
+            send_button.click(timeout=8000, force=True)
+        except Exception as error:
+            send_package = self.send_current_chat_reply_with_verification(terminal, text, max_attempts=CHAT_SEND_MAX_ATTEMPTS)
+            verified = bool((send_package.get("verification") or {}).get("verified"))
+            if verified:
+                return {
+                    "message": "51job 发送按钮点击超时，已通过通用发送兜底完成",
+                    "inputLabel": safe_text(label, 80),
+                    "send": send_package.get("send", {}),
+                    "verification": send_package.get("verification", {}),
+                    "attempts": send_package.get("attempts", []),
+                    "sendButtonError": safe_text(str(error), 180),
+                    "blocked": False,
+                }
+            clear_chat_editor(terminal)
+            return {
+                "blocked": True,
+                "message": f"51job 发送按钮点击超时，通用发送兜底也未校验成功，已清空输入框并跳过当前候选人：{safe_text(str(error), 160)}",
+                "inputLabel": safe_text(label, 80),
+                "send": send_package.get("send", {}),
+                "verification": send_package.get("verification", {}),
+                "attempts": send_package.get("attempts", []),
+            }
         if terminal.humanize:
             terminal.pause_like_person("post_action")
         page.wait_for_timeout(random.randint(720, 1120))
         current_input = safe_text(str(safe_eval(page, "() => String((document.querySelector('#drop-area') || {}).innerText || '')") or ""), 240)
         if normalize_reply_fingerprint(text) in normalize_reply_fingerprint(current_input):
             try:
-                self.job51_dismiss_interruptions(terminal, reason="send_retry_blocked_by_overlay")
+                self.job51_dismiss_interruptions(terminal, reason="send_retry_blocked_by_overlay", chat_only=True)
             except Exception:
                 pass
             try:
@@ -840,7 +866,10 @@
         if not phrase:
             return {"blocked": True, "message": "51job 待发送常用语为空"}
         page = terminal.current_page()
-        self.job51_dismiss_interruptions(terminal, reason="before_send_common_word")
+        if not self.job51_is_chat_page(page):
+            return {"blocked": True, "message": "51job 当前不是聊天页，未发送常用语，避免误操作。", "url": safe_text(str(getattr(page, "url", "") or ""), 180)}
+        self.job51_install_chat_navigation_guard(page, reason="before_send_common_word")
+        self.job51_dismiss_interruptions(terminal, reason="before_send_common_word", chat_only=True)
         if not self.job51_wait_chat_ready(terminal, timeout_ms=3500):
             return {
                 "blocked": True,
@@ -957,7 +986,38 @@
             if terminal.humanize:
                 terminal.pause_like_person("pre_action")
                 highlight_target(send_button)
-            send_button.click(timeout=8000, force=True)
+            try:
+                send_button.click(timeout=8000, force=True)
+            except Exception as error:
+                send_package = self.send_current_chat_reply_with_verification(terminal, phrase, max_attempts=CHAT_SEND_MAX_ATTEMPTS)
+                verification = send_package.get("verification") if isinstance(send_package.get("verification"), dict) else {}
+                if verification.get("verified"):
+                    return {
+                        "message": "51job 常用语发送按钮点击超时，已通过通用发送兜底完成",
+                        "phrase": phrase,
+                        "send": send_package.get("send", {}),
+                        "verification": verification,
+                        "attempts": send_package.get("attempts", []),
+                        "state": {
+                            "button": {k: v for k, v in button.items() if k != "locator"},
+                            "item": {k: v for k, v in item.items() if k != "locator"},
+                        },
+                        "sendButtonError": safe_text(str(error), 180),
+                        "blocked": False,
+                    }
+                clear_chat_editor(terminal)
+                return {
+                    "blocked": True,
+                    "message": f"51job 常用语发送按钮点击超时，通用发送兜底也未校验成功，已清空输入框并跳过当前候选人：{safe_text(str(error), 160)}",
+                    "phrase": phrase,
+                    "send": send_package.get("send", {}),
+                    "verification": verification,
+                    "attempts": send_package.get("attempts", []),
+                    "state": {
+                        "button": {k: v for k, v in button.items() if k != "locator"},
+                        "item": {k: v for k, v in item.items() if k != "locator"},
+                    },
+                }
             if terminal.humanize:
                 terminal.pause_like_person("post_action")
             page.wait_for_timeout(random.randint(800, 1300))
@@ -984,8 +1044,182 @@
             "blocked": not bool(verification.get("verified")),
         }
 
+    def job51_request_resume_from_current_conversation_safe(self, terminal: BrowserTerminal, page=None) -> dict:
+        page = page or terminal.current_page()
+        if not self.job51_is_chat_page(page):
+            return {
+                "blocked": True,
+                "message": "51job 当前不是聊天页，未点击求简历，避免误操作。",
+                "url": safe_text(str(getattr(page, "url", "") or ""), 180),
+            }
+        self.job51_install_chat_navigation_guard(page, reason="before_request_resume")
+        self.job51_dismiss_interruptions(terminal, reason="before_request_resume", chat_only=True)
+        candidate = self.job51_read_chat_context(terminal).get("applicant", {})
+        candidate_label = str(candidate.get("label") or candidate.get("name") or "")
+        token = f"codex_job51_request_resume_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+        state = safe_eval(page, """(args) => {
+          const token = args.token;
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const text = normalize(document.body ? document.body.innerText : '');
+          const visible = el => {
+            if (!el || !el.isConnected) return false;
+            const box = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return box.width > 8 && box.height > 8
+              && style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && style.opacity !== '0';
+          };
+          const targetText = node => {
+            const parts = [];
+            let current = node;
+            for (let depth = 0; current && depth < 6; depth += 1) {
+              if (current.nodeType !== 1) {
+                current = current.parentElement;
+                continue;
+              }
+              parts.push(
+                current.id,
+                current.className,
+                current.getAttribute && current.getAttribute('href'),
+                current.getAttribute && current.getAttribute('data-href'),
+                current.getAttribute && current.getAttribute('data-url'),
+                current.getAttribute && current.getAttribute('onclick'),
+                current.getAttribute && current.getAttribute('aria-label'),
+                current.getAttribute && current.getAttribute('title'),
+                current.innerText,
+                current.textContent
+              );
+              current = current.parentElement;
+            }
+            return normalize(parts.filter(Boolean).join(' '));
+          };
+          const buttons = [];
+          let selected = null;
+          const nodes = Array.from(document.querySelectorAll('div.operate-item, button, [role="button"]'));
+          for (const el of nodes) {
+            if (!visible(el)) continue;
+            const label = normalize(el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '');
+            if (!label) continue;
+            const haystack = targetText(el);
+            const disabled = !!el.disabled || el.classList.contains('is-disabled') || /is-disabled|disabled/i.test(String(el.className || ''));
+            const forbidden = !!(
+              el.closest('#conversation-list,.conversation-list,[class*="conversation-list" i],#IMMessageList,[id*="IMMessageList"],div.message-item,div.im-message-item,.im-message-item,[class*="message-item" i],nav,header,.menu,.sidebar,.chat-user-operate')
+              || /Revision\\/talent\\/(management|search-recommend)|人才管理|人才望远镜|在线简历|保存|下载|预览/.test(haystack)
+            );
+            const requestCandidate = /简历/.test(label)
+              && /(求|要|索|获取|申请|请求)/.test(label)
+              && !/在线简历|下载|保存|预览/.test(label);
+            const item = {
+              index: buttons.length,
+              text: label,
+              disabled,
+              forbidden,
+              requestCandidate,
+              id: String(el.id || ''),
+              className: String(el.className || '').slice(0, 120)
+            };
+            buttons.push(item);
+            if (!selected && !disabled && !forbidden && requestCandidate) {
+              selected = { ...item };
+              el.setAttribute('data-codex-job51-request-resume', token);
+            }
+          }
+          return { text, buttons, selected, token };
+        }""", {"token": token}) or {}
+        body_text = str(state.get("text") or "") if isinstance(state, dict) else ""
+        if any(marker in body_text for marker in ("已求简历", "已索要简历", "简历已发送", "已收到简历")):
+            return {
+                "message": f"51job 检测到已求过或已收到简历，跳过重复点击：{safe_text(candidate_label, 80)}",
+                "skipped": True,
+                "skipReason": "already_requested",
+                "candidate": candidate,
+            }
+        buttons = state.get("buttons") if isinstance(state, dict) and isinstance(state.get("buttons"), list) else []
+        selected = state.get("selected") if isinstance(state, dict) and isinstance(state.get("selected"), dict) else {}
+        target_text = str(selected.get("text") or "")
+        if not selected:
+            return {
+                "blocked": True,
+                "message": f"51job 当前会话未找到可用的求简历按钮：{safe_text(candidate_label, 80)}",
+                "candidate": candidate,
+                "buttons": buttons[:12],
+            }
+        locator = page.locator(f"[data-codex-job51-request-resume='{token}']").first
+        if not locator.count():
+            return {
+                "blocked": True,
+                "message": f"51job 求简历目标按钮已失效，未点击，避免误操作：{safe_text(candidate_label, 80)}",
+                "candidate": candidate,
+                "buttons": buttons[:12],
+                "selected": selected,
+            }
+        if terminal.humanize:
+            terminal.pause_like_person("pre_action")
+            highlight_target(locator)
+        click_result = locator.evaluate("""el => {
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const haystack = normalize([
+            el.id,
+            el.className,
+            el.getAttribute && el.getAttribute('href'),
+            el.getAttribute && el.getAttribute('data-href'),
+            el.getAttribute && el.getAttribute('data-url'),
+            el.getAttribute && el.getAttribute('onclick'),
+            el.getAttribute && el.getAttribute('aria-label'),
+            el.getAttribute && el.getAttribute('title'),
+            el.innerText,
+            el.textContent
+          ].filter(Boolean).join(' '));
+          if (/Revision\\/talent\\/(management|search-recommend)|人才管理|人才望远镜|在线简历|保存|下载|预览/.test(haystack)) {
+            return { ok: false, reason: 'blocked_request_resume_target', text: haystack.slice(0, 160) };
+          }
+          el.scrollIntoView({ block: 'center', inline: 'center' });
+          if (typeof el.click === 'function') el.click();
+          else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+          return { ok: true, text: haystack.slice(0, 160) };
+        }""")
+        if isinstance(click_result, dict) and not click_result.get("ok"):
+            return {
+                "blocked": True,
+                "message": f"51job 求简历目标被安全规则拦截，未点击：{safe_text(candidate_label, 80)}",
+                "candidate": candidate,
+                "clickedText": safe_text(target_text, 80),
+                "click": click_result,
+                "buttons": buttons[:12],
+            }
+        if terminal.humanize:
+            terminal.pause_like_person("post_action")
+        page.wait_for_timeout(random.randint(900, 1400))
+        confirm = page.locator("button").filter(has_text=re.compile("确定|确认|发送|索要|求简历")).first
+        confirmed = False
+        try:
+            if confirm.count():
+                if terminal.humanize:
+                    terminal.pause_like_person("pre_action")
+                    highlight_target(confirm)
+                humanized_locator_click(terminal, confirm, force=True)
+                if terminal.humanize:
+                    terminal.pause_like_person("post_action")
+                page.wait_for_timeout(random.randint(900, 1400))
+                confirmed = True
+        except Exception:
+            confirmed = False
+        message = f"51job 已点击求简历：{safe_text(candidate_label, 80)}"
+        if confirmed:
+            message += "，并处理了确认按钮"
+        return {
+            "message": message,
+            "candidate": candidate,
+            "clickedText": safe_text(target_text, 80),
+            "confirmed": confirmed,
+            "click": click_result if isinstance(click_result, dict) else {},
+            "selected": selected,
+        }
+
     def job51_request_resume_from_current_conversation(self, terminal: BrowserTerminal) -> dict:
         page = terminal.current_page()
+        return self.job51_request_resume_from_current_conversation_safe(terminal, page)
         candidate = self.job51_read_chat_context(terminal).get("applicant", {})
         candidate_label = str(candidate.get("label") or candidate.get("name") or "")
         state = safe_eval(page, """() => {
@@ -1095,6 +1329,14 @@
           ].filter(Boolean).join(' '));
           const candidates = [];
           const seen = new Set();
+          const messageAreaSelector = [
+            '#IMMessageList',
+            '[id*="IMMessageList"]',
+            'div.message-item',
+            'div.im-message-item',
+            '.im-message-item',
+            '[class*="message-item" i]'
+          ].join(',');
           const selector = [
             'a',
             'button',
@@ -1110,14 +1352,16 @@
           ].join(',');
           for (const el of Array.from(document.querySelectorAll(selector))) {
             if (!visible(el)) continue;
-            if (el.closest('#conversation-list,.conversation-list,[class*="conversation-list" i],nav,header,.menu,.sidebar')) continue;
+            if (el.closest('#conversation-list,.conversation-list,[class*="conversation-list" i],nav,header,.menu,.sidebar,.chat-user-operate')) continue;
             const clickable = el.closest('a,button,[role="button"],[onclick]') || el;
             if (!visible(clickable)) continue;
+            if (clickable.id === 'sensor_Bchat_newzxjl' || clickable.closest('.chat-user-operate')) continue;
             const key = clickable.tagName + ':' + rect(clickable).x + ':' + rect(clickable).y + ':' + normalize(clickable.outerHTML || '').slice(0, 80);
             if (seen.has(key)) continue;
             seen.add(key);
 
-            const messageRoot = el.closest('div.message-item,div.im-message-item,.im-message-item,[class*="message-item" i]');
+            const messageRoot = el.closest(messageAreaSelector) || clickable.closest(messageAreaSelector);
+            if (!messageRoot) continue;
             const rootText = textOf(messageRoot || el);
             const ownText = textOf(el);
             const clickableText = textOf(clickable);
@@ -1125,6 +1369,7 @@
             const download = clickable.getAttribute('download') || el.getAttribute('download') || '';
             const className = String(clickable.className || el.className || '');
             const haystack = normalize([ownText, clickableText, rootText, attrText(el), attrText(clickable), href, download].join(' '));
+            if (/Revision\/talent\/management|Revision\/talent\/search-recommend|人才管理|人才望远镜/.test(haystack)) continue;
             const hasResumeWord = /(附件简历|简历附件|在线简历|简历|resume|cv|附件|文件)/i.test(haystack);
             const hasFileExt = /\\.(pdf|docx?|PDF|DOCX?)(\\?|#|$|\\s)/.test(haystack);
             const hasDownloadWord = /(下载|download|导出|保存)/i.test(haystack);
@@ -1939,6 +2184,12 @@
         return info if isinstance(info, dict) else {"found": False, "reason": "online_resume_scan_failed"}
 
     def job51_dom_click_online_resume_entry(self, page, token: str) -> dict:
+        if self.job51_is_hexinhong_runtime():
+            return {
+                "ok": False,
+                "reason": "online_resume_click_disabled_to_prevent_talent_management",
+                "message": "51job Hexinhong online resume click is disabled to prevent talent management tabs.",
+            }
         token = str(token or "").strip()
         if not token:
             return {"ok": False, "reason": "online_resume_dom_click_missing_token"}
@@ -2001,16 +2252,25 @@
         return result if isinstance(result, dict) else {"ok": False, "reason": "online_resume_dom_click_failed"}
 
     def job51_open_online_resume_detail(self, terminal: BrowserTerminal, entry: dict) -> dict:
+        if self.job51_is_hexinhong_runtime():
+            return {
+                "ok": False,
+                "reason": "online_resume_detail_open_disabled_to_prevent_talent_management",
+                "message": "51job Hexinhong online resume detail opening is disabled to prevent talent management tabs.",
+                "entry": {k: v for k, v in (entry or {}).items() if k != "token"},
+            }
         origin_page = terminal.current_page()
         locator = origin_page.locator(f"[data-codex-job51-online-resume='{entry.get('token')}']").first
         if not locator.count():
             return {"ok": False, "reason": "online_resume_entry_element_missing", "entry": {k: v for k, v in entry.items() if k != "token"}}
 
+        pre_close_result = self.job51_close_resume_download_surfaces(terminal, origin_page=origin_page)
         before_pages = list(getattr(origin_page.context, "pages", []) or [])
         detail_page = None
         opened_by = "current_page"
         clicked_entry = False
         rejected_detail_pages: list[dict] = []
+        extra_close_result: dict = {"closedPages": [], "count": 0}
 
         def page_brief(page) -> dict:
             try:
@@ -2051,6 +2311,36 @@
                     rejected["closeError"] = safe_text(str(error), 120)
             return None
 
+        def close_extra_non_chat_pages(keep_page=None, reason: str = "") -> dict:
+            closed_pages: list[dict] = []
+            try:
+                pages = list(getattr(origin_page.context, "pages", []) or [])
+            except Exception:
+                pages = []
+            for page in pages:
+                if page == origin_page or (keep_page is not None and page == keep_page):
+                    continue
+                brief = page_brief(page)
+                url = str(brief.get("url") or "")
+                haystack = f"{url} {brief.get('title') or ''}"
+                should_close = (
+                    "ehire.51job.com" in url
+                    and "/Revision/chat" not in url
+                    and (
+                        "/Revision/talent/management" in url
+                        or "/Revision/talent/resume/detail" in url
+                        or re.search(r"(resume|jianli|preview|download|pdf|doc|简历|预览)", haystack, flags=re.I)
+                    )
+                )
+                if not should_close:
+                    continue
+                try:
+                    page.close()
+                    closed_pages.append(brief)
+                except Exception as error:
+                    closed_pages.append({**brief, "error": safe_text(str(error), 120)})
+            return {"closedPages": closed_pages, "count": len(closed_pages), "reason": reason}
+
         try:
             with origin_page.context.expect_page(timeout=8000) as page_info:
                 if terminal.humanize:
@@ -2077,6 +2367,7 @@
                     if terminal.humanize:
                         terminal.pause_like_person("post_action")
                 except Exception as error:
+                    extra_close_result = close_extra_non_chat_pages(None, "online_resume_click_failed")
                     return {"ok": False, "reason": "online_resume_click_failed", "error": safe_text(str(error), 160)}
 
         origin_page.wait_for_timeout(random.randint(900, 1400))
@@ -2104,6 +2395,7 @@
                 detail_page = accepted
                 opened_by = "same_page"
         if detail_page is None:
+            extra_close_result = close_extra_non_chat_pages(None, "online_resume_detail_not_opened")
             restore_result = {}
             try:
                 origin_url = str(getattr(origin_page, "url", "") or "")
@@ -2129,8 +2421,11 @@
                 "rejectedDetailPages": rejected_detail_pages[-6:],
                 "pages": [page_brief(page) for page in pages[-6:]],
                 "restoreResult": restore_result,
+                "preCloseResult": pre_close_result,
+                "extraCloseResult": extra_close_result,
             }
 
+        extra_close_result = close_extra_non_chat_pages(detail_page, "after_online_resume_detail_open")
         try:
             detail_page.bring_to_front()
             detail_page.wait_for_load_state("domcontentloaded", timeout=8000)
@@ -2149,6 +2444,8 @@
             "url": safe_text(str(getattr(detail_page, "url", "") or ""), 240),
             "title": safe_text(detail_page.title(), 100),
             "entry": {k: v for k, v in entry.items() if k != "token"},
+            "preCloseResult": pre_close_result,
+            "extraCloseResult": extra_close_result,
         }
 
     def job51_find_online_resume_save_button(self, page) -> dict:

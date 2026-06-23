@@ -1744,6 +1744,13 @@ function pickBlankPage(pages) {
   return pageList.find((page) => isBlankBrowserPage(page)) || null;
 }
 
+function isJob51ChatStartUrl(startUrl = "") {
+  const parsed = parseBrowserUrl(startUrl);
+  if (!parsed) return false;
+  const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+  return host === "ehire.51job.com" && normalizeBrowserPathname(parsed.pathname) === "/revision/chat";
+}
+
 function browserTargetStatusText(page = {}, inspected = {}) {
   return `${page.url || ""} ${page.title || ""} ${inspected.href || ""} ${inspected.title || ""} ${inspected.text || ""}`.toLowerCase();
 }
@@ -1795,32 +1802,43 @@ function callPageCdp(page, method, params = {}, timeoutMs = 6000) {
   return new Promise((resolve, reject) => {
     const id = Date.now() + Math.floor(Math.random() * 100000);
     const ws = new WebSocket(page.webSocketDebuggerUrl);
+    let settled = false;
     const timer = setTimeout(() => {
-      try {
-        ws.close();
-      } catch {
-        // Ignore close failures during timeout cleanup.
-      }
-      reject(new Error(`CDP command timeout: ${method}`));
+      finish(() => reject(new Error(`CDP command timeout: ${method}`)));
     }, timeoutMs);
 
-    const cleanup = () => {
+    const cleanup = (closeSocket = true) => {
       clearTimeout(timer);
+      if (!closeSocket) return;
       try {
-        ws.close();
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+        }
       } catch {
         // Ignore close failures after command completion.
       }
     };
+    const finish = (complete, closeSocket = true) => {
+      if (settled) return;
+      settled = true;
+      cleanup(closeSocket);
+      complete();
+    };
+    const cdpErrorMessage = (event) => {
+      if (typeof event?.message === "string" && event.message.trim()) return event.message;
+      if (typeof event?.error?.message === "string" && event.error.message.trim()) return event.error.message;
+      return `CDP websocket failed: ${method}`;
+    };
 
     ws.addEventListener("open", () => {
+      if (settled) return;
       ws.send(JSON.stringify({ id, method, params }));
     });
     ws.addEventListener("error", (event) => {
-      cleanup();
-      reject(new Error(event?.message || `CDP websocket failed: ${method}`));
+      finish(() => reject(new Error(cdpErrorMessage(event))), false);
     });
     ws.addEventListener("message", (event) => {
+      if (settled) return;
       let payload = null;
       try {
         payload = JSON.parse(cdpMessageToString(event.data));
@@ -1828,11 +1846,10 @@ function callPageCdp(page, method, params = {}, timeoutMs = 6000) {
         return;
       }
       if (payload.id !== id) return;
-      cleanup();
       if (payload.error) {
-        reject(new Error(payload.error.message || `CDP command failed: ${method}`));
+        finish(() => reject(new Error(payload.error.message || `CDP command failed: ${method}`)));
       } else {
-        resolve(payload.result || {});
+        finish(() => resolve(payload.result || {}));
       }
     });
   });
@@ -1945,13 +1962,14 @@ function getBrowserAutomationAccounts(accountId = "all") {
 async function focusOrOpenCdpPage(target, startUrl, platform, account) {
   const pages = await fetchCdpJson(target.cdpPort, "/json/list").catch(() => []);
   const existing = pickPlatformPage(pages, startUrl);
+  const strictJob51Chat = platform === "51job" && isJob51ChatStartUrl(startUrl);
   let openedNewTab = false;
   let navigatedExistingPage = false;
 
   if (existing?.webSocketDebuggerUrl) {
     await activateCdpPage(target.cdpPort, existing);
   } else {
-    const sameHostPage = pickPlatformHostPage(pages, startUrl);
+    const sameHostPage = strictJob51Chat ? null : pickPlatformHostPage(pages, startUrl);
     const blankPage = pickBlankPage(pages);
     const reusablePage = sameHostPage?.webSocketDebuggerUrl ? sameHostPage : blankPage?.webSocketDebuggerUrl ? blankPage : null;
     if (reusablePage) {

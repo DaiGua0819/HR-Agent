@@ -1155,22 +1155,26 @@
                         job51_terminal,
                         max_total=int(action.get("maxTotal") or action.get("count") or action.get("limit") or 40),
                         target_position=str(action.get("targetPosition") or action.get("position") or ""),
-                    )
+                    ),
+                    prefer_chat_page=True,
                 )
 
             if kind == "job51_process_current_position":
                 return self.with_job51_terminal(
-                    lambda job51_terminal: self.job51_process_current_position(job51_terminal, opened=None)
+                    lambda job51_terminal: self.job51_process_current_position(job51_terminal, opened=None),
+                    prefer_chat_page=True,
                 )
 
             if kind == "job51_answer_candidate_questions":
                 return self.with_job51_terminal(
-                    lambda job51_terminal: self.job51_answer_current_candidate_questions(job51_terminal)
+                    lambda job51_terminal: self.job51_answer_current_candidate_questions(job51_terminal),
+                    prefer_chat_page=True,
                 )
 
             if kind == "job51_request_resume":
                 return self.with_job51_terminal(
-                    lambda job51_terminal: self.job51_download_attachment_or_request_resume(job51_terminal)
+                    lambda job51_terminal: self.job51_download_attachment_or_request_resume(job51_terminal),
+                    prefer_chat_page=True,
                 )
 
             if kind == "job51_proactive_contact_recommended_candidates":

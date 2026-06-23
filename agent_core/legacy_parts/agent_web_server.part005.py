@@ -346,6 +346,9 @@
                     "box": box_info,
                 }
 
+    def job51_is_hexinhong_runtime(self) -> bool:
+        return PORT == 8791 or AGENT_ACCOUNT_ID in {"job51_b"}
+
     def job51_verify_opened_candidate(self, terminal: BrowserTerminal, target: dict | None = None, chat_ready: bool = False) -> dict:
         target = target if isinstance(target, dict) else {}
         label = safe_text(str(target.get("label") or ""), 220)
@@ -399,7 +402,9 @@
         index_match = bool(target_index >= 0 and state.get("selectedIndex") == target_index)
         # 51job uses a virtualized conversation list, so row index can remain the same
         # while the chat panel is still showing the previous candidate.
-        opened = bool(label_match or header_name_match or (selected_name_match and (not target_job or job_match)))
+        strong_match = bool(label_match or header_name_match or (selected_name_match and (not target_job or job_match)))
+        hexinhong_index_assist = bool(self.job51_is_hexinhong_runtime() and index_match)
+        opened = bool(strong_match or hexinhong_index_assist)
         reason = ""
         if not opened:
             if not target_key and not target_name:
@@ -426,6 +431,7 @@
                 "index": index_match,
                 "inputReady": input_ready,
             },
+            "openedBy": "strong_identity" if strong_match else "hexinhong_index_assist" if hexinhong_index_assist else "",
             "state": state,
         }
 
@@ -463,6 +469,13 @@
                     "reason": last_reason,
                 })
                 break
+            try:
+                current_page = terminal.current_page()
+                if self.job51_is_chat_page(current_page):
+                    self.job51_install_chat_context_route_guard(terminal, reason=f"open_candidate_{attempt_no}")
+                    self.job51_install_chat_navigation_guard(current_page, reason=f"before_open_candidate_{attempt_no}")
+            except Exception:
+                pass
             click_result = self.measure_current_timing_stage(
                 f"job51_open_candidate_click{suffix}",
                 "51job 拟人化点击候选人" if attempt_index == 0 else "51job 重试拟人化点击候选人",
@@ -470,7 +483,15 @@
                     terminal,
                     locator,
                     "51job 未读联系人" if attempt_index == 0 else f"51job 未读联系人重试{attempt_no}",
-                    wait_ms=random.randint(900, 1450) if attempt_index == 0 else random.randint(1200, 1800),
+                    wait_ms=(
+                        random.randint(1550, 2350)
+                        if self.job51_is_hexinhong_runtime() and attempt_index == 0
+                        else random.randint(2100, 3200)
+                        if self.job51_is_hexinhong_runtime()
+                        else random.randint(900, 1450)
+                        if attempt_index == 0
+                        else random.randint(1200, 1800)
+                    ),
                 ),
             )
             ready = False
@@ -479,7 +500,10 @@
                 ready = self.measure_current_timing_stage(
                     f"job51_wait_chat_ready{suffix}",
                     "51job 等待聊天输入框" if attempt_index == 0 else "51job 重试等待聊天输入框",
-                    lambda: self.job51_wait_chat_ready(terminal, timeout_ms=4500),
+                    lambda: self.job51_wait_chat_ready(
+                        terminal,
+                        timeout_ms=6500 if self.job51_is_hexinhong_runtime() else 4500,
+                    ),
                 )
                 verify = self.measure_current_timing_stage(
                     f"job51_verify_opened_candidate{suffix}",
@@ -517,7 +541,9 @@
                 "reason": last_reason,
             })
             try:
-                terminal.current_page().wait_for_timeout(random.randint(420, 760))
+                terminal.current_page().wait_for_timeout(
+                    random.randint(900, 1400) if self.job51_is_hexinhong_runtime() else random.randint(420, 760)
+                )
             except Exception:
                 pass
         return {
@@ -540,9 +566,9 @@
             target_limit = int(max_total)
         except Exception:
             target_limit = 40
-        if target_limit < 0:
-            target_limit = 40
-        target_limit = max(0, min(80, target_limit))
+        unlimited = target_limit <= 0
+        if not unlimited:
+            target_limit = max(1, min(80, target_limit))
         self.measure_current_timing_stage("job51_open_chat_page", "51job 打开聊天页", lambda: self.job51_open_chat_page(terminal))
         results: list[dict] = []
         filtered: list[dict] = []
@@ -563,7 +589,7 @@
             )
             excluded: list[str] = []
             no_target = 0
-            while len(results) < target_limit and no_target < 12:
+            while (unlimited or len(results) < target_limit) and no_target < 12:
                 self.check_pause()
                 target = self.measure_current_timing_stage(
                     "job51_find_next_thread",
@@ -764,6 +790,8 @@
             "state": {
                 "platform": "51job",
                 "processedPeople": len(results),
+                "maxTotal": 0 if unlimited else target_limit,
+                "unlimited": bool(unlimited),
                 "targetPosition": clean_applied_position(target_position),
                 "counts": counts,
                 "filteredOut": len(filtered),
@@ -786,6 +814,8 @@
             "filteredOut": filtered[:30],
             "state": {
                 "processedPeople": len(results),
+                "maxTotal": 0 if unlimited else target_limit,
+                "unlimited": bool(unlimited),
                 "counts": counts,
                 "filteredOut": len(filtered),
                 "scanTraceCount": len(scan_trace),

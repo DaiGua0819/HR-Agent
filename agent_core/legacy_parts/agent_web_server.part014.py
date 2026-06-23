@@ -802,7 +802,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "recruiter_process_unread_all_positions",
-            "when": "Recruiter-side BOSS high-level workflow: process all unread recruitment messages across configured positions. The backend switches to the unread tab, opens candidates, reads the applied position, applies boss_chat_rules screening/knowledge rules, asks questions, requests resumes, skips unsuitable/unclear cases, and records a batch report. For BOSS 运营A/运营B direct-resume roles, when no resume has been received/requested yet, the backend must first send '可以发一份简历过来吗' in the chat, then execute the BOSS 求简历 action; do not apply this to 51job/智联 or other BOSS positions. Positions not configured in boss_chat_rules must be recorded and skipped with no reply.",
+            "when": "Recruiter-side BOSS high-level workflow: process all unread recruitment messages across configured positions. The backend switches to the unread tab, opens candidates, reads the applied position, applies boss_chat_rules screening/knowledge rules, asks questions, requests resumes, skips unsuitable/unclear cases, and records a batch report. For direct-resume roles in boss_chat_rules, the backend must first send the configured resumeRequestPrompt in the chat, then execute 求简历; BOSS 运营A/运营B use '可以发一份简历过来吗', and 财务AI direct-resume roles use their configured prompt. Positions not configured in boss_chat_rules must be recorded and skipped with no reply.",
             "args": {
                 "maxTotal": "optional safety limit, default 80",
                 "dateScope": "optional: today, yesterday, or today_yesterday",
@@ -811,7 +811,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "recruiter_process_current_position",
-            "when": "Recruiter-side BOSS high-level workflow: process the currently opened candidate according to their applied position. Use this after manually opening a candidate or when the user says to handle the current chat. For BOSS 运营A/运营B direct-resume roles, when no resume has been received/requested yet, first send '可以发一份简历过来吗' in the chat, then execute the BOSS 求简历 action; do not apply this to 51job/智联 or other BOSS positions.",
+            "when": "Recruiter-side BOSS high-level workflow: process the currently opened candidate according to their applied position. Use this after manually opening a candidate or when the user says to handle the current chat. For direct-resume roles in boss_chat_rules, first send the configured resumeRequestPrompt in the chat, then execute 求简历; BOSS 运营A/运营B use '可以发一份简历过来吗', and 财务AI direct-resume roles use their configured prompt.",
             "args": {
                 "targetCandidate": "optional candidate name",
                 "openUnreplied": "true to open the next unread candidate first; usually false",
@@ -852,7 +852,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "recruiter_request_resume",
-            "when": "Recruiter-side BOSS chat task: open a named candidate or the next visible candidate with unread/unhandled messages, then use the '求简历' toolbar button and complete the in-page confirm step. When this action is reached through the BOSS 运营A/运营B direct-resume workflow, the backend sends '可以发一份简历过来吗' before clicking 求简历 if no resume has been received/requested yet; this pre-message is BOSS-only and must not be used for 51job/智联.",
+            "when": "Recruiter-side BOSS chat task: open a named candidate or the next visible candidate with unread/unhandled messages, then use the '求简历' toolbar button and complete the in-page confirm step. When this action is reached through a direct-resume workflow, the backend sends the configured resumeRequestPrompt before clicking 求简历 if no resume has been received/requested yet.",
             "args": {
                 "openUnreplied": "true to open the next unread/unhandled candidate first; false to operate on the currently opened candidate",
                 "targetCandidate": "optional candidate name from the user, for example 陈刚",
@@ -868,7 +868,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "job51_process_unread_all_positions",
-            "when": "Recruiter-side 51job workflow: process unread messages from the 51job all-position list. The backend opens 51job chat, clicks 未读, clicks 全部岗位, then handles contacts from that unified unread list using shared boss_chat_rules screening/knowledge rules. Do not switch positions one by one.",
+            "when": "Recruiter-side 51job workflow: process unread messages from the 51job all-position list. The backend opens 51job chat, clicks 未读, clicks 全部岗位, then handles contacts from that unified unread list using shared boss_chat_rules screening/knowledge rules. Direct-resume roles first send the configured resumeRequestPrompt through 51job's message sender, then run 51job resume download/request logic. Do not switch positions one by one.",
             "args": {
                 "maxTotal": "optional safety limit, default 40",
                 "targetPosition": "ignored for this workflow; processing always uses 全部岗位",
@@ -876,7 +876,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "job51_process_current_position",
-            "when": "Recruiter-side 51job workflow: process the currently opened 51job candidate according to mapped position rules.",
+            "when": "Recruiter-side 51job workflow: process the currently opened 51job candidate according to mapped position rules. Direct-resume roles first send resumeRequestPrompt, then run 51job resume download/request logic.",
             "args": {},
         },
         {
@@ -886,7 +886,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "job51_request_resume",
-            "when": "Recruiter-side 51job chat task: handle the current candidate's resume only when screening says the candidate is suitable. The backend first checks prior 51job resume-download memory and existing local files, skips repeat downloads, opens the online resume, clicks the top-right save/storage icon, confirms the save dialog, verifies a local PDF was created, then falls back to requesting a resume only when no online resume entry is available.",
+            "when": "Recruiter-side 51job chat task: handle the current candidate's resume only when screening says the candidate is suitable. For 51 Hexinhong/job51_b, do not open or click online resume details because 51job redirects them to Talent Management tabs; check prior local memory first, then request the resume in the current chat. Other 51job accounts may still use the existing online-resume PDF save flow.",
             "args": {},
         },
         {
@@ -900,7 +900,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "zhilian_process_unread_all_positions",
-            "when": "Recruiter-side 智联 workflow: process unread messages from 智联聊天. The backend uses CDP 9226, opens 智联聊天, selects 未读 and 全部职位, then handles contacts with shared boss_chat_rules screening/knowledge rules. It uses 智联 textarea and 要附件简历 controls, not BOSS/51 DOM.",
+            "when": "Recruiter-side 智联 workflow: process unread messages from 智联聊天. The backend uses CDP 9226, opens 智联聊天, selects 未读 and 全部职位, then handles contacts with shared boss_chat_rules screening/knowledge rules. Direct-resume roles first send the configured resumeRequestPrompt through 智联's message sender, then run 要附件简历 logic. It uses 智联 textarea and 要附件简历 controls, not BOSS/51 DOM.",
             "args": {
                 "maxTotal": "optional safety limit, default 40",
                 "targetPosition": "optional 智联 position filter; omit for all configured 智联 positions",
@@ -908,7 +908,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "zhilian_process_current_position",
-            "when": "Recruiter-side 智联 workflow: process the currently opened 智联 candidate according to mapped position rules.",
+            "when": "Recruiter-side 智联 workflow: process the currently opened 智联 candidate according to mapped position rules. Direct-resume roles first send resumeRequestPrompt, then run 要附件简历 logic.",
             "args": {},
         },
         {

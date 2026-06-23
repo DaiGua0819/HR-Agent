@@ -1343,7 +1343,162 @@
             return preferred_page
         return chat_pages[0] if chat_pages else None
 
-    def _run_job51_terminal_sync(self, callback):
+    def job51_is_chat_page(self, page) -> bool:
+        try:
+            url = str(getattr(page, "url", "") or "")
+        except Exception:
+            url = ""
+        return "://ehire.51job.com" in url and "/Revision/chat" in url
+
+    def job51_install_chat_navigation_guard(self, page, reason: str = "") -> dict:
+        if not self.job51_is_chat_page(page):
+            return {"installed": False, "skipped": True, "reason": "not_chat_page"}
+        try:
+            return safe_eval(page, """reason => {
+              const blockedPattern = /\\/Revision\\/talent\\/(management|search-recommend)(?:[/?#]|$)/;
+              const blockedMenuPattern = /(人才管理|人才望远镜|人才搜索|人才库|职位管理|sensor_(talent|recommand|resume)|talent[-_/]?(management|search|recommend))/i;
+              const state = window.__codexJob51ChatNavigationGuard || {
+                installedAt: Date.now(),
+                blocked: [],
+                originalOpen: window.open
+              };
+              const record = (source, value) => {
+                try {
+                  state.blocked.push({
+                    ts: Date.now(),
+                    source,
+                    value: String(value || '').slice(0, 240),
+                    reason: String(reason || '')
+                  });
+                  if (state.blocked.length > 30) state.blocked.splice(0, state.blocked.length - 30);
+                } catch (_) {}
+              };
+              if (!state.openWrapped) {
+                const originalOpen = state.originalOpen || window.open;
+                window.open = function(url, ...args) {
+                  if (blockedPattern.test(String(url || ''))) {
+                    record('window.open', url);
+                    return null;
+                  }
+                  return originalOpen ? originalOpen.call(window, url, ...args) : null;
+                };
+                state.openWrapped = true;
+              }
+              if (!state.clickGuardInstalled) {
+                const targetText = node => {
+                  if (!node) return '';
+                  const parts = [];
+                  let current = node;
+                  for (let depth = 0; current && depth < 7; depth += 1) {
+                    if (current.nodeType !== 1) {
+                      current = current.parentElement;
+                      continue;
+                    }
+                    parts.push(
+                      current.id,
+                      current.className,
+                      current.getAttribute && current.getAttribute('href'),
+                      current.getAttribute && current.getAttribute('data-href'),
+                      current.getAttribute && current.getAttribute('data-url'),
+                      current.getAttribute && current.getAttribute('onclick'),
+                      current.getAttribute && current.getAttribute('aria-label'),
+                      current.getAttribute && current.getAttribute('title'),
+                      current.innerText,
+                      current.textContent
+                    );
+                    current = current.parentElement;
+                  }
+                  return parts.filter(Boolean).join(' ').replace(/\\s+/g, ' ').trim();
+                };
+                const blockIfTalentNavigation = event => {
+                  const target = event.target && event.target.closest
+                    ? event.target.closest('a,button,[role="button"],[onclick],[data-href],[data-url],[id*="talent" i],[id*="recommand" i],[class*="menu" i],[class*="nav" i],[class*="side" i],[class*="talent" i]')
+                    : null;
+                  if (!target) return;
+                  const href = String(target.getAttribute('href') || target.getAttribute('data-href') || target.getAttribute('data-url') || '');
+                  const onclick = String(target.getAttribute('onclick') || '');
+                  const text = String(target.innerText || target.textContent || '').replace(/\\s+/g, ' ').trim();
+                  const haystack = [href, onclick, text, target.id, target.className, targetText(event.target)].join(' ');
+                  if (!blockedPattern.test(haystack) && !blockedMenuPattern.test(haystack)) return;
+                  event.preventDefault();
+                  event.stopImmediatePropagation();
+                  event.stopPropagation();
+                  record(event.type || 'click', haystack);
+                  return false;
+                };
+                ['pointerdown', 'mousedown', 'mouseup', 'click', 'auxclick'].forEach(type => {
+                  document.addEventListener(type, blockIfTalentNavigation, true);
+                });
+                document.addEventListener('submit', event => {
+                  const form = event.target;
+                  const action = form && form.getAttribute ? String(form.getAttribute('action') || '') : '';
+                  const haystack = [action, targetText(form)].join(' ');
+                  if (!blockedPattern.test(haystack) && !blockedMenuPattern.test(haystack)) return;
+                  event.preventDefault();
+                  event.stopImmediatePropagation();
+                  event.stopPropagation();
+                  record('submit', haystack);
+                  return false;
+                }, true);
+                state.clickGuardInstalled = true;
+              }
+              window.__codexJob51ChatNavigationGuard = state;
+              return {
+                installed: true,
+                reason: String(reason || ''),
+                blockedCount: Array.isArray(state.blocked) ? state.blocked.length : 0,
+                lastBlocked: Array.isArray(state.blocked) ? state.blocked.slice(-3) : []
+              };
+            }""", reason) or {"installed": True, "reason": reason}
+        except Exception as error:
+            return {"installed": False, "reason": "install_failed", "error": safe_text(str(error), 160)}
+
+    def job51_install_chat_context_route_guard(self, terminal: BrowserTerminal, reason: str = "") -> dict:
+        if getattr(terminal, "_codex_job51_chat_route_guard_installed", False):
+            return {"installed": True, "alreadyInstalled": True, "reason": reason}
+        try:
+            page = terminal.current_page()
+            context = page.context
+        except Exception as error:
+            return {"installed": False, "reason": "context_unavailable", "error": safe_text(str(error), 160)}
+        try:
+            def block_talent_route(route):
+                try:
+                    route.abort()
+                except Exception:
+                    pass
+            context.route("**/Revision/talent/management**", block_talent_route)
+            context.route("**/Revision/talent/search-recommend**", block_talent_route)
+            setattr(terminal, "_codex_job51_chat_route_guard_installed", True)
+            return {"installed": True, "reason": reason}
+        except Exception as error:
+            return {"installed": False, "reason": "route_install_failed", "error": safe_text(str(error), 160)}
+
+    def job51_find_blank_page(self, terminal: BrowserTerminal):
+        try:
+            pages = list(terminal.all_pages())
+        except Exception:
+            return None
+        for page in pages:
+            try:
+                url = str(getattr(page, "url", "") or "").strip().lower()
+            except Exception:
+                url = ""
+            if (not url) or url == "about:blank" or url.startswith("chrome://newtab"):
+                return page
+        return None
+
+    def job51_create_blank_page(self, terminal: BrowserTerminal):
+        try:
+            contexts = list(getattr(terminal.browser, "contexts", []) or [])
+            context = contexts[0] if contexts else None
+            if context is None:
+                return None
+            return context.new_page()
+        except Exception:
+            return None
+
+    def _run_job51_terminal_sync(self, callback, prefer_chat_page: bool = False):
         terminal_obj = BrowserTerminal(
             JOB51_CDP_URL,
             page_index=0,
@@ -1358,6 +1513,7 @@
             terminal.automation_speed_multiplier = self.automation_speed_multiplier
             apply_automation_speed_multiplier(terminal)
             job51_pages = []
+            blank_page = self.job51_find_blank_page(terminal)
             for page in terminal.all_pages():
                 url = str(getattr(page, "url", "") or "")
                 try:
@@ -1371,7 +1527,10 @@
                     job51_pages.append((0 if is_chat_page else 1 if is_ehire_page else 2, page))
             if job51_pages:
                 job51_pages.sort(key=lambda item: item[0])
-                terminal.page = job51_pages[0][1]
+                if prefer_chat_page and job51_pages[0][0] != 0:
+                    terminal.page = blank_page or self.job51_create_blank_page(terminal) or job51_pages[0][1]
+                else:
+                    terminal.page = job51_pages[0][1]
                 try:
                     self.job51_close_stale_non_chat_pages(terminal, origin_page=terminal.page, reason="terminal_select")
                 except Exception:
@@ -1388,12 +1547,12 @@
                 except Exception:
                     pass
 
-    def with_job51_terminal(self, callback, timeout_seconds: int | None = None):
+    def with_job51_terminal(self, callback, timeout_seconds: int | None = None, prefer_chat_page: bool = False):
         result_box: dict[str, object] = {}
 
         def worker() -> None:
             try:
-                result_box["result"] = self._run_job51_terminal_sync(callback)
+                result_box["result"] = self._run_job51_terminal_sync(callback, prefer_chat_page=prefer_chat_page)
             except Exception as error:
                 result_box["error"] = error
 
@@ -1407,8 +1566,12 @@
             raise result_box["error"]  # type: ignore[misc]
         return result_box.get("result")
 
-    def job51_dismiss_interruptions(self, terminal: BrowserTerminal, reason: str = "") -> dict:
+    def job51_dismiss_interruptions(self, terminal: BrowserTerminal, reason: str = "", chat_only: bool = False) -> dict:
         page = terminal.current_page()
+        if chat_only:
+            if not self.job51_is_chat_page(page):
+                return {"closed": [], "count": 0, "reason": reason, "skipped": True, "skipReason": "not_chat_page"}
+            self.job51_install_chat_navigation_guard(page, reason=f"dismiss:{reason}")
         closed: list[dict] = []
         for _ in range(5):
             target = safe_eval(page, """() => {
@@ -1466,6 +1629,10 @@
                 for (const btn of buttons) {
                   const text = normalize(btn.innerText || btn.textContent || btn.getAttribute('aria-label') || btn.getAttribute('title') || '');
                   const cls = String(btn.className || '');
+                  const href = String(btn.getAttribute('href') || btn.closest('a')?.getAttribute('href') || '');
+                  const onclick = String(btn.getAttribute('onclick') || '');
+                  const guardText = normalize([text, cls, href, onclick].join(' '));
+                  if (/Revision\/talent\/management|Revision\/talent\/search-recommend|人才管理|人才望远镜/.test(guardText)) continue;
                   if (exactCloseText.test(text) || softCloseText.test(text) || /close|cancel|driver-close|icon-close/i.test(cls)) {
                     add(btn, `close_blocker:${rootText.slice(0, 40) || rootClass.slice(0, 40)}`, text === '不感兴趣' ? 140 : 120);
                   }
@@ -1513,32 +1680,42 @@
 
     def job51_open_chat_page(self, terminal: BrowserTerminal) -> dict:
         page = terminal.current_page()
-        self.job51_dismiss_interruptions(terminal, reason="before_open_chat")
+        route_guard = self.job51_install_chat_context_route_guard(terminal, reason="open_chat")
         existing_chat_page = self.job51_find_chat_page(terminal, preferred_page=page)
         if existing_chat_page is not None:
             terminal.page = existing_chat_page
             page = existing_chat_page
+            try:
+                page.bring_to_front()
+            except Exception:
+                pass
+            guard_result = self.job51_install_chat_navigation_guard(page, reason="open_chat_existing")
+            dismiss_result = self.job51_dismiss_interruptions(terminal, reason="after_open_chat_existing", chat_only=True)
             close_result = self.job51_close_stale_non_chat_pages(terminal, origin_page=page, reason="open_chat_existing")
+            return {"opened": True, "url": page.url, "title": page.title(), "source": "existing_chat", "routeGuard": route_guard, "guardResult": guard_result, "dismissResult": dismiss_result, "closeResult": close_result}
+        if self.job51_is_chat_page(page):
             try:
                 page.bring_to_front()
             except Exception:
                 pass
-            return {"opened": True, "url": page.url, "title": page.title(), "source": "existing_chat", "closeResult": close_result}
-        if "ehire.51job.com" in str(page.url) and "/Revision/chat" in str(page.url):
+            guard_result = self.job51_install_chat_navigation_guard(page, reason="open_chat_current")
+            dismiss_result = self.job51_dismiss_interruptions(terminal, reason="after_open_chat_current", chat_only=True)
             close_result = self.job51_close_stale_non_chat_pages(terminal, origin_page=page, reason="open_chat_current")
-            try:
-                page.bring_to_front()
-            except Exception:
-                pass
-            return {"opened": True, "url": page.url, "title": page.title(), "source": "current", "closeResult": close_result}
+            return {"opened": True, "url": page.url, "title": page.title(), "source": "current", "routeGuard": route_guard, "guardResult": guard_result, "dismissResult": dismiss_result, "closeResult": close_result}
         page.goto(JOB51_CHAT_URL, wait_until="domcontentloaded", timeout=15000)
         page.wait_for_timeout(random.randint(1200, 1800))
+        guard_result = self.job51_install_chat_navigation_guard(page, reason="open_chat_goto")
+        dismiss_result = self.job51_dismiss_interruptions(terminal, reason="after_open_chat_goto", chat_only=True)
         close_result = self.job51_close_stale_non_chat_pages(terminal, origin_page=page, reason="open_chat_goto")
-        return {"opened": True, "url": page.url, "title": page.title(), "source": "goto", "closeResult": close_result}
+        return {"opened": True, "url": page.url, "title": page.title(), "source": "goto", "routeGuard": route_guard, "guardResult": guard_result, "dismissResult": dismiss_result, "closeResult": close_result}
 
     def job51_select_all_positions(self, terminal: BrowserTerminal) -> dict:
         page = terminal.current_page()
-        self.job51_dismiss_interruptions(terminal, reason="before_select_all_positions")
+        if not self.job51_is_chat_page(page):
+            return {"selected": False, "reason": "not_chat_page", "url": safe_text(str(getattr(page, "url", "") or ""), 180)}
+        self.job51_install_chat_context_route_guard(terminal, reason="select_all_positions")
+        self.job51_install_chat_navigation_guard(page, reason="before_select_all_positions")
+        self.job51_dismiss_interruptions(terminal, reason="before_select_all_positions", chat_only=True)
         token = f"codex_job51_all_positions_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
         result = safe_eval(page, """token => {
           const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
@@ -1573,6 +1750,11 @@
           const candidates = nodes.filter(visible).map(el => {
             const text = normalize(el.textContent || '');
             const cls = String(el.className || '');
+            const href = String(el.getAttribute('href') || el.closest('a')?.getAttribute('href') || '');
+            const guardText = normalize([text, href, cls, String(el.id || ''), String(el.closest('a')?.id || '')].join(' '));
+            if (/Revision\/talent\/management|Revision\/talent\/search-recommend|人才管理|人才望远镜/.test(guardText)) {
+              return { el, text, cls, score: -999, y: 999999, blocked: true };
+            }
             const box = el.getBoundingClientRect();
             let score = 0;
             if (/menu-item-all/.test(cls)) score += 300;
@@ -1602,11 +1784,25 @@
             if terminal.humanize:
                 terminal.pause_like_person("pre_action")
                 highlight_target(locator)
-            humanized_locator_click(terminal, locator, force=True)
+            click_result = locator.evaluate("""el => {
+              const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+              const href = String(el.getAttribute('href') || el.closest('a')?.getAttribute('href') || '');
+              const guardText = normalize([el.innerText, el.textContent, href, el.className, el.id, el.closest('a')?.id].filter(Boolean).join(' '));
+              if (/Revision\\/talent\\/management|Revision\\/talent\\/search-recommend|人才管理|人才望远镜/.test(guardText)) {
+                return { ok: false, reason: 'blocked_talent_navigation_target', text: guardText.slice(0, 160), href };
+              }
+              el.scrollIntoView({ block: 'center', inline: 'center' });
+              if (typeof el.click === 'function') el.click();
+              else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+              return { ok: true, text: normalize(el.innerText || el.textContent || '').slice(0, 80), href };
+            }""")
+            if isinstance(click_result, dict) and not click_result.get("ok"):
+                return {"selected": False, "reason": str(click_result.get("reason") or "all_positions_dom_click_blocked"), "state": result, "click": click_result}
             if terminal.humanize:
                 terminal.pause_like_person("post_action")
             page.wait_for_timeout(random.randint(900, 1400))
-            return {**result, "clicked": True}
+            close_result = self.job51_close_stale_non_chat_pages(terminal, origin_page=page, reason="after_select_all_positions_dom_click")
+            return {**result, "clicked": True, "click": click_result if isinstance(click_result, dict) else {}, "closeResult": close_result}
         except Exception as error:
             return {"selected": False, "reason": safe_text(str(error), 160), "state": result}
         finally:
@@ -1617,7 +1813,11 @@
 
     def job51_prepare_unread_filter(self, terminal: BrowserTerminal) -> dict:
         page = terminal.current_page()
-        self.job51_dismiss_interruptions(terminal, reason="before_unread_filter")
+        if not self.job51_is_chat_page(page):
+            return {"found": False, "reason": "not_chat_page", "url": safe_text(str(getattr(page, "url", "") or ""), 180)}
+        self.job51_install_chat_context_route_guard(terminal, reason="unread_filter")
+        self.job51_install_chat_navigation_guard(page, reason="before_unread_filter")
+        self.job51_dismiss_interruptions(terminal, reason="before_unread_filter", chat_only=True)
         unread = page.locator("label.el-checkbox.btn.unread-checkbox").first
         try:
             if not unread.count():
@@ -1632,4 +1832,17 @@
                 if terminal.humanize:
                     terminal.pause_like_person("pre_action")
                     highlight_target(unread)
-                humanized_locator_click(terminal, unread, force=True)
+                click_result = unread.evaluate("""el => {
+                  const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+                  const href = String(el.getAttribute('href') || el.closest('a')?.getAttribute('href') || '');
+                  const guardText = normalize([el.innerText, el.textContent, href, el.className, el.id].filter(Boolean).join(' '));
+                  if (/Revision\\/talent\\/management|Revision\\/talent\\/search-recommend|人才管理|人才望远镜/.test(guardText)) {
+                    return { ok: false, reason: 'blocked_talent_navigation_target', text: guardText.slice(0, 160), href };
+                  }
+                  el.scrollIntoView({ block: 'center', inline: 'center' });
+                  if (typeof el.click === 'function') el.click();
+                  else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                  return { ok: true, text: normalize(el.innerText || el.textContent || '').slice(0, 80), href };
+                }""")
+                if isinstance(click_result, dict) and not click_result.get("ok"):
+                    return {"found": False, "reason": str(click_result.get("reason") or "unread_filter_dom_click_blocked"), "state": state, "click": click_result}

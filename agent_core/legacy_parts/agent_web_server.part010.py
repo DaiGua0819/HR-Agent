@@ -106,7 +106,7 @@
                 timing = SERVICE.start_operation_timing("chat", "51job处理全部未读消息")
                 raw_max_total = payload.get("maxTotal", payload.get("count", 40))
                 max_total = int(raw_max_total if raw_max_total is not None else 40)
-                timeout_seconds = max(180, min(600, max_total * 45 + 90))
+                timeout_seconds = 21600 if max_total <= 0 else max(180, min(600, max_total * 45 + 90))
                 try:
                     result = SERVICE.with_job51_terminal(
                         lambda job51_terminal: SERVICE.job51_process_unread_all_positions(
@@ -115,6 +115,7 @@
                             target_position=str(payload.get("targetPosition") or ""),
                         ),
                         timeout_seconds=timeout_seconds,
+                        prefer_chat_page=True,
                     )
                     finished_timing = SERVICE.finish_operation_timing(timing, "success")
                     if isinstance(result, dict) and finished_timing:
@@ -141,6 +142,7 @@
                             max_total=max_total,
                         ),
                         timeout_seconds=timeout_seconds,
+                        prefer_chat_page=True,
                     )
                     finished_timing = SERVICE.finish_operation_timing(timing, "success")
                     if isinstance(result, dict) and finished_timing:

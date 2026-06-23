@@ -546,6 +546,27 @@ def normalize_direct_resume_operations_job_type(value: str) -> str:
         return "运营A"
     if "b端社交媒体运营" in compact or "社交媒体运营" in compact:
         return "运营B"
+    if (
+        "外部财务产品顾问" in compact
+        or "业财智能化顾问" in compact
+        or "ai财务场景顾问" in compact
+        or "财务场景顾问" in compact
+        or "财务产品顾问" in compact
+        or "财务数字化顾问" in compact
+        or "cfo顾问" in compact
+    ):
+        return "外部财务产品顾问"
+    if (
+        "ai智能体解决方案负责人" in compact
+        or "智能体解决方案负责人" in compact
+        or "aisolutionarchitect" in compact
+        or "solutionarchitect" in compact
+        or compact in {"aifde", "fde"}
+        or "aiworkflowengineer" in compact
+        or "workflowengineer" in compact
+        or ("ai" in compact and "解决方案" in compact and "智能体" in compact)
+    ):
+        return "AI智能体解决方案负责人"
     return ""
 
 
@@ -603,7 +624,61 @@ DIRECT_RESUME_OPERATION_TARGET_POSITIONS = (
     "B\u7aef\u793e\u4ea4\u5a92\u4f53\u8fd0\u8425",
     "\u5185\u5bb9\u8fd0\u8425\u8d1f\u8d23\u4eba",
     "\u793e\u4ea4\u5a92\u4f53\u8fd0\u8425",
+    "外部财务产品顾问",
+    "业财智能化顾问",
+    "AI财务场景顾问",
+    "财务场景顾问",
+    "AI智能体解决方案负责人",
+    "AI Solution Architect",
+    "AI FDE",
+    "AI Workflow Engineer",
+    "Workflow Engineer",
 )
+
+
+DIRECT_RESUME_PROMPT_ALL_PLATFORM_JOB_TYPES = {
+    "外部财务产品顾问",
+    "AI智能体解决方案负责人",
+}
+
+
+DIRECT_RESUME_REQUEST_PROMPTS = {
+    "运营A": "可以发一份简历过来吗",
+    "运营B": "可以发一份简历过来吗",
+    "外部财务产品顾问": "你好，方便发一份简历过来吗",
+    "AI智能体解决方案负责人": "你好，可以看看简历吗",
+}
+
+
+def direct_resume_request_prompt_from_context(
+    context: dict | None,
+    position_reply: dict | None = None,
+    resume_job_type: str = "",
+) -> str:
+    context = context if isinstance(context, dict) else {}
+    position_reply = position_reply if isinstance(position_reply, dict) else {}
+    knowledge_base = context.get("companyKnowledgeBase") if isinstance(context.get("companyKnowledgeBase"), dict) else {}
+    normalized_job_type = normalize_direct_resume_operations_job_type(resume_job_type) or direct_resume_operations_job_type(context, position_reply)
+    for source in (position_reply, knowledge_base, context):
+        if not isinstance(source, dict):
+            continue
+        prompt = safe_text(str(
+            source.get("resumeRequestPrompt")
+            or source.get("directResumePrompt")
+            or source.get("requestResumePrompt")
+            or ""
+        ).strip(), 120)
+        if prompt:
+            return prompt
+    return DIRECT_RESUME_REQUEST_PROMPTS.get(normalized_job_type, "")
+
+
+def direct_resume_prompt_required_for_platform(platform: str, resume_job_type: str) -> bool:
+    platform_key = str(platform or "").strip().lower()
+    normalized_job_type = normalize_direct_resume_operations_job_type(resume_job_type)
+    if normalized_job_type in DIRECT_RESUME_PROMPT_ALL_PLATFORM_JOB_TYPES:
+        return True
+    return platform_key == "boss" and normalized_job_type in {"运营A", "运营B"}
 
 
 def direct_resume_operations_target_positions(extra: list[str] | tuple[str, ...] | None = None) -> tuple[str, ...]:
@@ -1402,7 +1477,10 @@ class WebAgentService:
             max_total = int(raw_max_total if raw_max_total is not None else 40)
         except Exception:
             max_total = 40
-        max_total = max(1, max_total)
+        if platform == "51job" and max_total <= 0:
+            max_total = 0
+        else:
+            max_total = max(1, max_total)
         target_position = safe_text(str(payload.get("targetPosition") or ""), 200)
         options = payload.get("options") if isinstance(payload.get("options"), dict) else None
 
@@ -1478,7 +1556,7 @@ class WebAgentService:
             if isinstance(options, dict):
                 self.set_options(options)
             if platform == "51job":
-                timeout_seconds = max(300, min(1800, max_total * 60 + 180))
+                timeout_seconds = 21600 if max_total <= 0 else max(300, min(1800, max_total * 60 + 180))
                 result = self.with_job51_terminal(
                     lambda job51_terminal: self.job51_process_unread_all_positions(
                         job51_terminal,
@@ -1486,6 +1564,7 @@ class WebAgentService:
                         target_position=target_position,
                     ),
                     timeout_seconds=timeout_seconds,
+                    prefer_chat_page=True,
                 )
             elif platform == "zhilian":
                 result = self.with_zhilian_terminal(

@@ -13,6 +13,8 @@ const RESUME_LIBRARY_JOB_TYPES = [
   "电气工程师",
   "运营A",
   "运营B",
+  "外部财务产品顾问",
+  "AI智能体解决方案负责人",
 ];
 
 const RESUME_JOB_DISPLAY_LABELS = {
@@ -22,6 +24,8 @@ const RESUME_JOB_DISPLAY_LABELS = {
   "销售工程师（石油钻井泥浆膨润土）_湖州": "石油销售",
   "运营A": "运营A",
   "运营B": "运营B",
+  "外部财务产品顾问": "财务顾问",
+  "AI智能体解决方案负责人": "AI方案负责人",
 };
 
 const LEGACY_JOB_TYPES = [
