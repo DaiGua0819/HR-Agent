@@ -343,8 +343,12 @@
                     "dom": {k: v for k, v in item.items() if k != "text"},
                 })
         for message in (context.get("messages") if isinstance(context.get("messages"), list) else [])[-20:]:
-            if not isinstance(message, dict) or str(message.get("sender") or "") != "other":
+            if not isinstance(message, dict):
                 continue
+            if str(message.get("sender") or "") != "other":
+                value_preview = str(message.get("rawText") or message.get("text") or "")
+                if not re.search(r"(在线简历|附件简历|简历附件)", value_preview):
+                    continue
             value = safe_text(str(message.get("rawText") or message.get("text") or ""), 3000)
             if value and re.search(r"(在线简历|附件简历|简历附件|求职意向|工作经历|教育经历|项目经历|个人优势)", value):
                 text_candidates.append({
@@ -362,7 +366,14 @@
                 continue
             seen.add(normalized)
             marker_count = len(set(marker_pattern.findall(text)))
-            enough_text = len(normalized) >= 120 or (len(normalized) >= 60 and marker_count >= 2)
+            has_online_resume = bool(re.search(r"(在线简历|附件简历|简历附件)", text))
+            has_resume_section = bool(re.search(r"(求职意向|工作经历|教育经历|项目经历|个人优势|自我评价|学历|专业|学校|公司|本科|硕士|博士|大专)", text))
+            enough_text = (
+                len(normalized) >= 120
+                or (len(normalized) >= 55 and marker_count >= 2)
+                or (has_online_resume and has_resume_section and len(normalized) >= 28)
+                or (has_online_resume and len(normalized) >= 45)
+            )
             if not enough_text:
                 continue
             usable.append({**item, "text": text, "markerCount": marker_count, "length": len(normalized)})
@@ -582,7 +593,13 @@
         context = self.job51_read_chat_context(terminal)
         applicant = context.get("applicant") if isinstance(context.get("applicant"), dict) else {}
         candidate_name = safe_text(str(applicant.get("name") or recruiter_candidate_name_from_label(str(applicant.get("label") or "")) or "未知候选人"), 60)
-        applied_position = clean_applied_position(str(applicant.get("appliedPosition") or context.get("appliedPosition") or "未知岗位"))
+        accepted_screening = accepted_by_flow.get("screening") if isinstance(accepted_by_flow, dict) and isinstance(accepted_by_flow.get("screening"), dict) else {}
+        applied_position = clean_applied_position(str(
+            applicant.get("appliedPosition")
+            or context.get("appliedPosition")
+            or accepted_screening.get("jobType")
+            or "未知岗位"
+        ))
         identity_guard = self.job51_validate_resume_download_context(context, candidate_name, applied_position)
         if not identity_guard.get("ok"):
             return {
