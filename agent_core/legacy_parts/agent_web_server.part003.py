@@ -1529,6 +1529,16 @@
             return {"ok": False, "reason": "empty_response", "url": safe_text(absolute_url, 240)}
         headers = response.headers or {}
         filename = response_attachment_filename(headers, original_name or absolute_url)
+        final_suffix = resume_attachment_suffix(filename, original_name, absolute_url)
+        head = bytes(body[:32])
+        if head.lstrip().startswith((b"<html", b"<!doctype", b"<body", b"<script")):
+            return {"ok": False, "reason": "href_response_is_html_not_resume", "url": safe_text(absolute_url, 240), "filename": filename}
+        if final_suffix == ".pdf" and not head.startswith(b"%PDF-"):
+            return {"ok": False, "reason": "href_pdf_signature_invalid", "url": safe_text(absolute_url, 240), "filename": filename}
+        if final_suffix == ".docx" and not head.startswith(b"PK"):
+            return {"ok": False, "reason": "href_docx_signature_invalid", "url": safe_text(absolute_url, 240), "filename": filename}
+        if final_suffix == ".doc" and not head.startswith(b"\xd0\xcf\x11\xe0"):
+            return {"ok": False, "reason": "href_doc_signature_invalid", "url": safe_text(absolute_url, 240), "filename": filename}
         return {
             "ok": True,
             "bytes": body,

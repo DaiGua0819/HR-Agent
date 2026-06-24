@@ -407,6 +407,16 @@
         attachment: dict | None = None,
         suitability_guard: dict | None = None,
     ) -> dict:
+        if str(download_method or "") == "hexinhong_visible_online_resume_text_pdf" or str(source or "") == "51job-visible-online-resume-text":
+            return {
+                "ok": False,
+                "blocked": False,
+                "reason": "visible_online_resume_preview_only_not_real_resume",
+                "message": "51job 当前聊天在线简历预览文本不是平台真实简历，已拒绝保存为简历文件。",
+                "candidateName": candidate_name,
+                "appliedPosition": applied_position,
+                "attachment": attachment or {},
+            }
         if not isinstance(content, (bytes, bytearray)) or not content:
             return {"ok": False, "blocked": True, "reason": "empty_visible_resume_content", "message": "51job 当前聊天简历内容为空，未保存。"}
         target_path = make_job51_resume_target_path(
@@ -546,33 +556,22 @@
                 "visibleResume": visible_text,
                 "attachmentScan": {k: v for k, v in attachment_scan.items() if k != "token"} if isinstance(attachment_scan, dict) else {},
             }
-        pdf_bytes = job51_build_visible_resume_text_pdf(
-            candidate_name=candidate_name,
-            applied_position=applied_position,
-            resume_text=str(visible_text.get("text") or ""),
-            source_label=f"51job 当前聊天在线简历/{visible_text.get('source') or 'visible_dom'}",
-        )
-        if not pdf_bytes.startswith(b"%PDF-"):
-            return {
-                "ok": False,
-                "blocked": True,
-                "reason": "visible_online_resume_pdf_build_failed",
-                "message": "51job 当前聊天在线简历 PDF 构建失败，已停止保存。",
-                "candidateName": candidate_name,
-                "appliedPosition": applied_position,
-                "visibleResume": visible_text,
-            }
-        return self.job51_save_resume_content_from_chat(
-            context,
-            candidate_name,
-            applied_position,
-            pdf_bytes,
-            "hexinhong_visible_online_resume_text_pdf",
-            original_filename=f"{candidate_name}_{applied_position}.pdf",
-            source="51job-visible-online-resume-text",
-            attachment=visible_text,
-            suitability_guard=suitability_guard,
-        )
+        return {
+            "ok": False,
+            "blocked": False,
+            "reason": "visible_online_resume_preview_only_not_real_resume",
+            "message": (
+                "51job 和新红当前聊天只有在线简历预览文本，不再生成伪 PDF 入库；"
+                "将回退到求简历/发送求简历话术，只有真实附件或真实平台简历才计为已下载。"
+            ),
+            "candidateName": candidate_name,
+            "appliedPosition": applied_position,
+            "visibleResume": {
+                **visible_text,
+                "text": safe_text(str(visible_text.get("text") or ""), 500),
+            },
+            "attachmentScan": {k: v for k, v in attachment_scan.items() if k != "token"} if isinstance(attachment_scan, dict) else {},
+        }
 
     @timed_agent_stage("job51_download_resume_attachment", "51job保存在线简历PDF")
     def job51_download_resume_attachment(
@@ -1113,12 +1112,19 @@
         candidate_name: str = "",
         applied_position: str = "",
     ) -> dict:
+        invalid_methods = {
+            "hexinhong_visible_online_resume_text_pdf",
+            "existing_hash_match_before_hexinhong_visible_online_resume_text_pdf",
+            "existing_hash_match_after_hexinhong_visible_online_resume_text_pdf",
+        }
         index = load_json(RECRUITER_RESUME_DOWNLOADS_FILE, {})
         if not isinstance(index, dict):
             index = {}
         for key in self.recruiter_resume_download_memory_keys(platform, context, candidate_name, applied_position):
             item = index.get(key)
             if not isinstance(item, dict):
+                continue
+            if str(item.get("downloadMethod") or "") in invalid_methods:
                 continue
             file_path = Path(str(item.get("filePath") or ""))
             if file_path.exists() and file_path.is_file():
