@@ -873,10 +873,8 @@ def make_job51_resume_target_path(
     account_part = safe_resume_file_part(f"{AGENT_ACCOUNT_ID}_{AGENT_ACCOUNT_NAME}", AGENT_ACCOUNT_ID)
     folder = JOB51_RESUME_DIR / account_part
     folder.mkdir(parents=True, exist_ok=True)
-    name_part = safe_resume_file_part(candidate_name, "未知候选人")
-    position_part = safe_resume_file_part(applied_position, "未知岗位")
     date_part = time.strftime("%Y%m%d")
-    return unique_path(folder / f"{name_part}_{position_part}_51job_{date_part}{suffix}")
+    return unique_path(folder / f"{date_part}_{uuid.uuid4().hex}{suffix}")
 
 
 def make_recruiter_resume_target_path(
@@ -997,6 +995,54 @@ def job51_resume_path_matches_candidate(file_path: Path | str, candidate_name: s
     return not position_key or position_key in stem
 
 
+def job51_resume_download_metadata_matches_candidate(item: dict | None, candidate_name: str, applied_position: str) -> bool:
+    if not isinstance(item, dict):
+        return False
+    item_name = safe_text(str(item.get("candidateName") or ""), 60)
+    item_position = clean_applied_position(str(item.get("appliedPosition") or ""))
+    candidate_name = safe_text(str(candidate_name or ""), 60)
+    applied_position = clean_applied_position(str(applied_position or ""))
+    if item_name and candidate_name and not recruiter_candidate_names_match(item_name, candidate_name):
+        return False
+    if item_position and applied_position and item_position != applied_position:
+        return False
+    return bool(item_name or item_position)
+
+
+def job51_resume_download_metadata_for_file(file_path: Path | str = "", file_hash: str = "") -> dict:
+    normalized_path = ""
+    filename = ""
+    try:
+        path = Path(str(file_path or ""))
+        filename = path.name.lower()
+        normalized_path = str(path.resolve()).lower()
+    except Exception:
+        normalized_path = str(file_path or "").lower()
+        filename = Path(str(file_path or "")).name.lower()
+    file_hash = str(file_hash or "").strip().lower()
+    for memory_file in scoped_json_siblings(JOB51_RESUME_DOWNLOADS_FILE):
+        data = load_json(memory_file, {})
+        if not isinstance(data, dict):
+            continue
+        for item in data.values():
+            if not isinstance(item, dict):
+                continue
+            item_hash = str(item.get("fileHash") or "").strip().lower()
+            item_filename = str(item.get("filename") or "").strip().lower()
+            item_path = ""
+            try:
+                item_path = str(Path(str(item.get("filePath") or "")).resolve()).lower()
+            except Exception:
+                item_path = str(item.get("filePath") or "").lower()
+            if file_hash and item_hash and item_hash == file_hash:
+                return item
+            if normalized_path and item_path and item_path == normalized_path:
+                return item
+            if filename and item_filename and item_filename == filename:
+                return item
+    return {}
+
+
 def job51_find_resume_hash_matches(file_hash: str, ignore_path: Path | str | None = None) -> list[dict]:
     file_hash = str(file_hash or "").strip().lower()
     if not file_hash or not JOB51_RESUME_DIR.exists():
@@ -1051,7 +1097,13 @@ def job51_resume_hash_guard(
     same_candidate: list[dict] = []
     conflicts: list[dict] = []
     for match in matches:
-        if job51_resume_path_matches_candidate(match.get("filePath") or "", candidate_name, applied_position):
+        metadata = job51_resume_download_metadata_for_file(match.get("filePath") or "", file_hash)
+        if (
+            job51_resume_download_metadata_matches_candidate(metadata, candidate_name, applied_position)
+            or job51_resume_path_matches_candidate(match.get("filePath") or "", candidate_name, applied_position)
+        ):
+            if metadata:
+                match = {**match, "metadata": metadata}
             same_candidate.append(match)
         else:
             conflicts.append(match)

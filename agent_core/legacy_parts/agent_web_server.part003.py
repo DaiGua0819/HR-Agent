@@ -1677,7 +1677,8 @@
                     continue
                 if item_position and applied_position and item_position != clean_applied_position(applied_position):
                     continue
-                if not job51_resume_path_matches_candidate(file_path, candidate_name, applied_position):
+                metadata_match = job51_resume_download_metadata_matches_candidate(item, candidate_name, applied_position)
+                if not metadata_match and not job51_resume_path_matches_candidate(file_path, candidate_name, applied_position):
                     continue
                 return {
                     **item,
