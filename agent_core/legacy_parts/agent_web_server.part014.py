@@ -886,7 +886,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "job51_request_resume",
-            "when": "Recruiter-side 51job chat task: handle the current candidate's resume only when screening says the candidate is suitable. For 51 Hexinhong/job51_b, never open or click online resume details because 51job redirects them to Talent Management tabs; check prior local memory, then save only real attachment files from the current chat after file-signature validation. Visible online-resume preview text is not a real resume and must not be converted into a PDF or counted as downloaded; request the resume in the current chat instead. Other 51job accounts may still use the existing online-resume PDF save flow.",
+            "when": "Recruiter-side 51job chat task: handle the current candidate's resume only when screening says the candidate is suitable. 51 Hexinhong/job51_b now uses the same online-resume PDF save flow as 51 Songfengfeng/job51_a: click only real online-resume entries inside the current chat message list, validate that the opened page is a real resume detail page, trigger PDF download, and accept only valid PDF files. Visible online-resume preview text is not a real resume and must not be converted into a PDF or counted as downloaded.",
             "args": {},
         },
         {

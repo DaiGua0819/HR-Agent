@@ -666,37 +666,6 @@
                 "message": f"51job 已记忆该候选人简历下载记录，跳过重复下载：{safe_text(str(remembered.get('filename') or candidate_name), 100)}",
             }
 
-        if self.job51_is_hexinhong_runtime():
-            visible_resume_result = self.job51_save_hexinhong_visible_online_resume_from_chat(
-                terminal,
-                context,
-                candidate_name,
-                applied_position,
-                suitability_guard=suitability_guard,
-            )
-            if visible_resume_result.get("ok") and visible_resume_result.get("downloaded"):
-                return visible_resume_result
-            if visible_resume_result.get("blocked"):
-                return {
-                    **visible_resume_result,
-                    "candidate": applicant,
-                    "suitabilityGuard": suitability_guard,
-                }
-            return {
-                "ok": False,
-                "blocked": True,
-                "reason": "online_resume_detail_open_disabled_to_prevent_talent_management",
-                "message": (
-                    "51job 和新红已禁止点击在线简历详情以避免打开人才管理页；"
-                    f"当前聊天未能安全保存可见在线简历，将回退求简历：{safe_text(candidate_name, 60)}"
-                ),
-                "candidate": applicant,
-                "candidateName": candidate_name,
-                "appliedPosition": applied_position,
-                "suitabilityGuard": suitability_guard,
-                "visibleResumeResult": visible_resume_result,
-            }
-
         if self.job51_is_online_resume_detail_page(page):
             online_resume = {
                 "found": True,

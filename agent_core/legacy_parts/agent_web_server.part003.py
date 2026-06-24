@@ -2194,12 +2194,6 @@
         return info if isinstance(info, dict) else {"found": False, "reason": "online_resume_scan_failed"}
 
     def job51_dom_click_online_resume_entry(self, page, token: str) -> dict:
-        if self.job51_is_hexinhong_runtime():
-            return {
-                "ok": False,
-                "reason": "online_resume_click_disabled_to_prevent_talent_management",
-                "message": "51job Hexinhong online resume click is disabled to prevent talent management tabs.",
-            }
         token = str(token or "").strip()
         if not token:
             return {"ok": False, "reason": "online_resume_dom_click_missing_token"}
@@ -2262,13 +2256,6 @@
         return result if isinstance(result, dict) else {"ok": False, "reason": "online_resume_dom_click_failed"}
 
     def job51_open_online_resume_detail(self, terminal: BrowserTerminal, entry: dict) -> dict:
-        if self.job51_is_hexinhong_runtime():
-            return {
-                "ok": False,
-                "reason": "online_resume_detail_open_disabled_to_prevent_talent_management",
-                "message": "51job Hexinhong online resume detail opening is disabled to prevent talent management tabs.",
-                "entry": {k: v for k, v in (entry or {}).items() if k != "token"},
-            }
         origin_page = terminal.current_page()
         locator = origin_page.locator(f"[data-codex-job51-online-resume='{entry.get('token')}']").first
         if not locator.count():

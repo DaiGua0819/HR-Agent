@@ -113,7 +113,7 @@ description: Use when operating 51job recruiter automation for unread message ha
 
 ## 2026-06-24 Job51 Real Resume Download Note
 
-- For `job51_b` / Hexinhong message handling, do not click online-resume detail links because they can redirect to Talent Management.
+- For `job51_b` / Hexinhong message handling, use the same online-resume PDF save flow as `job51_a` / Songfengfeng. Only click real online-resume entries inside the current chat message list, then verify the opened page is a real resume detail page before downloading.
 - Only real files can be counted as downloaded resumes: platform attachment hrefs must keep a valid resume suffix and pass file-signature checks (`%PDF-`, docx `PK`, or doc OLE header).
 - Visible online-resume preview text in the chat is not a real resume. Do not convert it to PDF, do not add it to the resume library, and do not mark the candidate as `accepted_resume_downloaded`.
 - If only preview text is visible, fall back to the normal in-chat resume request and record the result as requested, not downloaded. Only finance AI direct-resume roles may use the configured direct-resume prompt on 51job; operation A/B must not send prompt text on 51job.
