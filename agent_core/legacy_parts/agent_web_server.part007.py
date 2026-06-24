@@ -987,6 +987,18 @@
         prompt = safe_text(str(prompt or "").strip(), 120)
         if not prompt:
             return {"skipped": True, "skipReason": "empty_prompt", "operationResumePrompt": {"skipped": True, "skipReason": "empty_prompt"}}
+        if not direct_resume_prompt_required_for_platform(platform_key, resume_job_type):
+            return {
+                "skipped": True,
+                "skipReason": "prompt_not_required_for_platform",
+                "message": f"{platform} {resume_job_type} 当前平台不需要发送直求简历前置话术，直接执行求/下载简历。",
+                "operationResumePrompt": {
+                    "skipped": True,
+                    "skipReason": "prompt_not_required_for_platform",
+                    "prompt": prompt,
+                    "platform": platform,
+                },
+            }
         if platform_key == "boss":
             return self.prepare_boss_operation_resume_request_prompt(
                 terminal,

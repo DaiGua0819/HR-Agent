@@ -868,7 +868,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "job51_process_unread_all_positions",
-            "when": "Recruiter-side 51job workflow: process unread messages from the 51job all-position list. The backend opens 51job chat, clicks 未读, clicks 全部岗位, then handles contacts from that unified unread list using shared boss_chat_rules screening/knowledge rules. Direct-resume roles first send the configured resumeRequestPrompt through 51job's message sender, then run 51job resume download/request logic. Do not switch positions one by one.",
+            "when": "Recruiter-side 51job workflow: process unread messages from the 51job all-position list. The backend opens 51job chat, clicks 未读, clicks 全部岗位, then handles contacts from that unified unread list using shared boss_chat_rules screening/knowledge rules. 财务AI direct-resume roles first send the configured resumeRequestPrompt through 51job's message sender, then run 51job resume download/request logic; 运营A/运营B must not send prompt text on 51job and should directly run 51job resume download/request logic. Do not switch positions one by one.",
             "args": {
                 "maxTotal": "optional safety limit, default 40",
                 "targetPosition": "ignored for this workflow; processing always uses 全部岗位",
@@ -876,7 +876,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "job51_process_current_position",
-            "when": "Recruiter-side 51job workflow: process the currently opened 51job candidate according to mapped position rules. Direct-resume roles first send resumeRequestPrompt, then run 51job resume download/request logic.",
+            "when": "Recruiter-side 51job workflow: process the currently opened 51job candidate according to mapped position rules. 财务AI direct-resume roles first send resumeRequestPrompt, then run 51job resume download/request logic; 运营A/运营B must not send prompt text on 51job and should directly run 51job resume download/request logic.",
             "args": {},
         },
         {
@@ -900,7 +900,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "zhilian_process_unread_all_positions",
-            "when": "Recruiter-side 智联 workflow: process unread messages from 智联聊天. The backend uses CDP 9226, opens 智联聊天, selects 未读 and 全部职位, then handles contacts with shared boss_chat_rules screening/knowledge rules. Direct-resume roles first send the configured resumeRequestPrompt through 智联's message sender, then run 要附件简历 logic. It uses 智联 textarea and 要附件简历 controls, not BOSS/51 DOM.",
+            "when": "Recruiter-side 智联 workflow: process unread messages from 智联聊天. The backend uses CDP 9226, opens 智联聊天, selects 未读 and 全部职位, then handles contacts with shared boss_chat_rules screening/knowledge rules. 财务AI direct-resume roles first send the configured resumeRequestPrompt through 智联's message sender, then run 要附件简历 logic; 运营A/运营B must not send prompt text on 智联 and should directly run 要附件简历/附件下载逻辑. It uses 智联 textarea and 要附件简历 controls, not BOSS/51 DOM.",
             "args": {
                 "maxTotal": "optional safety limit, default 40",
                 "targetPosition": "optional 智联 position filter; omit for all configured 智联 positions",
@@ -908,7 +908,7 @@ def function_call_schemas() -> list[dict]:
         },
         {
             "name": "zhilian_process_current_position",
-            "when": "Recruiter-side 智联 workflow: process the currently opened 智联 candidate according to mapped position rules. Direct-resume roles first send resumeRequestPrompt, then run 要附件简历 logic.",
+            "when": "Recruiter-side 智联 workflow: process the currently opened 智联 candidate according to mapped position rules. 财务AI direct-resume roles first send resumeRequestPrompt, then run 要附件简历 logic; 运营A/运营B must not send prompt text on 智联 and should directly run 要附件简历/附件下载逻辑.",
             "args": {},
         },
         {

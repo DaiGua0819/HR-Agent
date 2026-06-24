@@ -1029,7 +1029,7 @@
             prompt = direct_resume_request_prompt_from_context(context, position_reply, resume_job_type)
             candidate = context.get("applicant") if isinstance(context.get("applicant"), dict) else {}
             candidate_label = str(candidate.get("label") or candidate.get("name") or "")
-            if prompt:
+            if prompt and direct_resume_prompt_required_for_platform("51job", resume_job_type):
                 prompt_result = self.prepare_direct_resume_request_prompt(
                     terminal,
                     candidate_label,

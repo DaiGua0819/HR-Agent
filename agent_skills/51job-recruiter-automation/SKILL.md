@@ -49,14 +49,15 @@ description: Use when operating 51job recruiter automation for unread message ha
 4. 岗位未配置时只记录并跳过，不发送消息、不求简历。
 5. AI 应用开发实习生走基础条件流程：未发送则发送基础条件；候选人明确接受后再求简历；拒绝或不明确则跳过等待后续。
 6. 销售、国际业务、应用技术、电气、HRBP/人力资源类岗位走岗位专属筛选问题：未问则发送配置里的问题；明确通过后求简历；明确不满足则跳过；有问题先用知识库答疑。
-7. 财务 AI 团队新增直求简历岗位（外部财务产品顾问/业财智能化顾问/AI财务场景顾问、AI智能体解决方案负责人/AI Solution Architect/AI FDE/AI Workflow Engineer）不发送筛选问题；先用 51job 专用发送函数发送岗位配置的 `resumeRequestPrompt`，再执行 51job 求简历/下载简历函数。
-8. 候选人提问时只使用岗位知识库回答；知识库没有答案时不回复，只记录为待补充问题。
-9. 发送前先关闭 51job AI 辅助引导和微信提醒等遮挡层；发送按钮用 51job 专用点击路径触发，发送后必须用 `div.message-item.mine` 最近消息校验，不使用 BOSS 通用消息解析器。
-10. 会话列表中出现 `[送达]`、`[已读]` 的行视为已经回复过，本轮未读扫描跳过，避免重复处理刚发送过的候选人。
-11. 未读扫描只处理真实会话行，跳过 `[平台推荐]` 和“以下是为你推荐的人才”等推荐区块。
-12. 只有最后一条消息来自候选人时才做模型辅助判断/会话复盘；最后一条是我方消息时直接进入等待状态，避免无意义慢调用。
-13. 所有点击和发送串行执行，并保留拟人化停顿，避免过快操作。
-14. 每个候选人的处理结果写入批量报告和决策日志，`type` 使用 `job51_process_unread_all_positions`。
+7. 运营 A/B（企业内容运营负责人（B2B/短视频方向）、B端社交媒体运营）在 51job 不发送 `resumeRequestPrompt`，不发送筛选问题；直接执行 51job 求简历/下载简历函数。
+8. 财务 AI 团队新增直求简历岗位（外部财务产品顾问/业财智能化顾问/AI财务场景顾问、AI智能体解决方案负责人/AI Solution Architect/AI FDE/AI Workflow Engineer）不发送筛选问题；先用 51job 专用发送函数发送岗位配置的 `resumeRequestPrompt`，再执行 51job 求简历/下载简历函数。
+9. 候选人提问时只使用岗位知识库回答；知识库没有答案时不回复，只记录为待补充问题。
+10. 发送前先关闭 51job AI 辅助引导和微信提醒等遮挡层；发送按钮用 51job 专用点击路径触发，发送后必须用 `div.message-item.mine` 最近消息校验，不使用 BOSS 通用消息解析器。
+11. 会话列表中出现 `[送达]`、`[已读]` 的行视为已经回复过，本轮未读扫描跳过，避免重复处理刚发送过的候选人。
+12. 未读扫描只处理真实会话行，跳过 `[平台推荐]` 和“以下是为你推荐的人才”等推荐区块。
+13. 只有最后一条消息来自候选人时才做模型辅助判断/会话复盘；最后一条是我方消息时直接进入等待状态，避免无意义慢调用。
+14. 所有点击和发送串行执行，并保留拟人化停顿，避免过快操作。
+15. 每个候选人的处理结果写入批量报告和决策日志，`type` 使用 `job51_process_unread_all_positions`。
 
 ## 主动联系推荐候选人
 
@@ -115,4 +116,4 @@ description: Use when operating 51job recruiter automation for unread message ha
 - For `job51_b` / Hexinhong message handling, do not click online-resume detail links because they can redirect to Talent Management.
 - Only real files can be counted as downloaded resumes: platform attachment hrefs must keep a valid resume suffix and pass file-signature checks (`%PDF-`, docx `PK`, or doc OLE header).
 - Visible online-resume preview text in the chat is not a real resume. Do not convert it to PDF, do not add it to the resume library, and do not mark the candidate as `accepted_resume_downloaded`.
-- If only preview text is visible, fall back to the normal in-chat resume request or direct-resume prompt and record the result as requested, not downloaded.
+- If only preview text is visible, fall back to the normal in-chat resume request and record the result as requested, not downloaded. Only finance AI direct-resume roles may use the configured direct-resume prompt on 51job; operation A/B must not send prompt text on 51job.
