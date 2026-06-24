@@ -171,6 +171,95 @@
         }""", {"token": token})
         return info if isinstance(info, dict) else {"found": False, "reason": "resume_save_confirm_scan_failed"}
 
+    def job51_dom_click_resume_save_confirm(self, page, token: str) -> dict:
+        marker = str(token or "").strip()
+        if not marker:
+            return {"ok": False, "reason": "confirm_dom_click_missing_token"}
+        info = safe_eval(page, """(args) => {
+          const token = String(args.token || '');
+          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const visible = el => {
+            if (!el || !el.isConnected) return false;
+            const box = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return box.width > 8 && box.height > 8
+              && style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && style.opacity !== '0'
+              && box.bottom >= 0
+              && box.right >= 0
+              && box.top <= window.innerHeight
+              && box.left <= window.innerWidth;
+          };
+          const rect = el => {
+            const box = el.getBoundingClientRect();
+            return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
+          };
+          const target = document.querySelector(`[data-codex-job51-resume-save-confirm="${token}"]`);
+          if (!target) return { ok: false, reason: 'confirm_dom_click_target_missing' };
+          const clickable = target.closest('button,a,[role="button"],.el-button') || target;
+          if (!visible(clickable)) return { ok: false, reason: 'confirm_dom_click_target_not_visible', text: normalize(clickable.innerText || clickable.textContent || ''), rect: rect(clickable) };
+          if (clickable.disabled || clickable.getAttribute('aria-disabled') === 'true' || clickable.classList.contains('is-disabled')) {
+            return { ok: false, reason: 'confirm_dom_click_target_disabled', text: normalize(clickable.innerText || clickable.textContent || ''), rect: rect(clickable) };
+          }
+          clickable.scrollIntoView({ block: 'center', inline: 'center' });
+          const box = clickable.getBoundingClientRect();
+          const clientX = Math.max(1, Math.min(window.innerWidth - 1, box.left + box.width / 2));
+          const clientY = Math.max(1, Math.min(window.innerHeight - 1, box.top + box.height / 2));
+          try { clickable.focus({ preventScroll: true }); } catch (_) {}
+          return {
+            ok: true,
+            reason: 'confirm_dom_target_ready',
+            text: normalize(clickable.innerText || clickable.textContent || '').slice(0, 120),
+            tag: clickable.tagName,
+            className: String(clickable.className || '').slice(0, 120),
+            rect: rect(clickable),
+            clientX,
+            clientY
+          };
+        }""", {"token": marker})
+        if not isinstance(info, dict) or not info.get("ok"):
+            return info if isinstance(info, dict) else {"ok": False, "reason": "confirm_dom_click_failed"}
+        try:
+            client_x = float(info.get("clientX") or 0)
+            client_y = float(info.get("clientY") or 0)
+            session = page.context.new_cdp_session(page)
+            try:
+                session.send("Input.dispatchMouseEvent", {
+                    "type": "mouseMoved",
+                    "x": client_x,
+                    "y": client_y,
+                    "button": "none",
+                })
+                session.send("Input.dispatchMouseEvent", {
+                    "type": "mousePressed",
+                    "x": client_x,
+                    "y": client_y,
+                    "button": "left",
+                    "clickCount": 1,
+                })
+                session.send("Input.dispatchMouseEvent", {
+                    "type": "mouseReleased",
+                    "x": client_x,
+                    "y": client_y,
+                    "button": "left",
+                    "clickCount": 1,
+                })
+            finally:
+                try:
+                    session.detach()
+                except Exception:
+                    pass
+            info["reason"] = "confirm_cdp_mouse_click_dispatched"
+            return info
+        except Exception as error:
+            return {
+                "ok": False,
+                "reason": "confirm_cdp_mouse_click_failed",
+                "error": safe_text(str(error), 180),
+                "target": {k: v for k, v in info.items() if k not in {"clientX", "clientY"}},
+            }
+
     def job51_trigger_online_resume_pdf_download(self, terminal: BrowserTerminal, detail_page) -> dict:
         save_button = self.job51_find_online_resume_save_button(detail_page)
         if not save_button.get("found"):
@@ -228,38 +317,65 @@
                 "confirm": confirm,
                 "clickError": click_error,
             }
-        confirm_locator = detail_page.locator(f"[data-codex-job51-resume-save-confirm='{confirm.get('token')}']").first
-        if not confirm_locator.count():
-            return {
-                "ok": False,
-                "reason": "confirm_button_element_missing",
-                "saveButton": {k: v for k, v in save_button.items() if k != "token"},
-                "confirm": {k: v for k, v in confirm.items() if k != "token"},
+        confirm_attempts = []
+        last_error = ""
+        last_confirm = confirm
+        for attempt in range(1, 4):
+            if attempt > 1:
+                detail_page.wait_for_timeout(2000)
+                last_confirm = self.job51_find_resume_save_confirm_button(detail_page)
+                if not last_confirm.get("found"):
+                    confirm_attempts.append({
+                        "attempt": attempt,
+                        "ok": False,
+                        "reason": "confirm_button_not_found_on_retry",
+                        "confirm": {k: v for k, v in last_confirm.items() if k != "token"},
+                    })
+                    last_error = "confirm_button_not_found_on_retry"
+                    continue
+            confirm_token = str(last_confirm.get("token") or "")
+            confirm_locator = detail_page.locator(f"[data-codex-job51-resume-save-confirm='{confirm_token}']").first
+            attempt_info = {
+                "attempt": attempt,
+                "confirm": {k: v for k, v in last_confirm.items() if k != "token"},
             }
-        try:
-            with detail_page.expect_download(timeout=20000) as download_info:
-                if terminal.humanize:
-                    terminal.pause_like_person("pre_action")
-                    highlight_target(confirm_locator)
-                humanized_locator_click(terminal, confirm_locator, force=True)
-                if terminal.humanize:
-                    terminal.pause_like_person("post_action")
-            download = download_info.value
-            return {
-                "ok": True,
-                "download": download,
-                "downloadMethod": "online_resume_save_pdf_confirm",
-                "saveButton": {k: v for k, v in save_button.items() if k != "token"},
-                "confirm": {k: v for k, v in confirm.items() if k != "token"},
-            }
-        except Exception as error:
-            return {
-                "ok": False,
-                "reason": "download_not_triggered_after_confirm",
-                "error": safe_text(str(error), 180),
-                "saveButton": {k: v for k, v in save_button.items() if k != "token"},
-                "confirm": {k: v for k, v in confirm.items() if k != "token"},
-            }
+            try:
+                with detail_page.expect_download(timeout=9000) as download_info:
+                    if terminal.humanize and confirm_locator.count():
+                        terminal.pause_like_person("pre_action")
+                        highlight_target(confirm_locator)
+                    dom_click = self.job51_dom_click_resume_save_confirm(detail_page, confirm_token)
+                    attempt_info["domClick"] = dom_click
+                    if not dom_click.get("ok"):
+                        raise RuntimeError(str(dom_click.get("reason") or "confirm_dom_click_failed"))
+                    if terminal.humanize:
+                        terminal.pause_like_person("post_action")
+                download = download_info.value
+                attempt_info["ok"] = True
+                confirm_attempts.append(attempt_info)
+                return {
+                    "ok": True,
+                    "download": download,
+                    "downloadMethod": "online_resume_save_pdf_confirm_cdp",
+                    "saveButton": {k: v for k, v in save_button.items() if k != "token"},
+                    "confirm": {k: v for k, v in last_confirm.items() if k != "token"},
+                    "confirmAttempts": confirm_attempts,
+                }
+            except Exception as error:
+                last_error = safe_text(str(error), 180)
+                attempt_info["ok"] = False
+                attempt_info["error"] = last_error
+                confirm_attempts.append(attempt_info)
+        return {
+            "ok": False,
+            "reason": "download_not_triggered_after_confirm",
+            "error": last_error,
+            "saveButton": {k: v for k, v in save_button.items() if k != "token"},
+            "confirm": {k: v for k, v in last_confirm.items() if k != "token"},
+            "confirmAttempts": confirm_attempts,
+            "retryLimit": 3,
+            "retryIntervalMs": 2000,
+        }
 
     def job51_visible_resume_text_from_chat(self, terminal: BrowserTerminal, context: dict | None = None) -> dict:
         page = terminal.current_page()
