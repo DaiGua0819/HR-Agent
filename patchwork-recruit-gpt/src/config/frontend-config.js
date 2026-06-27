@@ -14,6 +14,7 @@ const RESUME_LIBRARY_JOB_TYPES = [
   "运营A",
   "运营B",
   "外部财务产品顾问",
+  "投资交易策略研究员（量化与市场情绪方向）",
   "AI智能体解决方案负责人",
 ];
 
@@ -25,6 +26,7 @@ const RESUME_JOB_DISPLAY_LABELS = {
   "运营A": "运营A",
   "运营B": "运营B",
   "外部财务产品顾问": "财务顾问",
+  "投资交易策略研究员（量化与市场情绪方向）": "投资策略研究",
   "AI智能体解决方案负责人": "AI方案负责人",
 };
 
@@ -60,6 +62,9 @@ const JD_PROFILE_PRIORITY_BY_JOB_TYPE = {
   "国际业务管培生": ["international_business_trainee"],
   "销售工程师（石油钻井泥浆膨润土）_湖州": ["oil_drilling_sales"],
   "电气工程师": ["electrical_engineer"],
+  "外部财务产品顾问": ["external_finance_product_advisor"],
+  "投资交易策略研究员（量化与市场情绪方向）": ["investment_strategy_researcher"],
+  "AI智能体解决方案负责人": ["ai_agent_solution_lead"],
   "AI应用开发实习生": [],
 };
 const FEEDBACK_DECISION_LABELS = {

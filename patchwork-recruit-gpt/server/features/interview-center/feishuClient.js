@@ -3,6 +3,78 @@ const fs = require("node:fs/promises");
 
 const FEISHU_API_BASE = "https://open.feishu.cn/open-apis";
 const DOCX_WRITE_DELAY_MS = Math.max(0, Number(process.env.FEISHU_DOCX_WRITE_DELAY_MS || 150));
+const DEFAULT_BITABLE_TABLE_ROUTES = [
+  {
+    tableId: "tblJTlyRbGdsbJmM",
+    tableName: "AI实习生",
+    keywords: ["AI应用开发实习生", "AI应用开发工程师", "AI应用开发", "AI Agent开发", "AI实习生", "智能体", "Agent", "RAG"],
+  },
+  {
+    tableId: "tblbADJqkdRhRlxv",
+    tableName: "HR",
+    keywords: ["HRBP", "hrbp", "人力资源管培生", "人力资源", "HR"],
+  },
+  {
+    tableId: "tblt5Wr599vRy9Oq",
+    tableName: "石油销售",
+    keywords: ["销售工程师（石油钻井泥浆膨润土）", "石油钻井泥浆膨润土销售", "石油销售"],
+  },
+  {
+    tableId: "tbl1IXITxRv8uJhg",
+    tableName: "应用技术",
+    keywords: ["应用技术经理（工业涂料领域）", "应用技术管培生（涂料领域）", "应用技术", "工业涂料"],
+  },
+  {
+    tableId: "tblbzO2P0T5d0kqE",
+    tableName: "销售管培生",
+    keywords: ["销售管培生"],
+  },
+  {
+    tableId: "tblw4hW6JMm6PtML",
+    tableName: "国际业务管培生",
+    keywords: ["国际业务管培生"],
+  },
+  {
+    tableId: "tblWR0OsR9y0FUmu",
+    tableName: "膨润土销售",
+    keywords: ["膨润土销售人员", "膨润土销售"],
+  },
+  {
+    tableId: "tblWNla7BrBqZv6h",
+    tableName: "阳原电气工程师",
+    keywords: ["电气工程师", "阳原电气工程师"],
+  },
+  {
+    tableId: "tbll8HD8jymNLNWg",
+    tableName: "沙粉销售",
+    keywords: ["沙粉销售"],
+  },
+  {
+    tableId: "tblmSgGhJCU0rrMX",
+    tableName: "运营A表",
+    keywords: ["运营A", "企业内容运营负责人（B2B/短视频方向）", "企业内容运营负责人", "B2B/短视频方向", "短视频方向", "内容运营负责人"],
+  },
+  {
+    tableId: "tblXyHjYr0Ba1rhe",
+    tableName: "运营B表",
+    keywords: ["运营B", "B端社交媒体运营", "社交媒体运营", "B端运营"],
+  },
+  {
+    tableId: "tblEyxP6FuiSPZGO",
+    tableName: "投资交易策略研究员（量化与市场情绪方向）",
+    keywords: ["投资交易策略研究员（量化与市场情绪方向）", "投资交易策略研究员", "量化与市场情绪方向"],
+  },
+  {
+    tableId: "tbloqD6Lc0BXi0vs",
+    tableName: "外部财务产品顾问",
+    keywords: ["外部财务产品顾问"],
+  },
+  {
+    tableId: "tblLD6fXxV2RqFcw",
+    tableName: "AI智能体解决方案负责人",
+    keywords: ["AI智能体解决方案负责人", "智能体解决方案负责人"],
+  },
+];
 const DEFAULT_FEISHU_OAUTH_SCOPES = [
   "offline_access",
   "auth:user.id:read",
@@ -22,6 +94,54 @@ const DEFAULT_FEISHU_OAUTH_SCOPES = [
   "minutes:minutes.search:read",
   "minutes:minutes.transcript:export",
 ].join(" ");
+
+function normalizeRouteText(value = "") {
+  return compactText(value)
+    .toLowerCase()
+    .replace(/[\s_\-—–、，,。:：/\\()（）\[\]【】]+/g, "");
+}
+
+function splitRouteKeywords(value = "") {
+  return String(value || "")
+    .split(/[,\n;，；|]+/)
+    .map((item) => compactText(item))
+    .filter(Boolean);
+}
+
+function normalizeBitableRoute(route = {}) {
+  const tableId = compactText(route.tableId || route.table_id || route.id || "");
+  const tableName = compactText(route.tableName || route.table_name || route.name || "");
+  const keywords = safeArray(route.keywords || route.jobs || route.jobTypes || route.job_types)
+    .flatMap((item) => (typeof item === "string" ? splitRouteKeywords(item) : []))
+    .concat(splitRouteKeywords(route.keyword || route.job || route.jobType || ""))
+    .filter(Boolean);
+  if (!tableId || !keywords.length) return null;
+  return { tableId, tableName, keywords };
+}
+
+function parseConfiguredBitableRoutes(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    return safeArray(parsed).map(normalizeBitableRoute).filter(Boolean);
+  } catch {
+    return text
+      .split(/\r?\n/)
+      .map((line) => {
+        const [keywordsText, tableId, tableName = ""] = line.split("=>").length > 1 ? line.split("=>") : line.split("=");
+        return normalizeBitableRoute({ tableId, tableName, keywords: splitRouteKeywords(keywordsText) });
+      })
+      .filter(Boolean);
+  }
+}
+
+function defaultBitableRoutes(defaultTableId = "") {
+  return DEFAULT_BITABLE_TABLE_ROUTES.map((route) => {
+    if (route.tableName === "AI实习生" && defaultTableId) return { ...route, tableId: defaultTableId };
+    return route;
+  });
+}
 
 function createFeishuError(action, payload, status = 500) {
   const message = payload?.msg || payload?.message || payload?.error?.message || `${action}失败`;
@@ -387,8 +507,55 @@ function createFeishuClient({
 }) {
   let appTokenCache = null;
   let tenantTokenCache = null;
-  let bitableFieldsCache = null;
-  let bitableTableCache = null;
+  const configuredRoutes = parseConfiguredBitableRoutes(process.env.FEISHU_INTERVIEW_BITABLE_TABLE_ROUTES);
+  const bitableTableRoutes = configuredRoutes.length ? configuredRoutes : defaultBitableRoutes(bitableTableId);
+  const bitableFieldsCache = new Map();
+  const bitableTableCache = new Map();
+
+  function bitableRouteJobText(input = {}) {
+    const session = input.session || input || {};
+    const resume = input.resume || session.resume || session.matchedResume || {};
+    return [
+      resume.jobType,
+      resume.appliedPosition,
+      resume.position,
+      resume.fileName,
+      session.resume?.jobType,
+      session.matchedResume?.jobType,
+      session.title,
+      session.summary,
+      session.description,
+    ]
+      .map(compactText)
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  function resolveBitableTarget(input = {}) {
+    const jobText = bitableRouteJobText(input);
+    const normalizedJobText = normalizeRouteText(jobText);
+    let matchedKeyword = "";
+    const route = normalizedJobText
+      ? bitableTableRoutes.find((item) => {
+          matchedKeyword = item.keywords.find((keyword) => normalizeRouteText(keyword) && normalizedJobText.includes(normalizeRouteText(keyword))) || "";
+          return Boolean(matchedKeyword);
+        })
+      : null;
+    const target = route || {};
+    return {
+      appToken: bitableAppToken,
+      tableId: target.tableId || bitableTableId,
+      tableName: target.tableName || "",
+      routeMatched: Boolean(route),
+      routeKeyword: matchedKeyword,
+      route,
+      jobText,
+    };
+  }
+
+  function bitableCacheKey(target = {}) {
+    return `${target.appToken || ""}|${target.tableId || ""}`;
+  }
 
   async function requestJson(url, options = {}, action = "飞书请求") {
     const response = await fetch(url, options);
@@ -467,27 +634,28 @@ function createFeishuClient({
     return tenantTokenCache.token;
   }
 
-  function bitableBaseUrl() {
-    if (!bitableAppToken || !bitableTableId) return "";
-    return `${FEISHU_API_BASE}/bitable/v1/apps/${encodeURIComponent(bitableAppToken)}/tables/${encodeURIComponent(bitableTableId)}`;
+  function bitableBaseUrl(target = resolveBitableTarget()) {
+    if (!target.appToken || !target.tableId) return "";
+    return `${FEISHU_API_BASE}/bitable/v1/apps/${encodeURIComponent(target.appToken)}/tables/${encodeURIComponent(target.tableId)}`;
   }
 
-  function assertBitableConfigured() {
-    if (!bitableAppToken || !bitableTableId) {
+  function assertBitableConfigured(target = resolveBitableTarget()) {
+    if (!target.appToken || !target.tableId) {
       const error = new Error("未配置飞书面试台账");
       error.statusCode = 400;
       throw error;
     }
   }
 
-  async function getBitableFields({ force = false } = {}) {
-    assertBitableConfigured();
-    if (bitableFieldsCache && !force) return bitableFieldsCache;
+  async function getBitableFields({ force = false, target = resolveBitableTarget() } = {}) {
+    assertBitableConfigured(target);
+    const cacheKey = bitableCacheKey(target);
+    if (bitableFieldsCache.has(cacheKey) && !force) return bitableFieldsCache.get(cacheKey);
     const tenantToken = await getTenantAccessToken();
     const fields = [];
     let pageToken = "";
     do {
-      const url = new URL(`${bitableBaseUrl()}/fields`);
+      const url = new URL(`${bitableBaseUrl(target)}/fields`);
       url.searchParams.set("page_size", "100");
       if (pageToken) url.searchParams.set("page_token", pageToken);
       const payload = await requestJson(
@@ -504,29 +672,39 @@ function createFeishuClient({
       if (!data.has_more) pageToken = "";
     } while (pageToken);
     const byName = new Map(fields.map((field) => [field.field_name, field]));
-    bitableFieldsCache = { items: fields, byName, fetchedAt: new Date().toISOString() };
-    return bitableFieldsCache;
+    const cached = { items: fields, byName, fetchedAt: new Date().toISOString(), target };
+    bitableFieldsCache.set(cacheKey, cached);
+    return cached;
   }
 
-  async function getBitableTableInfo({ force = false } = {}) {
-    assertBitableConfigured();
-    if (bitableTableCache && !force) return bitableTableCache;
+  async function getBitableTableInfo({ force = false, target = resolveBitableTarget() } = {}) {
+    assertBitableConfigured(target);
+    const cacheKey = bitableCacheKey(target);
+    if (bitableTableCache.has(cacheKey) && !force) return bitableTableCache.get(cacheKey);
     const tenantToken = await getTenantAccessToken();
     try {
       const payload = await requestJson(
-        `${FEISHU_API_BASE}/bitable/v1/apps/${encodeURIComponent(bitableAppToken)}/tables/${encodeURIComponent(bitableTableId)}`,
+        `${FEISHU_API_BASE}/bitable/v1/apps/${encodeURIComponent(target.appToken)}/tables/${encodeURIComponent(target.tableId)}`,
         {
           method: "GET",
           headers: { Authorization: `Bearer ${tenantToken}` },
         },
         "读取飞书多维表信息"
       );
-      bitableTableCache = payload.data?.table || payload.data || {};
-      return bitableTableCache;
+      const table = {
+        ...(payload.data?.table || payload.data || {}),
+        table_id: (payload.data?.table || payload.data || {}).table_id || target.tableId,
+        name: (payload.data?.table || payload.data || {}).name || target.tableName,
+        routeMatched: target.routeMatched,
+        routeKeyword: target.routeKeyword,
+        routeJobText: target.jobText,
+      };
+      bitableTableCache.set(cacheKey, table);
+      return table;
     } catch {
       try {
         const payload = await requestJson(
-          `${FEISHU_API_BASE}/bitable/v1/apps/${encodeURIComponent(bitableAppToken)}/tables`,
+          `${FEISHU_API_BASE}/bitable/v1/apps/${encodeURIComponent(target.appToken)}/tables`,
           {
             method: "GET",
             headers: { Authorization: `Bearer ${tenantToken}` },
@@ -534,16 +712,28 @@ function createFeishuClient({
           "读取飞书多维表列表"
         );
         const tables = safeArray(payload.data?.items || payload.data?.tables);
-        bitableTableCache = tables.find((table) => table.table_id === bitableTableId || table.id === bitableTableId) || {};
-        return bitableTableCache;
-      } catch {
-        bitableTableCache = {
-          table_id: bitableTableId,
-          name: process.env.FEISHU_INTERVIEW_BITABLE_TABLE_NAME || "",
+        const table = {
+          ...(tables.find((item) => item.table_id === target.tableId || item.id === target.tableId) || {}),
+          table_id: target.tableId,
+          name: tables.find((item) => item.table_id === target.tableId || item.id === target.tableId)?.name || target.tableName,
+          routeMatched: target.routeMatched,
+          routeKeyword: target.routeKeyword,
+          routeJobText: target.jobText,
         };
+        bitableTableCache.set(cacheKey, table);
+        return table;
+      } catch {
+        const table = {
+          table_id: target.tableId,
+          name: target.tableName || process.env.FEISHU_INTERVIEW_BITABLE_TABLE_NAME || "",
+          routeMatched: target.routeMatched,
+          routeKeyword: target.routeKeyword,
+          routeJobText: target.jobText,
+        };
+        bitableTableCache.set(cacheKey, table);
       }
     }
-    return bitableTableCache;
+    return bitableTableCache.get(cacheKey);
   }
 
   function pickExistingBitableFields(fields, fieldMap) {
@@ -556,13 +746,13 @@ function createFeishuClient({
     return result;
   }
 
-  async function listBitableRecords({ pageSize = 500, maxRecords = 2000 } = {}) {
-    assertBitableConfigured();
+  async function listBitableRecords({ pageSize = 500, maxRecords = 2000, target = resolveBitableTarget() } = {}) {
+    assertBitableConfigured(target);
     const tenantToken = await getTenantAccessToken();
     const records = [];
     let pageToken = "";
     do {
-      const url = new URL(`${bitableBaseUrl()}/records`);
+      const url = new URL(`${bitableBaseUrl(target)}/records`);
       url.searchParams.set("page_size", String(Math.max(1, Math.min(Number(pageSize || 500), 500))));
       url.searchParams.set("user_id_type", "open_id");
       if (pageToken) url.searchParams.set("page_token", pageToken);
@@ -582,11 +772,11 @@ function createFeishuClient({
     return records;
   }
 
-  async function getBitableRecord(recordId) {
+  async function getBitableRecord(recordId, { target = resolveBitableTarget() } = {}) {
     if (!recordId) return null;
-    assertBitableConfigured();
+    assertBitableConfigured(target);
     const tenantToken = await getTenantAccessToken();
-    const url = new URL(`${bitableBaseUrl()}/records/${encodeURIComponent(recordId)}`);
+    const url = new URL(`${bitableBaseUrl(target)}/records/${encodeURIComponent(recordId)}`);
     url.searchParams.set("user_id_type", "open_id");
     const payload = await requestJson(
       url.toString(),
@@ -599,12 +789,12 @@ function createFeishuClient({
     return payload.data?.record || payload.data || null;
   }
 
-  async function createBitableRecord(fields) {
-    assertBitableConfigured();
-    const fieldMap = await getBitableFields();
+  async function createBitableRecord(fields, { target = resolveBitableTarget() } = {}) {
+    assertBitableConfigured(target);
+    const fieldMap = await getBitableFields({ target });
     const tenantToken = await getTenantAccessToken();
     const payload = await requestJson(
-      `${bitableBaseUrl()}/records?user_id_type=open_id`,
+      `${bitableBaseUrl(target)}/records?user_id_type=open_id`,
       {
         method: "POST",
         headers: {
@@ -618,13 +808,13 @@ function createFeishuClient({
     return payload.data?.record || payload.data || {};
   }
 
-  async function updateBitableRecord(recordId, fields) {
-    if (!recordId) return createBitableRecord(fields);
-    assertBitableConfigured();
-    const fieldMap = await getBitableFields();
+  async function updateBitableRecord(recordId, fields, { target = resolveBitableTarget() } = {}) {
+    if (!recordId) return createBitableRecord(fields, { target });
+    assertBitableConfigured(target);
+    const fieldMap = await getBitableFields({ target });
     const tenantToken = await getTenantAccessToken();
     const payload = await requestJson(
-      `${bitableBaseUrl()}/records/${encodeURIComponent(recordId)}?user_id_type=open_id`,
+      `${bitableBaseUrl(target)}/records/${encodeURIComponent(recordId)}?user_id_type=open_id`,
       {
         method: "PUT",
         headers: {
@@ -638,15 +828,15 @@ function createFeishuClient({
     return payload.data?.record || payload.data || {};
   }
 
-  async function uploadBitableAttachment({ filePath, filename = "image.png", contentType = "image/png" }) {
-    assertBitableConfigured();
+  async function uploadBitableAttachment({ filePath, filename = "image.png", contentType = "image/png", target = resolveBitableTarget() }) {
+    assertBitableConfigured(target);
     const tenantToken = await getTenantAccessToken();
     const buffer = await fs.readFile(filePath);
     const baseFields = {
       file_name: filename,
-      parent_node: bitableAppToken,
+      parent_node: target.appToken,
       size: String(buffer.length),
-      extra: JSON.stringify({ drive_route_token: bitableAppToken }),
+      extra: JSON.stringify({ drive_route_token: target.appToken }),
     };
     const parentTypes = contentType.startsWith("image/") ? ["bitable_image", "bitable_file"] : ["bitable_file"];
     let lastError = null;
@@ -1382,17 +1572,28 @@ function createFeishuClient({
   }
 
   async function syncBitableRecord(session) {
-    if (!bitableAppToken || !bitableTableId) {
+    const target = resolveBitableTarget(session);
+    if (!target.appToken || !target.tableId) {
       return { skipped: true, reason: "missing_bitable_config", message: "未配置飞书面试台账" };
     }
+    const candidateName = session.resume?.name || session.matchedResume?.name || "";
     const fields = {
-      姓名: session.resume?.name || session.matchedResume?.name || "",
+      候选人姓名: candidateName,
+      姓名: candidateName,
       候选人联系电话: session.resume?.phone || "",
       初次沟通日期: session.startTime ? Number(session.startTime) * 1000 : "",
+      职位: session.resume?.jobType || session.matchedResume?.jobType || "",
     };
-    const record = session.bitableRecordId ? await updateBitableRecord(session.bitableRecordId, fields) : await createBitableRecord(fields);
+    const recordId =
+      session.bitableRecordId && (!session.bitableTableId || session.bitableTableId === target.tableId)
+        ? session.bitableRecordId
+        : "";
+    const record = recordId ? await updateBitableRecord(recordId, fields, { target }) : await createBitableRecord(fields, { target });
     return {
-      recordId: record.record_id || record.id || session.bitableRecordId || "",
+      recordId: record.record_id || record.id || recordId || "",
+      tableId: target.tableId,
+      tableName: target.tableName,
+      routeKeyword: target.routeKeyword,
       fields,
       syncedAt: new Date().toISOString(),
     };
@@ -1567,12 +1768,41 @@ function createFeishuClient({
 
   function getStatus() {
     const token = store.getToken();
+    const defaultTarget = resolveBitableTarget();
     return {
       configured: Boolean(appId && appSecret),
       connected: Boolean(token?.accessToken),
       userInfo: token?.userInfo || null,
       expiresAt: token?.expiresAt || 0,
-      bitableConfigured: Boolean(bitableAppToken && bitableTableId),
+      bitableConfigured: Boolean(defaultTarget.appToken && defaultTarget.tableId),
+      bitableTableId: defaultTarget.tableId,
+      bitableRoutes: bitableTableRoutes.map((route) => ({
+        tableId: route.tableId,
+        tableName: route.tableName,
+        keywords: route.keywords,
+      })),
+    };
+  }
+
+  function forBitableTarget(input = {}) {
+    const target = resolveBitableTarget(input);
+    return {
+      getBitableTarget: () => target,
+      getStatus: () => ({
+        ...getStatus(),
+        bitableConfigured: Boolean(target.appToken && target.tableId),
+        bitableTableId: target.tableId,
+        bitableTableName: target.tableName,
+        bitableRouteKeyword: target.routeKeyword,
+        bitableRouteMatched: target.routeMatched,
+      }),
+      getBitableFields: (options = {}) => getBitableFields({ ...options, target }),
+      getBitableTableInfo: (options = {}) => getBitableTableInfo({ ...options, target }),
+      listBitableRecords: (options = {}) => listBitableRecords({ ...options, target }),
+      getBitableRecord: (recordId, options = {}) => getBitableRecord(recordId, { ...options, target }),
+      createBitableRecord: (fields, options = {}) => createBitableRecord(fields, { ...options, target }),
+      updateBitableRecord: (recordId, fields, options = {}) => updateBitableRecord(recordId, fields, { ...options, target }),
+      uploadBitableAttachment: (options = {}) => uploadBitableAttachment({ ...options, target }),
     };
   }
 
@@ -1597,6 +1827,8 @@ function createFeishuClient({
     readMinutesTranscript,
     collectBackfillSources,
     collectBackfillText,
+    resolveBitableTarget,
+    forBitableTarget,
   };
 }
 

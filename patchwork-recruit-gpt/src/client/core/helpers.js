@@ -98,6 +98,7 @@ function normalizeJobType(jobType) {
   if (/运营A|企业内容运营负责人|B2B.*短视频|短视频方向|内容运营负责人/i.test(value)) return "运营A";
   if (/运营B|B端社交媒体运营|社交媒体运营|B端.*运营/i.test(value)) return "运营B";
   if (/外部财务产品顾问|业财智能化顾问|AI财务场景顾问|财务场景顾问|财务产品顾问|财务数字化顾问|CFO顾问/i.test(value)) return "外部财务产品顾问";
+  if (/投资交易策略研究员|交易策略研究员|量化交易策略研究员|量化策略研究员|市场情绪研究员|量化.*市场情绪/i.test(value)) return "投资交易策略研究员（量化与市场情绪方向）";
   if (/AI智能体解决方案负责人|智能体解决方案负责人|AI\s*Solution\s*Architect|Solution\s*Architect|AI\s*FDE|\bFDE\b|AI\s*Workflow\s*Engineer|Workflow\s*Engineer|Agent解决方案/i.test(value)) return "AI智能体解决方案负责人";
   if (/HRBP|hrbp|人力资源|招聘|HR|员工关系|薪酬|绩效/i.test(value)) return "HRBP";
   if (/国际业务管培|国际|外贸|海外|跨境|英语|商务英语|外贸销售|化工原料外贸/.test(value)) return "国际业务管培生";

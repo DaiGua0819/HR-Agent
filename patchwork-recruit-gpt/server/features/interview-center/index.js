@@ -609,6 +609,8 @@ function createInterviewCenterFeature(context) {
       feishuDoc,
       bitable,
       bitableRecordId: bitable?.recordId || session.bitableRecordId || "",
+      bitableTableId: bitable?.tableId || session.bitableTableId || "",
+      bitableTableName: bitable?.tableName || session.bitableTableName || "",
       status: documentReady ? "prepared" : "prepared_local",
       prepareErrors: [docError, bitableError].filter(Boolean),
       preparedAt: nowIso(),
@@ -644,12 +646,28 @@ function createInterviewCenterFeature(context) {
     }
     if (session.interviewEvaluation && !force) {
       const evaluationDocumentKey = deriveInterviewRound({ session }).key === "second" ? "bitableSecondInterviewEvaluationDocument" : "bitableSkillEvaluationDocument";
-      if (!session[evaluationDocumentKey]?.documentId) {
-        const { record } = await getResumeById(session.resumeId);
-        if (record) {
+      const { record } = await getResumeById(session.resumeId);
+      if (record) {
+        if (!session.bitableResumeImage?.fileToken) {
+          try {
+            const resumeImageResult = await syncSessionResumeImageToBitable(session);
+            if (resumeImageResult.session) session = resumeImageResult.session;
+          } catch (error) {
+            store.appendLog(session.id, "warn", error.message || "补同步简历图到飞书面试表失败", error.payload || {});
+          }
+        }
+        if (!session.bitableInterviewRecordImage?.fileToken) {
+          try {
+            const bitableRecordResult = await syncSessionInterviewRecordImageToBitable(session, record);
+            if (bitableRecordResult.session) session = bitableRecordResult.session;
+          } catch (error) {
+            store.appendLog(session.id, "warn", error.message || "补同步面试记录图到飞书面试表失败", error.payload || {});
+          }
+        }
+        if (!session[evaluationDocumentKey]?.documentId) {
           try {
             const skillEvaluationResult = await syncSessionSkillEvaluationDocumentToBitable(session, record);
-            if (skillEvaluationResult.session) return skillEvaluationResult.session;
+            if (skillEvaluationResult.session) session = skillEvaluationResult.session;
           } catch (error) {
             store.appendLog(session.id, "warn", error.message || "补同步技能评价文档到飞书面试表失败", error.payload || {});
           }
@@ -767,6 +785,18 @@ function createInterviewCenterFeature(context) {
           : session.earlyBackfillOverride || null,
       });
       store.appendLog(session.id, "info", "已完成面试回灌，等待人工复核", { ruleSuggestionIds, source });
+      try {
+        const resumeImageResult = await syncSessionResumeImageToBitable(session);
+        if (resumeImageResult.session) session = resumeImageResult.session;
+        if (
+          resumeImageResult.skipped &&
+          !["missing_bitable_config", "resume_image_already_synced", "bitable_resume_field_already_has_attachment"].includes(resumeImageResult.reason)
+        ) {
+          store.appendLog(session.id, "info", "飞书面试表简历图同步已跳过", resumeImageResult);
+        }
+      } catch (error) {
+        store.appendLog(session.id, "warn", error.message || "同步简历图到飞书面试表失败", error.payload || {});
+      }
       try {
         const bitableRecordResult = await syncSessionInterviewRecordImageToBitable(session, records[index]);
         if (bitableRecordResult.session) session = bitableRecordResult.session;

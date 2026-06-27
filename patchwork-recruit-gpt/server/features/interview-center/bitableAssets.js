@@ -93,6 +93,15 @@ function hasDocxLink(value = "") {
 }
 
 function positionAllowedForTable({ session = {}, resume = {}, tableInfo = {} } = {}) {
+  if (tableInfo.routeMatched) {
+    return {
+      allowed: true,
+      reason: "matched_bitable_table_route",
+      keyword: tableInfo.routeKeyword || tableInfo.name || tableInfo.table_name || "",
+      jobText: tableInfo.routeJobText || "",
+      tableName: compactText(tableInfo.name || tableInfo.table_name || ""),
+    };
+  }
   const allowedJobs = splitConfigList(process.env.FEISHU_INTERVIEW_BITABLE_ALLOWED_JOBS, DEFAULT_ALLOWED_JOBS);
   const tableName = compactText(tableInfo.name || tableInfo.table_name || "");
   const jobText = [resume.jobType, resume.appliedPosition, session.matchedResume?.jobType, session.title, session.description]
@@ -111,6 +120,19 @@ function positionAllowedForTable({ session = {}, resume = {}, tableInfo = {} } =
     return { allowed: true, reason: "ai_table_job_match", keyword: tableName, jobText, tableName };
   }
   return { allowed: false, reason: "job_not_in_bitable_table", jobText, tableName };
+}
+
+function selectBitableClient(feishu, { session = {}, resume = {} } = {}) {
+  return feishu.forBitableTarget ? feishu.forBitableTarget({ session, resume }) : feishu;
+}
+
+function bitableTarget(client = {}) {
+  return client.getBitableTarget ? client.getBitableTarget() : {};
+}
+
+function sessionRecordIdForTarget(session = {}, target = {}) {
+  if (session.bitableRecordId && target.tableId && session.bitableTableId && session.bitableTableId !== target.tableId) return "";
+  return session.bitableRecordId || "";
 }
 
 function runPythonJson(scriptPath, args, { timeoutMs = 120000 } = {}) {
@@ -232,17 +254,20 @@ function findExistingBitableRecord(records = [], resume = {}) {
 
 async function ensureBitableResumeImage({ feishu, store, session, resume, dataDir }) {
   if (!session?.isInterviewLike || !resume?.id) return { skipped: true, reason: "not_calendar_interview" };
-  if (!feishu.getStatus().bitableConfigured) return { skipped: true, reason: "missing_bitable_config" };
+  const bitable = selectBitableClient(feishu, { session, resume });
+  const target = bitableTarget(bitable);
+  if (!bitable.getStatus().bitableConfigured) return { skipped: true, reason: "missing_bitable_config" };
   if (session.bitableResumeImage?.fileToken && session.bitableRecordId) {
     return { skipped: true, reason: "resume_image_already_synced", recordId: session.bitableRecordId };
   }
 
-  const tableInfo = await feishu.getBitableTableInfo();
+  const tableInfo = await bitable.getBitableTableInfo();
   const allow = positionAllowedForTable({ session, resume, tableInfo });
   if (!allow.allowed) return { skipped: true, ...allow };
 
-  const records = await feishu.listBitableRecords();
-  const existing = session.bitableRecordId ? { record: await feishu.getBitableRecord(session.bitableRecordId), reason: "session_record" } : findExistingBitableRecord(records, resume);
+  const records = await bitable.listBitableRecords();
+  const sessionRecordId = sessionRecordIdForTarget(session, target);
+  const existing = sessionRecordId ? { record: await bitable.getBitableRecord(sessionRecordId), reason: "session_record" } : findExistingBitableRecord(records, resume);
   if (existing.reason === "ambiguous_name_match") {
     return { skipped: true, reason: "ambiguous_bitable_candidate", count: existing.count };
   }
@@ -262,22 +287,27 @@ async function ensureBitableResumeImage({ feishu, store, session, resume, dataDi
       store.saveSession({
         ...session,
         bitableRecordId: existingRecordId,
-        bitable: { ...(session.bitable || {}), recordId: existingRecordId, resumeImage: synced },
+        bitableTableId: target.tableId || session.bitableTableId || "",
+        bitableTableName: target.tableName || session.bitableTableName || "",
+        bitable: { ...(session.bitable || {}), recordId: existingRecordId, tableId: target.tableId || "", tableName: target.tableName || "", resumeImage: synced },
       });
     }
     return synced;
   }
 
   const image = await renderResumeLongImage({ resume, dataDir });
-  const uploaded = await feishu.uploadBitableAttachment({ filePath: image.path, filename: image.name, contentType: image.type });
+  const uploaded = await bitable.uploadBitableAttachment({ filePath: image.path, filename: image.name, contentType: image.type });
   const attachmentValue = [{ file_token: uploaded.fileToken }];
+  const candidateName = resume.name || session.matchedResume?.name || "";
   const fields = {
-    姓名: resume.name || session.matchedResume?.name || "",
+    候选人姓名: candidateName,
+    姓名: candidateName,
     候选人联系电话: resume.phone || "",
     初次沟通日期: session.startTime ? Number(session.startTime) * 1000 : "",
+    职位: resume.jobType || session.matchedResume?.jobType || "",
     [RESUME_FIELD]: attachmentValue,
   };
-  const record = existingRecordId ? await feishu.updateBitableRecord(existingRecordId, fields) : await feishu.createBitableRecord(fields);
+  const record = existingRecordId ? await bitable.updateBitableRecord(existingRecordId, fields) : await bitable.createBitableRecord(fields);
   const nextRecordId = recordId(record) || existingRecordId;
   const resumeImage = {
     status: "synced",
@@ -289,29 +319,36 @@ async function ensureBitableResumeImage({ feishu, store, session, resume, dataDi
     sourcePdf: image.sourcePdf,
     syncedAt: new Date().toISOString(),
     allowed: allow,
+    tableId: target.tableId || "",
+    tableName: target.tableName || "",
   };
   const next = store.saveSession({
     ...session,
     bitableRecordId: nextRecordId,
+    bitableTableId: target.tableId || session.bitableTableId || "",
+    bitableTableName: target.tableName || session.bitableTableName || "",
     bitableResumeImage: resumeImage,
-    bitable: { ...(session.bitable || {}), recordId: nextRecordId, resumeImage },
+    bitable: { ...(session.bitable || {}), recordId: nextRecordId, tableId: target.tableId || "", tableName: target.tableName || "", resumeImage },
   });
   return { ok: true, session: next, recordId: nextRecordId, resumeImage };
 }
 
 async function ensureBitableInterviewRecordImage({ feishu, store, session, resume, dataDir }) {
   if (!session?.isInterviewLike || !resume?.id || !session.interviewEvaluation) return { skipped: true, reason: "missing_interview_evaluation" };
-  if (!feishu.getStatus().bitableConfigured) return { skipped: true, reason: "missing_bitable_config" };
+  const bitable = selectBitableClient(feishu, { session, resume });
+  const target = bitableTarget(bitable);
+  if (!bitable.getStatus().bitableConfigured) return { skipped: true, reason: "missing_bitable_config" };
   if (session.bitableInterviewRecordImage?.fileToken && session.bitableRecordId) {
     return { skipped: true, reason: "interview_record_image_already_synced", recordId: session.bitableRecordId };
   }
 
-  const tableInfo = await feishu.getBitableTableInfo();
+  const tableInfo = await bitable.getBitableTableInfo();
   const allow = positionAllowedForTable({ session, resume, tableInfo });
   if (!allow.allowed) return { skipped: true, ...allow };
 
-  const records = await feishu.listBitableRecords();
-  const existing = session.bitableRecordId ? { record: await feishu.getBitableRecord(session.bitableRecordId), reason: "session_record" } : findExistingBitableRecord(records, resume);
+  const records = await bitable.listBitableRecords();
+  const sessionRecordId = sessionRecordIdForTarget(session, target);
+  const existing = sessionRecordId ? { record: await bitable.getBitableRecord(sessionRecordId), reason: "session_record" } : findExistingBitableRecord(records, resume);
   if (existing.reason === "ambiguous_name_match") {
     return { skipped: true, reason: "ambiguous_bitable_candidate", count: existing.count };
   }
@@ -323,13 +360,16 @@ async function ensureBitableInterviewRecordImage({ feishu, store, session, resum
   }
 
   const image = await renderInterviewSummaryImage({ session, resume, dataDir });
-  const uploaded = await feishu.uploadBitableAttachment({ filePath: image.path, filename: image.name, contentType: image.type });
+  const uploaded = await bitable.uploadBitableAttachment({ filePath: image.path, filename: image.name, contentType: image.type });
+  const candidateName = resume.name || session.matchedResume?.name || "";
   const fields = {
-    姓名: resume.name || session.matchedResume?.name || "",
+    候选人姓名: candidateName,
+    姓名: candidateName,
     候选人联系电话: resume.phone || "",
+    职位: resume.jobType || session.matchedResume?.jobType || "",
     [INTERVIEW_RECORD_FIELD]: [{ file_token: uploaded.fileToken }],
   };
-  const record = existingRecordId ? await feishu.updateBitableRecord(existingRecordId, fields) : await feishu.createBitableRecord(fields);
+  const record = existingRecordId ? await bitable.updateBitableRecord(existingRecordId, fields) : await bitable.createBitableRecord(fields);
   const nextRecordId = recordId(record) || existingRecordId;
   const interviewRecordImage = {
     status: "synced",
@@ -340,12 +380,16 @@ async function ensureBitableInterviewRecordImage({ feishu, store, session, resum
     imagePath: image.path,
     syncedAt: new Date().toISOString(),
     allowed: allow,
+    tableId: target.tableId || "",
+    tableName: target.tableName || "",
   };
   const next = store.saveSession({
     ...session,
     bitableRecordId: nextRecordId,
+    bitableTableId: target.tableId || session.bitableTableId || "",
+    bitableTableName: target.tableName || session.bitableTableName || "",
     bitableInterviewRecordImage: interviewRecordImage,
-    bitable: { ...(session.bitable || {}), recordId: nextRecordId, interviewRecordImage },
+    bitable: { ...(session.bitable || {}), recordId: nextRecordId, tableId: target.tableId || "", tableName: target.tableName || "", interviewRecordImage },
   });
   return { ok: true, session: next, recordId: nextRecordId, interviewRecordImage };
 }
@@ -366,21 +410,24 @@ async function ensureBitableSkillEvaluationDocument({
   fieldAlreadyHasDocReason = "bitable_skill_evaluation_field_already_has_docx_link",
 } = {}) {
   if (!session?.isInterviewLike || !resume?.id || !session.interviewEvaluation) return { skipped: true, reason: "missing_interview_evaluation" };
-  if (!feishu.getStatus().bitableConfigured) return { skipped: true, reason: "missing_bitable_config" };
+  const bitable = selectBitableClient(feishu, { session, resume });
+  const target = bitableTarget(bitable);
+  if (!bitable.getStatus().bitableConfigured) return { skipped: true, reason: "missing_bitable_config" };
   if (session[sessionDocumentKey]?.documentId && session.bitableRecordId) {
     return { skipped: true, reason: alreadySyncedReason, recordId: session.bitableRecordId, field: fieldName };
   }
 
-  const fieldMap = await feishu.getBitableFields();
+  const fieldMap = await bitable.getBitableFields();
   const targetField = fieldMap.byName?.get(fieldName);
   if (!targetField) return { skipped: true, reason: fieldMissingReason, field: fieldName };
 
-  const tableInfo = await feishu.getBitableTableInfo();
+  const tableInfo = await bitable.getBitableTableInfo();
   const allow = positionAllowedForTable({ session, resume, tableInfo });
   if (!allow.allowed) return { skipped: true, ...allow };
 
-  const records = await feishu.listBitableRecords();
-  const existing = session.bitableRecordId ? { record: await feishu.getBitableRecord(session.bitableRecordId), reason: "session_record" } : findExistingBitableRecord(records, resume);
+  const records = await bitable.listBitableRecords();
+  const sessionRecordId = sessionRecordIdForTarget(session, target);
+  const existing = sessionRecordId ? { record: await bitable.getBitableRecord(sessionRecordId), reason: "session_record" } : findExistingBitableRecord(records, resume);
   if (existing.reason === "ambiguous_name_match") {
     return { skipped: true, reason: "ambiguous_bitable_candidate", count: existing.count };
   }
@@ -404,14 +451,17 @@ async function ensureBitableSkillEvaluationDocument({
   let record = null;
   let lastError = null;
   const preservedManualText = existingFieldText || compactText(fieldText);
+  const candidateName = resume.name || session.matchedResume?.name || "";
   for (const value of documentFieldValueCandidates(targetField, doc, preservedManualText)) {
     try {
       const fields = {
-        姓名: resume.name || session.matchedResume?.name || "",
+        候选人姓名: candidateName,
+        姓名: candidateName,
         候选人联系电话: resume.phone || "",
+        职位: resume.jobType || session.matchedResume?.jobType || "",
         [fieldName]: value,
       };
-      record = existingRecordId ? await feishu.updateBitableRecord(existingRecordId, fields) : await feishu.createBitableRecord(fields);
+      record = existingRecordId ? await bitable.updateBitableRecord(existingRecordId, fields) : await bitable.createBitableRecord(fields);
       attempts.push({ ok: true, valueKind: Array.isArray(value) ? "attachment" : typeof value });
       break;
     } catch (error) {
@@ -443,12 +493,16 @@ async function ensureBitableSkillEvaluationDocument({
     syncedAt: new Date().toISOString(),
     attempts,
     allowed: allow,
+    tableId: target.tableId || "",
+    tableName: target.tableName || "",
   };
   const next = store.saveSession({
     ...session,
     bitableRecordId: nextRecordId,
+    bitableTableId: target.tableId || session.bitableTableId || "",
+    bitableTableName: target.tableName || session.bitableTableName || "",
     [sessionDocumentKey]: evaluationDocument,
-    bitable: { ...(session.bitable || {}), recordId: nextRecordId, [bitableDocumentKey]: evaluationDocument },
+    bitable: { ...(session.bitable || {}), recordId: nextRecordId, tableId: target.tableId || "", tableName: target.tableName || "", [bitableDocumentKey]: evaluationDocument },
   });
   return { ok: true, session: next, recordId: nextRecordId, [resultKey]: evaluationDocument, evaluationDocument };
 }

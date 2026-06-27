@@ -416,6 +416,7 @@ JOB51_CONFIGURED_POSITIONS = (
     "人力资源管培生",
     "企业内容运营负责人（B2B/短视频方向）",
     "B端社交媒体运营",
+    "投资交易策略研究员（量化与市场情绪方向）",
 )
 ZHILIAN_CONFIGURED_POSITIONS = (
     "电气工程师",
@@ -432,6 +433,7 @@ ZHILIAN_CONFIGURED_POSITIONS = (
     "销售工程师（石油钻井泥浆膨润土）",
     "企业内容运营负责人（B2B/短视频方向）",
     "B端社交媒体运营",
+    "投资交易策略研究员（量化与市场情绪方向）",
 )
 
 
@@ -557,6 +559,15 @@ def normalize_direct_resume_operations_job_type(value: str) -> str:
     ):
         return "外部财务产品顾问"
     if (
+        "投资交易策略研究员" in compact
+        or "交易策略研究员" in compact
+        or "量化交易策略研究员" in compact
+        or "量化策略研究员" in compact
+        or "市场情绪研究员" in compact
+        or ("量化" in compact and "市场情绪" in compact)
+    ):
+        return "投资交易策略研究员（量化与市场情绪方向）"
+    if (
         "ai智能体解决方案负责人" in compact
         or "智能体解决方案负责人" in compact
         or "aisolutionarchitect" in compact
@@ -628,6 +639,13 @@ DIRECT_RESUME_OPERATION_TARGET_POSITIONS = (
     "业财智能化顾问",
     "AI财务场景顾问",
     "财务场景顾问",
+    "投资交易策略研究员（量化与市场情绪方向）",
+    "投资交易策略研究员",
+    "交易策略研究员",
+    "量化交易策略研究员",
+    "量化策略研究员",
+    "市场情绪研究员",
+    "量化与市场情绪方向",
     "AI智能体解决方案负责人",
     "AI Solution Architect",
     "AI FDE",
@@ -638,6 +656,7 @@ DIRECT_RESUME_OPERATION_TARGET_POSITIONS = (
 
 DIRECT_RESUME_PROMPT_ALL_PLATFORM_JOB_TYPES = {
     "外部财务产品顾问",
+    "投资交易策略研究员（量化与市场情绪方向）",
     "AI智能体解决方案负责人",
 }
 
@@ -646,6 +665,7 @@ DIRECT_RESUME_REQUEST_PROMPTS = {
     "运营A": "可以发一份简历过来吗",
     "运营B": "可以发一份简历过来吗",
     "外部财务产品顾问": "你好，方便发一份简历过来吗",
+    "投资交易策略研究员（量化与市场情绪方向）": "你好，方便发一份简历过来吗",
     "AI智能体解决方案负责人": "你好，可以看看简历吗",
 }
 

@@ -587,7 +587,49 @@
                 "51job 联系人列表回到顶部",
                 lambda: self.job51_scroll_conversation_list_to_top(terminal),
             )
+            recent_processed_state_key = "__job51_recent_unread_processed__"
+            recent_processed_ttl = 12 * 60 * 60
+            now_ts = time.time()
+            recent_processed_state = self.get_chat_state(recent_processed_state_key)
+            recent_processed_map: dict[str, dict] = {}
+            recent_processed_items = recent_processed_state.get("labels") if isinstance(recent_processed_state, dict) else []
+            if not isinstance(recent_processed_items, list):
+                recent_processed_items = []
+            for recent_item in recent_processed_items:
+                recent_key = ""
+                recent_ts = 0.0
+                recent_label = ""
+                if isinstance(recent_item, dict):
+                    recent_key = str(recent_item.get("key") or "")
+                    recent_label = str(recent_item.get("label") or "")
+                    if not recent_key and recent_label:
+                        recent_key = compact_conversation_label(recent_label)
+                    try:
+                        recent_ts = float(recent_item.get("processedAtTs") or 0)
+                    except Exception:
+                        recent_ts = 0.0
+                elif isinstance(recent_item, str):
+                    recent_key = str(recent_item or "")
+                if recent_key and (not recent_ts or now_ts - recent_ts <= recent_processed_ttl):
+                    recent_processed_map[recent_key] = {
+                        "key": recent_key,
+                        "label": safe_text(recent_label or recent_key, 240),
+                        "processedAtTs": recent_ts or now_ts,
+                    }
             excluded: list[str] = []
+            for recent_item in recent_processed_map.values():
+                if not isinstance(recent_item, dict):
+                    continue
+                recent_key = str(recent_item.get("key") or "")
+                recent_label = str(recent_item.get("label") or "")
+                if recent_key:
+                    excluded.append(recent_key)
+                if recent_label:
+                    excluded.append(recent_label)
+                    recent_name = recruiter_candidate_name_from_label(recent_label)
+                    if recent_name and compact_conversation_label(recent_name) not in {"濂冲＋", "鍏堢敓", "鍚屽", "鍊欓€変汉", "鏈煡鍊欓€変汉"}:
+                        excluded.append(recent_name)
+            recent_processed_seed_count = len(excluded)
             no_target = 0
             while (unlimited or len(results) < target_limit) and no_target < 12:
                 self.check_pause()
@@ -681,6 +723,13 @@
                 })
                 label_key = compact_conversation_label(label)
                 if label_key:
+                    recent_processed_map[label_key] = {
+                        "key": label_key,
+                        "label": safe_text(label, 240),
+                        "processedAt": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "processedAtTs": time.time(),
+                        "source": "job51_unread_batch",
+                    }
                     excluded.append(label_key)
                 target_candidate_name = recruiter_candidate_name_from_label(label)
                 if target_candidate_name:
@@ -784,6 +833,27 @@
             message += " 动作统计：" + "；".join(f"{key} {value}" for key, value in sorted(counts.items()))
         if filtered:
             message += f" 跳过/未进入岗位 {len(filtered)} 项。"
+        recent_processed_stored = 0
+        if "recent_processed_map" in locals():
+            try:
+                recent_items = sorted(
+                    recent_processed_map.values(),
+                    key=lambda item: float(item.get("processedAtTs") or 0) if isinstance(item, dict) else 0,
+                )[-800:]
+                recent_processed_stored = len(recent_items)
+                self.set_chat_state(
+                    recent_processed_state_key,
+                    "job51_recent_unread_processed",
+                    source="job51_unread_batch",
+                    labels=recent_items,
+                    ttlSeconds=recent_processed_ttl,
+                    seedCount=int(locals().get("recent_processed_seed_count") or 0),
+                )
+            except Exception as error:
+                filtered.append({
+                    "reason": "recent_processed_state_save_failed",
+                    "message": safe_text(str(error), 160),
+                })
         batch_report = append_recruiter_batch_report({
             "type": "job51_process_unread_all_positions",
             "message": safe_text(message, 800),

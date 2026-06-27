@@ -29,15 +29,56 @@
                     highlight_target(unread)
                 click_result = unread.evaluate("""el => {
                   const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+                  const cls = String(el.className || '');
                   const href = String(el.getAttribute('href') || el.closest('a')?.getAttribute('href') || '');
-                  const guardText = normalize([el.innerText, el.textContent, href, el.className, el.id].filter(Boolean).join(' '));
-                  if (/Revision\\/talent\\/management|Revision\\/talent\\/search-recommend|人才管理|人才望远镜/.test(guardText)) {
-                    return { ok: false, reason: 'blocked_talent_navigation_target', text: guardText.slice(0, 160), href };
+                  const text = normalize(el.innerText || el.textContent || '');
+                  const guardText = normalize([text, href, cls, el.id].filter(Boolean).join(' '));
+                  const blockedNavigation = /Revision\\/talent\\/management|Revision\\/talent\\/search-recommend|人才管理|人才望远镜/.test(guardText);
+                  const blockedAi = /AI\\s*沟通|AI沟通|智能沟通|ai\\s*沟通/i.test(guardText);
+                  if (!el.matches('label.el-checkbox.btn.unread-checkbox') || !/unread-checkbox/.test(cls)) {
+                    return { ok: false, reason: 'all_messages_filter_not_exact_checkbox', text: guardText.slice(0, 160), href, className: cls };
+                  }
+                  if (blockedNavigation || blockedAi) {
+                    return { ok: false, reason: blockedAi ? 'blocked_ai_chat_target' : 'blocked_talent_navigation_target', text: guardText.slice(0, 160), href, className: cls };
+                  }
+                  if (!/未读|unread/i.test(guardText)) {
+                    return { ok: false, reason: 'all_messages_filter_text_mismatch', text: guardText.slice(0, 160), href, className: cls };
                   }
                   el.scrollIntoView({ block: 'center', inline: 'center' });
-                  if (typeof el.click === 'function') el.click();
-                  else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                  return { ok: true, text: normalize(el.innerText || el.textContent || '').slice(0, 80), href };
+                  const target = el.querySelector('.el-checkbox__input, .el-checkbox__inner, input[type="checkbox"]') || el;
+                  const rect = target.getBoundingClientRect();
+                  const labelRect = el.getBoundingClientRect();
+                  if (!rect || rect.width <= 0 || rect.height <= 0) {
+                    return { ok: false, reason: 'all_messages_filter_click_target_not_visible', text: guardText.slice(0, 160), href, className: cls };
+                  }
+                  const x = Math.min(Math.max(rect.left + Math.min(rect.width / 2, 10), labelRect.left + 1), labelRect.right - 1);
+                  const y = Math.min(Math.max(rect.top + rect.height / 2, labelRect.top + 1), labelRect.bottom - 1);
+                  const hit = document.elementFromPoint(x, y);
+                  if (!hit || !el.contains(hit)) {
+                    return {
+                      ok: false,
+                      reason: 'all_messages_filter_hit_test_outside_label',
+                      text: guardText.slice(0, 160),
+                      hitText: normalize(hit && (hit.innerText || hit.textContent || '')).slice(0, 120),
+                      href,
+                      className: cls,
+                      rect: { x: labelRect.x, y: labelRect.y, width: labelRect.width, height: labelRect.height }
+                    };
+                  }
+                  const hitText = normalize([hit.innerText, hit.textContent, hit.className, hit.id].filter(Boolean).join(' '));
+                  if (/AI\\s*沟通|AI沟通|智能沟通|ai\\s*沟通/i.test(hitText)) {
+                    return { ok: false, reason: 'blocked_ai_chat_hit_target', text: guardText.slice(0, 160), hitText: hitText.slice(0, 120), href, className: cls };
+                  }
+                  if (typeof target.click === 'function') target.click();
+                  else target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                  return {
+                    ok: true,
+                    text: text.slice(0, 80),
+                    href,
+                    className: cls,
+                    clickTarget: String(target.className || target.tagName || '').slice(0, 80),
+                    rect: { x: labelRect.x, y: labelRect.y, width: labelRect.width, height: labelRect.height }
+                  };
                 }""")
                 if isinstance(click_result, dict) and not click_result.get("ok"):
                     return {"found": False, "reason": str(click_result.get("reason") or "all_messages_filter_dom_click_blocked"), "state": state, "click": click_result}
@@ -132,8 +173,287 @@
                 "locator": row,
                 "x": round(box["x"]) if box else None,
                 "y": round(box["y"]) if box else None,
+                "scrollState": self.job51_capture_thread_list_scroll_state(terminal),
             }
         return None
+
+    def job51_capture_thread_list_scroll_state(self, terminal: BrowserTerminal) -> dict:
+        page = terminal.current_page()
+        try:
+            state = safe_eval(page, r"""() => {
+              const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+              const visible = el => {
+                if (!el || !el.isConnected) return false;
+                const box = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return box.width > 80 && box.height > 35 && box.bottom > 0 && box.right > 0
+                  && box.top < window.innerHeight && box.left < window.innerWidth
+                  && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') > 0.02;
+              };
+              const canScroll = el => {
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                const overflow = style.overflowY || '';
+                const cls = String(el.className || '');
+                const id = String(el.id || '');
+                return el.scrollHeight > el.clientHeight + 30
+                  && (/(auto|scroll|hidden)/.test(overflow)
+                    || /conversation|session|contact|chat|list|scroll|el-scrollbar/i.test(cls + ' ' + id));
+              };
+              const rows = Array.from(document.querySelectorAll('#conversation-list .list-item')).filter(visible);
+              const findScrollableParent = start => {
+                let cur = start || null;
+                while (cur && cur !== document.body) {
+                  const box = cur.getBoundingClientRect();
+                  if (canScroll(cur) && box.width >= 160 && box.x < Math.min(760, window.innerWidth * 0.58)) return cur;
+                  cur = cur.parentElement;
+                }
+                return null;
+              };
+              let container = rows.length ? findScrollableParent(rows[0]) : null;
+              if (!container) {
+                const preferred = Array.from(document.querySelectorAll([
+                  '#conversation-list',
+                  '#conversation-list .el-scrollbar__wrap',
+                  '#conversation-list .el-scrollbar__view',
+                  '.el-scrollbar__wrap',
+                  '.conversation-list',
+                  '[class*="conversation" i]',
+                  '[class*="session" i]',
+                  '[class*="contact" i]',
+                  '[class*="chat-list" i]',
+                  '[class*="list" i]'
+                ].join(','))).filter(el => {
+                  if (!visible(el) || !canScroll(el)) return false;
+                  const box = el.getBoundingClientRect();
+                  return box.width >= 160 && box.height >= 120 && box.x < Math.min(760, window.innerWidth * 0.58);
+                });
+                container = preferred[0] || null;
+              }
+              const signature = rows
+                .slice(0, 14)
+                .map(row => normalize(row.innerText || row.textContent || '').slice(0, 90))
+                .join('|');
+              if (!container) return { found: false, signature };
+              const top = container.scrollTop || 0;
+              const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+              return {
+                found: true,
+                top: Math.round(top),
+                maxTop: Math.round(maxTop),
+                signature
+              };
+            }""")
+        except Exception as error:
+            return {"found": False, "reason": safe_text(str(error), 160)}
+        return state if isinstance(state, dict) else {"found": False, "reason": "scroll_state_unavailable"}
+
+    def job51_restore_thread_list_scroll_state(self, terminal: BrowserTerminal, target: dict | None = None) -> dict:
+        target = target if isinstance(target, dict) else {}
+        scroll_state = target.get("scrollState") if isinstance(target.get("scrollState"), dict) else {}
+        if not scroll_state.get("found"):
+            return {"restored": False, "reason": "target_scroll_state_missing"}
+        page = terminal.current_page()
+        try:
+            top = int(scroll_state.get("top") or 0)
+        except Exception:
+            top = 0
+        try:
+            result = safe_eval(page, r"""({ top }) => {
+              const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+              const visible = el => {
+                if (!el || !el.isConnected) return false;
+                const box = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return box.width > 80 && box.height > 35 && box.bottom > 0 && box.right > 0
+                  && box.top < window.innerHeight && box.left < window.innerWidth
+                  && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') > 0.02;
+              };
+              const canScroll = el => {
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                const overflow = style.overflowY || '';
+                const cls = String(el.className || '');
+                const id = String(el.id || '');
+                return el.scrollHeight > el.clientHeight + 30
+                  && (/(auto|scroll|hidden)/.test(overflow)
+                    || /conversation|session|contact|chat|list|scroll|el-scrollbar/i.test(cls + ' ' + id));
+              };
+              const rows = Array.from(document.querySelectorAll('#conversation-list .list-item')).filter(visible);
+              const findScrollableParent = start => {
+                let cur = start || null;
+                while (cur && cur !== document.body) {
+                  const box = cur.getBoundingClientRect();
+                  if (canScroll(cur) && box.width >= 160 && box.x < Math.min(760, window.innerWidth * 0.58)) return cur;
+                  cur = cur.parentElement;
+                }
+                return null;
+              };
+              let container = rows.length ? findScrollableParent(rows[0]) : null;
+              if (!container) {
+                const preferred = Array.from(document.querySelectorAll([
+                  '#conversation-list',
+                  '#conversation-list .el-scrollbar__wrap',
+                  '#conversation-list .el-scrollbar__view',
+                  '.el-scrollbar__wrap',
+                  '.conversation-list',
+                  '[class*="conversation" i]',
+                  '[class*="session" i]',
+                  '[class*="contact" i]',
+                  '[class*="chat-list" i]',
+                  '[class*="list" i]'
+                ].join(','))).filter(el => {
+                  if (!visible(el) || !canScroll(el)) return false;
+                  const box = el.getBoundingClientRect();
+                  return box.width >= 160 && box.height >= 120 && box.x < Math.min(760, window.innerWidth * 0.58);
+                });
+                container = preferred[0] || null;
+              }
+              const signature = () => Array.from(document.querySelectorAll('#conversation-list .list-item'))
+                .filter(visible)
+                .slice(0, 14)
+                .map(row => normalize(row.innerText || row.textContent || '').slice(0, 90))
+                .join('|');
+              if (!container) return { restored: false, reason: 'no_scroll_container', signature: signature() };
+              const before = container.scrollTop || 0;
+              const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+              const next = Math.max(0, Math.min(maxTop, Number(top || 0)));
+              if (container.scrollTo) container.scrollTo({ top: next, behavior: 'auto' });
+              else container.scrollTop = next;
+              container.dispatchEvent(new Event('scroll', { bubbles: true }));
+              container.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: next - before }));
+              return {
+                restored: true,
+                before: Math.round(before),
+                after: Math.round(next),
+                changed: Math.abs(next - before) > 4,
+                maxTop: Math.round(maxTop),
+                signature: signature()
+              };
+            }""", {"top": top})
+        except Exception as error:
+            return {"restored": False, "reason": safe_text(str(error), 160)}
+        if isinstance(result, dict) and result.get("restored"):
+            try:
+                page.wait_for_timeout(180)
+            except Exception:
+                pass
+        return result if isinstance(result, dict) else {"restored": False, "reason": "restore_state_unavailable"}
+
+    def job51_refind_thread_target(self, terminal: BrowserTerminal, target: dict | None = None) -> dict:
+        target = target if isinstance(target, dict) else {}
+        restore_result = self.job51_restore_thread_list_scroll_state(terminal, target)
+        original_label = safe_text(str(target.get("label") or ""), 300)
+        original_key = compact_conversation_label(original_label)
+        original_name = recruiter_candidate_name_from_label(original_label)
+        original_job = clean_applied_position(str(target.get("job") or ""))
+        def refind_body_key(value: str, *remove_values: str) -> str:
+            key = compact_conversation_label(value)
+            key = re.sub(r"\d{1,2}:\d{2}", "", key)
+            key = re.sub(r"20\d{2}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}/\d{1,2}", "", key)
+            key = re.sub(r"\d+", "", key)
+            for token in ("今天", "昨天", "前天", "已投", "已读", "送达", "新招呼", "引用", "删除"):
+                key = key.replace(token, "")
+            removable = list(remove_values)
+            try:
+                removable.extend(str(item or "") for item in JOB51_CONFIGURED_POSITIONS)
+            except Exception:
+                pass
+            for item in removable:
+                item_key = compact_conversation_label(str(item or ""))
+                if item_key:
+                    key = key.replace(item_key, "")
+            return key[-160:]
+        page = terminal.current_page()
+        rows = page.locator("#conversation-list .list-item")
+        try:
+            count = rows.count()
+        except Exception:
+            count = 0
+        viewport = page.viewport_size or {"width": 1280, "height": 720}
+        viewport_height = int(viewport.get("height") or 720)
+        viewport_width = int(viewport.get("width") or 1280)
+        for index in range(count):
+            row = rows.nth(index)
+            try:
+                label = safe_text(row.inner_text(timeout=800), 300)
+            except Exception:
+                continue
+            if not label:
+                continue
+            label_key = compact_conversation_label(label)
+            label_name = recruiter_candidate_name_from_label(label)
+            job = safe_text(safe_eval(page, f"""() => {{
+              const row = document.querySelectorAll('#conversation-list .list-item')[{index}];
+              const node = row ? row.querySelector('.jobname') : null;
+              return node ? String(node.innerText || node.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+            }}""") or "", 100)
+            clean_job = clean_applied_position(job or label)
+            key_match = bool(original_key and label_key and (original_key == label_key or original_key in label_key or label_key in original_key))
+            name_match = bool(original_name and label_name and recruiter_candidate_names_match(original_name, label_name))
+            job_match = bool(
+                original_job
+                and clean_job
+                and (
+                    original_job in clean_job
+                    or clean_job in original_job
+                    or job51_position_label_matches(original_job, clean_job)
+                )
+            )
+            generic_name = bool(re.search(r"(先生|女士|同学)$", original_name or "")) or len(original_name or "") <= 1
+            original_body_key = refind_body_key(original_label, original_name, original_job)
+            label_body_key = refind_body_key(label, label_name, clean_job, job)
+            body_match = bool(
+                name_match
+                and original_body_key
+                and label_body_key
+                and min(len(original_body_key), len(label_body_key)) >= 8
+                and (original_body_key in label_body_key or label_body_key in original_body_key)
+            )
+            if not (key_match or body_match or (name_match and job_match and not generic_name)):
+                continue
+            try:
+                box = row.bounding_box(timeout=1000)
+            except Exception:
+                box = None
+            if not box:
+                continue
+            if (
+                float(box.get("width") or 0) < 120
+                or float(box.get("height") or 0) < 35
+                or float(box.get("x") or 0) > min(760, viewport_width * 0.58)
+                or float(box.get("y") or 0) < 80
+                or float(box.get("y") or 0) > viewport_height - 24
+                or float(box.get("y") or 0) + float(box.get("height") or 0) < 120
+            ):
+                continue
+            refreshed = dict(target)
+            refreshed.update({
+                "found": True,
+                "index": index,
+                "label": label,
+                "job": job,
+                "locator": row,
+                "x": round(box["x"]),
+                "y": round(box["y"]),
+                "refind": {
+                    "restoreResult": restore_result,
+                    "matchedBy": "label" if key_match else "name_body" if body_match else "name_job",
+                    "originalLabel": safe_text(original_label, 160),
+                    "label": safe_text(label, 160),
+                    "job": safe_text(job, 80),
+                    "bodyMatch": bool(body_match),
+                },
+            })
+            return refreshed
+        return {
+            "found": False,
+            "reason": "target_not_visible_after_restore",
+            "restoreResult": restore_result,
+            "targetLabel": safe_text(original_label, 160),
+            "targetName": safe_text(str(original_name or ""), 80),
+            "targetJob": safe_text(original_job, 80),
+        }
 
     def job51_visible_thread_summary(
         self,
@@ -683,13 +1003,60 @@
         applicant_name = safe_text(str(opened_name or header_name or selected_name), 60)
         applied_position = clean_applied_position(str(opened_job or ""))
         identity_warnings: list[dict] = []
-        if opened_name and header_name and not recruiter_candidate_names_match(opened_name, header_name):
+        def privacy_mask_name_match(left_name: str, right_name: str) -> bool:
+            left_name = safe_text(str(left_name or ""), 40)
+            right_name = safe_text(str(right_name or ""), 40)
+            if not left_name or not right_name:
+                return False
+            titles = ("先生", "女士", "同学")
+            def masked_pair(real_name: str, masked_name: str) -> bool:
+                return (
+                    len(real_name) >= 2
+                    and len(masked_name) >= 3
+                    and masked_name.startswith(real_name[:1])
+                    and any(masked_name.endswith(title) for title in titles)
+                )
+            return masked_pair(left_name, right_name) or masked_pair(right_name, left_name)
+
+        def label_without_identity(value: str, *names: str) -> str:
+            compact = compact_conversation_label(value)
+            compact = re.sub(r"\d{1,2}:\d{2}", "", compact)
+            for name in names:
+                name = safe_text(str(name or ""), 40)
+                if name:
+                    compact = compact.replace(name, "", 1)
+            for token in ("已投", "已读", "[新招呼]", "新招呼"):
+                compact = compact.replace(token, "")
+            return compact[:160]
+
+        opened_body_key = label_without_identity(opened_label, opened_name)
+        selected_body_key = label_without_identity(selected_label, selected_name, header_name)
+        body_match = bool(
+            opened_body_key
+            and selected_body_key
+            and (opened_body_key in selected_body_key or selected_body_key in opened_body_key)
+        )
+        job_match = bool(
+            opened_job
+            and selected_job
+            and (
+                clean_applied_position(opened_job) in clean_applied_position(selected_job)
+                or clean_applied_position(selected_job) in clean_applied_position(opened_job)
+                or job51_position_label_matches(opened_job, selected_job)
+            )
+        )
+        def job51_context_names_match(left_name: str, right_name: str) -> bool:
+            if recruiter_candidate_names_match(left_name, right_name):
+                return True
+            return bool(privacy_mask_name_match(left_name, right_name) and (body_match or job_match))
+
+        if opened_name and header_name and not job51_context_names_match(opened_name, header_name):
             identity_warnings.append({
                 "type": "opened_header_name_mismatch",
                 "openedName": opened_name,
                 "headerName": header_name,
             })
-        if opened_name and selected_name and not recruiter_candidate_names_match(opened_name, selected_name):
+        if opened_name and selected_name and not job51_context_names_match(opened_name, selected_name):
             identity_warnings.append({
                 "type": "opened_selected_name_mismatch",
                 "openedName": opened_name,
@@ -1677,8 +2044,20 @@
                     continue
                 if item_position and applied_position and item_position != clean_applied_position(applied_position):
                     continue
-                metadata_match = job51_resume_download_metadata_matches_candidate(item, candidate_name, applied_position)
-                if not metadata_match and not job51_resume_path_matches_candidate(file_path, candidate_name, applied_position):
+                metadata_matcher = globals().get("job51_resume_download_metadata_matches_candidate")
+                if callable(metadata_matcher):
+                    metadata_match = bool(metadata_matcher(item, candidate_name, applied_position))
+                else:
+                    metadata_match = bool(item_name or item_position)
+                path_matcher = globals().get("job51_resume_path_matches_candidate")
+                if callable(path_matcher):
+                    path_match = bool(path_matcher(file_path, candidate_name, applied_position))
+                else:
+                    path_stem = re.sub(r"\s+", "", file_path.stem).lower()
+                    name_key = re.sub(r"\s+", "", safe_resume_file_part(candidate_name, "")).lower()
+                    position_key = re.sub(r"\s+", "", safe_resume_file_part(applied_position, "")).lower()
+                    path_match = bool(name_key and name_key in path_stem and (not position_key or position_key in path_stem))
+                if not metadata_match and not path_match:
                     continue
                 return {
                     **item,
@@ -1902,6 +2281,7 @@
           const roots = Array.from(document.querySelectorAll([
             '.con.con-ehire',
             '.con-close',
+            '.annex-resume',
             '.el-dialog__wrapper',
             '.el-dialog',
             '.resume-common-dialog',
@@ -1924,7 +2304,7 @@
             const candidates = Array.from(root.querySelectorAll('button,a,[role="button"],i,span,div')).filter(el => {
               if (!visible(el)) return false;
               const text = normalize([el.innerText, el.textContent, el.getAttribute('aria-label'), el.getAttribute('title'), el.className].filter(Boolean).join(' '));
-              if (/(关闭|close|el-dialog__headerbtn|icon-close|btn-close|\\bclose\\b|×|x)/i.test(text)) return true;
+              if (/(关闭|close|container-close|el-dialog__headerbtn|icon-close|btn-close|\\bclose\\b|×|x)/i.test(text)) return true;
               return false;
             }).sort((a, b) => {
               const ar = a.getBoundingClientRect();
@@ -2042,6 +2422,12 @@
         state = safe_eval(page, """() => {
           const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
           const text = normalize(document.body ? document.body.innerText : '');
+          const isChatPage = /\\/Revision\\/chat/.test(String(location.href || ''));
+          const hasImResumeOperation = !!document.querySelector([
+            '#sensor_imresume_download',
+            '#sensor_imresume_print',
+            '.IM-resume-operation'
+          ].join(','));
           const hasImResumeSurface = !!document.querySelector([
             '#sensor_imresume_download',
             '#sensor_imresume_print',
@@ -2050,6 +2436,7 @@
             '.baseinfo-container.IM-resume-item',
             '.IM-base-module.IM-resume-item'
           ].join(','));
+          if (isChatPage) return !!(hasImResumeOperation && hasImResumeSurface);
           if (hasImResumeSurface && /求职意向/.test(text) && /(个人优势|工作经历|教育经历)/.test(text)) return true;
           return /(人才状态|投递日期|求职意向)/.test(text) && /(保存|打印|转发|更多操作)/.test(text) && /(简历|工作经历|教育经历|个人优势)/.test(text);
         }""")
@@ -2089,6 +2476,50 @@
             '.im-message-item',
             '[class*="message-item" i]'
           ].join(',');
+          const messageListSelector = '#IMMessageList,[id*="IMMessageList"]';
+          const resumeMarker = /(?:\u5728\u7ebf\u7b80\u5386|\u9644\u4ef6\u7b80\u5386|\u7b80\u5386\u9644\u4ef6)/;
+          const revealHiddenMessageResumeCard = () => {
+            const cards = Array.from(document.querySelectorAll([
+              '.resume-element',
+              '.resume-element-info',
+              '.item-container-resume',
+              '.resume-card',
+              '[class*="resume" i]'
+            ].join(',')));
+            const hidden = [];
+            for (const card of cards) {
+              if (!card || !card.isConnected) continue;
+              if (card.closest('#conversation-list,.conversation-list,[class*="conversation-list" i],nav,header,.menu,.sidebar,.chat-user-operate')) continue;
+              const messageRoot = card.closest(messageAreaSelector);
+              if (!messageRoot) continue;
+              const haystack = normalize([
+                textOf(card),
+                textOf(messageRoot),
+                card.getAttribute('aria-label'),
+                card.getAttribute('title'),
+                card.className,
+                messageRoot.className
+              ].filter(Boolean).join(' '));
+              if (!resumeMarker.test(haystack)) continue;
+              if (visible(card)) return false;
+              hidden.push({ card, messageRoot });
+            }
+            const target = hidden[hidden.length - 1];
+            if (!target) return false;
+            try {
+              target.card.scrollIntoView({ block: 'center', inline: 'nearest' });
+              const list = target.card.closest(messageListSelector);
+              if (list && !visible(target.card)) {
+                const cardBox = target.card.getBoundingClientRect();
+                const listBox = list.getBoundingClientRect();
+                list.scrollTop += cardBox.top - listBox.top - Math.max(12, (list.clientHeight - cardBox.height) / 2);
+              }
+              return true;
+            } catch {
+              return false;
+            }
+          };
+          const revealedHiddenMessageResumeCard = revealHiddenMessageResumeCard();
           const selector = [
             '#sensor_Bchat_newzxjl',
             '.chat-user-operate .file-style.online',
@@ -2169,11 +2600,12 @@
           }
           candidates.sort((a, b) => (b.score - a.score) || ((b.rect?.y || 0) - (a.rect?.y || 0)));
           const best = candidates[0];
-          if (!best || best.score < 80) return { found: false, reason: 'online_resume_entry_not_found', candidates: candidates.slice(0, 8) };
+          if (!best || best.score < 80) return { found: false, reason: 'online_resume_entry_not_found', revealedHiddenMessageResumeCard, candidates: candidates.slice(0, 8) };
           best.element.setAttribute('data-codex-job51-online-resume', token);
           return {
             found: true,
             token,
+            revealedHiddenMessageResumeCard,
             candidate: {
               score: best.score,
               source: best.source,
@@ -2204,6 +2636,9 @@
           const el = document.querySelector(selector);
           if (!el || !el.isConnected) return { ok: false, reason: 'online_resume_dom_element_missing' };
           const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+          const onlineResumeRe = /在线简历/;
+          const attachmentResumeRe = /附件简历/;
+          const exactOnlineResumeRe = /^在线简历$/;
           const visible = node => {
             if (!node || !node.isConnected) return false;
             const box = node.getBoundingClientRect();
@@ -2219,39 +2654,120 @@
           };
           const target = el.closest('a,button,[role="button"],[onclick],#sensor_Bchat_newzxjl,.chat-user-operate .file-style,.chat-user-operate [tabindex],.resume-element,.item-container-resume,[class*="resume" i],[class*="file-style" i]') || el;
           if (!visible(target)) return { ok: false, reason: 'online_resume_dom_element_not_visible' };
-          const href = String(target.getAttribute('href') || el.getAttribute('href') || '');
+          const card = target.closest('.resume-element,.item-container-resume,.resume-card,[class*="resume" i]') || target;
+          const clickOptions = Array.from(card.querySelectorAll([
+            '.info-content .btn-text',
+            '.info-content-item',
+            '.info-content',
+            '.btn-text',
+            '.file-style.online',
+            '[class*="file-style" i]',
+            '[class*="online" i]',
+            'a',
+            'button',
+            '[role="button"]',
+            '[onclick]',
+            'span',
+            'div'
+          ].join(','))).filter(visible).map(node => {
+            const nodeText = normalize([
+              node.innerText,
+              node.textContent,
+              node.getAttribute('title'),
+              node.getAttribute('aria-label'),
+              node.getAttribute('href'),
+              node.id,
+              node.className
+            ].filter(Boolean).join(' '));
+            const className = String(node.className || '');
+            let score = 0;
+            if (onlineResumeRe.test(nodeText)) score += 160;
+            if (exactOnlineResumeRe.test(nodeText)) score += 140;
+            if (node.matches && node.matches('.info-content .btn-text,.info-content-item,.info-content,.btn-text')) score += 130;
+            if (/btn-text|info-content-item|info-content/i.test(className)) score += 100;
+            if (/file-style|online/i.test(className)) score += 80;
+            if (/^(A|BUTTON)$/i.test(node.tagName) || node.getAttribute('role') === 'button' || node.getAttribute('onclick')) score += 35;
+            if (node === target) score += 10;
+            return { node, nodeText, score };
+          }).filter(item => item.score > 0).sort((a, b) => b.score - a.score);
+          const clickTarget = (clickOptions[0] && clickOptions[0].node) || target;
+          const href = String(clickTarget.getAttribute('href') || target.getAttribute('href') || el.getAttribute('href') || '');
           const targetText = normalize([
-            target.innerText,
-            target.textContent,
-            target.getAttribute('title'),
-            target.getAttribute('aria-label'),
+            clickTarget.innerText,
+            clickTarget.textContent,
+            clickTarget.getAttribute('title'),
+            clickTarget.getAttribute('aria-label'),
             href,
+            clickTarget.id,
             target.id,
             el.id,
+            clickTarget.className,
             target.className,
             el.className
           ].filter(Boolean).join(' '));
           if (
-            target.id === 'sensor_Bchat_newzxjl'
+            clickTarget.id === 'sensor_Bchat_newzxjl'
+            || target.id === 'sensor_Bchat_newzxjl'
             || el.id === 'sensor_Bchat_newzxjl'
+            || clickTarget.closest('.chat-user-operate')
             || target.closest('.chat-user-operate')
             || el.closest('.chat-user-operate')
             || /Revision\/talent\/management|Revision\/talent\/search-recommend|人才管理|人才沟通/.test(targetText)
           ) {
             return { ok: false, reason: 'online_resume_header_shortcut_blocked' };
           }
-          if (!target.closest('#IMMessageList,[id*="IMMessageList"],div.message-item,div.im-message-item,.im-message-item,[class*="message-item" i]')) {
+          if (!clickTarget.closest('#IMMessageList,[id*="IMMessageList"],div.message-item,div.im-message-item,.im-message-item,[class*="message-item" i]')) {
             return { ok: false, reason: 'online_resume_not_in_message_list' };
           }
-          target.scrollIntoView({ block: 'center', inline: 'center' });
-          if (typeof target.focus === 'function') target.focus({ preventScroll: true });
-          target.click();
-          const box = target.getBoundingClientRect();
+          clickTarget.scrollIntoView({ block: 'center', inline: 'center' });
+          if (typeof clickTarget.focus === 'function') clickTarget.focus({ preventScroll: true });
+          clickTarget.setAttribute('data-codex-job51-online-resume-click-target', token);
+          const clickBox = clickTarget.getBoundingClientRect();
+          const clickOnlyText = normalize(clickTarget.innerText || clickTarget.textContent || '');
+          const combinedOnlineAttachment = onlineResumeRe.test(clickOnlyText)
+            && attachmentResumeRe.test(clickOnlyText)
+            && !exactOnlineResumeRe.test(clickOnlyText);
+          const exactOnlineOnly = onlineResumeRe.test(clickOnlyText)
+            && !attachmentResumeRe.test(clickOnlyText);
+          const clickRatios = combinedOnlineAttachment
+            ? [[0.35, 0.28], [0.22, 0.28], [0.5, 0.28]]
+            : (
+              exactOnlineOnly
+                ? [[0.28, 0.5], [0.18, 0.5], [0.42, 0.5], [0.5, 0.5]]
+                : [[0.5, 0.5], [0.35, 0.35], [0.25, 0.5]]
+            );
+          const clickRatioX = clickRatios[0][0];
+          const clickRatioY = clickRatios[0][1];
+          clickTarget.setAttribute('data-codex-job51-online-resume-click-ratio-x', String(clickRatioX));
+          clickTarget.setAttribute('data-codex-job51-online-resume-click-ratio-y', String(clickRatioY));
+          clickTarget.setAttribute('data-codex-job51-online-resume-click-ratios', JSON.stringify(clickRatios));
+          const clientX = Math.max(0, Math.min(window.innerWidth - 1, Math.round(clickBox.left + clickBox.width * clickRatioX)));
+          const clientY = Math.max(0, Math.min(window.innerHeight - 1, Math.round(clickBox.top + clickBox.height * clickRatioY)));
+          const eventInit = { bubbles: true, cancelable: true, view: window, clientX, clientY, button: 0, buttons: 1 };
+          for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+            try {
+              if (type.startsWith('pointer') && typeof PointerEvent === 'function') {
+                clickTarget.dispatchEvent(new PointerEvent(type, { ...eventInit, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+              } else {
+                clickTarget.dispatchEvent(new MouseEvent(type, eventInit));
+              }
+            } catch {
+              clickTarget.dispatchEvent(new MouseEvent(type, eventInit));
+            }
+          }
+          if (typeof clickTarget.click === 'function') clickTarget.click();
+          const box = clickTarget.getBoundingClientRect();
           return {
             ok: true,
-            tag: target.tagName,
-            text: normalize(target.innerText || target.textContent || target.getAttribute('title') || target.getAttribute('aria-label') || '').slice(0, 160),
-            rect: { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) }
+            tag: clickTarget.tagName,
+            text: normalize(clickTarget.innerText || clickTarget.textContent || clickTarget.getAttribute('title') || clickTarget.getAttribute('aria-label') || '').slice(0, 160),
+            rect: { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) },
+            clickTargetClass: String(clickTarget.className || '').slice(0, 160),
+            clickRatio: { x: clickRatioX, y: clickRatioY },
+            retryRatios: clickRatios,
+            combinedOnlineAttachment,
+            exactOnlineOnly,
+            clickTargetScore: clickOptions[0] ? clickOptions[0].score : 0
           };
         }""", {"token": token})
         return result if isinstance(result, dict) else {"ok": False, "reason": "online_resume_dom_click_failed"}
@@ -2267,6 +2783,8 @@
         detail_page = None
         opened_by = "current_page"
         clicked_entry = False
+        dom_click_result: dict = {}
+        trusted_click_result: dict = {}
         rejected_detail_pages: list[dict] = []
         extra_close_result: dict = {"closedPages": [], "count": 0}
 
@@ -2339,14 +2857,78 @@
                     closed_pages.append({**brief, "error": safe_text(str(error), 120)})
             return {"closedPages": closed_pages, "count": len(closed_pages), "reason": reason}
 
+        def trusted_click_marked_target(dom_result: dict, ratio_override: tuple[float, float] | None = None) -> dict:
+            token = str(entry.get("token") or "")
+            if token:
+                try:
+                    marked = origin_page.locator(f"[data-codex-job51-online-resume-click-target='{token}']").first
+                    if marked.count():
+                        ratio_x = 0.5
+                        ratio_y = 0.5
+                        if ratio_override is not None:
+                            try:
+                                ratio_x = float(ratio_override[0])
+                                ratio_y = float(ratio_override[1])
+                            except Exception:
+                                ratio_x = 0.5
+                                ratio_y = 0.5
+                        else:
+                            try:
+                                ratio_x = float(marked.get_attribute("data-codex-job51-online-resume-click-ratio-x") or 0.5)
+                                ratio_y = float(marked.get_attribute("data-codex-job51-online-resume-click-ratio-y") or 0.5)
+                            except Exception:
+                                ratio_x = 0.5
+                                ratio_y = 0.5
+                        box = marked.bounding_box(timeout=2000)
+                        if box and float(box.get("width") or 0) > 1 and float(box.get("height") or 0) > 1:
+                            marked.click(
+                                timeout=5000,
+                                position={
+                                    "x": max(1.0, min(float(box.get("width") or 0) - 1.0, float(box.get("width") or 0) * ratio_x)),
+                                    "y": max(1.0, min(float(box.get("height") or 0) - 1.0, float(box.get("height") or 0) * ratio_y)),
+                                },
+                            )
+                            return {"ok": True, "method": "locator", "ratio": {"x": ratio_x, "y": ratio_y}, "override": ratio_override is not None}
+                        marked.click(timeout=5000)
+                        return {"ok": True, "method": "locator", "override": ratio_override is not None}
+                except Exception as error:
+                    locator_error = safe_text(str(error), 160)
+                else:
+                    locator_error = "marked_target_missing"
+            else:
+                locator_error = "missing_token"
+            rect = dom_result.get("rect") if isinstance(dom_result, dict) else None
+            if not isinstance(rect, dict):
+                return {"ok": False, "method": "mouse", "reason": locator_error or "missing_click_rect"}
+            try:
+                ratio_x = 0.5
+                ratio_y = 0.5
+                if ratio_override is not None:
+                    try:
+                        ratio_x = float(ratio_override[0])
+                        ratio_y = float(ratio_override[1])
+                    except Exception:
+                        ratio_x = 0.5
+                        ratio_y = 0.5
+                x = float(rect.get("x") or 0) + (float(rect.get("w") or 0) * ratio_x)
+                y = float(rect.get("y") or 0) + (float(rect.get("h") or 0) * ratio_y)
+                if x <= 0 or y <= 0:
+                    return {"ok": False, "method": "mouse", "reason": "invalid_click_rect", "rect": rect, "locatorError": locator_error}
+                origin_page.mouse.click(x, y)
+                return {"ok": True, "method": "mouse", "x": round(x), "y": round(y), "ratio": {"x": ratio_x, "y": ratio_y}, "locatorError": locator_error}
+            except Exception as error:
+                return {"ok": False, "method": "mouse", "reason": safe_text(str(error), 160), "locatorError": locator_error}
+
         try:
             with origin_page.context.expect_page(timeout=8000) as page_info:
                 if terminal.humanize:
                     terminal.pause_like_person("pre_action")
                     highlight_target(locator)
                 dom_click = self.job51_dom_click_online_resume_entry(origin_page, str(entry.get("token") or ""))
+                dom_click_result = dom_click if isinstance(dom_click, dict) else {}
                 if not dom_click.get("ok"):
                     raise AgentError(dom_click.get("reason") or "online_resume_dom_click_failed")
+                trusted_click_result = trusted_click_marked_target(dom_click_result)
                 clicked_entry = True
                 if terminal.humanize:
                     terminal.pause_like_person("post_action")
@@ -2359,14 +2941,22 @@
                         terminal.pause_like_person("pre_action")
                         highlight_target(locator)
                     dom_click = self.job51_dom_click_online_resume_entry(origin_page, str(entry.get("token") or ""))
+                    dom_click_result = dom_click if isinstance(dom_click, dict) else {}
                     if not dom_click.get("ok"):
                         raise AgentError(dom_click.get("reason") or "online_resume_dom_click_failed")
+                    trusted_click_result = trusted_click_marked_target(dom_click_result)
                     clicked_entry = True
                     if terminal.humanize:
                         terminal.pause_like_person("post_action")
                 except Exception as error:
                     extra_close_result = close_extra_non_chat_pages(None, "online_resume_click_failed")
-                    return {"ok": False, "reason": "online_resume_click_failed", "error": safe_text(str(error), 160)}
+                    return {
+                        "ok": False,
+                        "reason": "online_resume_click_failed",
+                        "error": safe_text(str(error), 160),
+                        "domClickResult": dom_click_result,
+                        "trustedClickResult": trusted_click_result,
+                    }
 
         origin_page.wait_for_timeout(random.randint(900, 1400))
         pages = list(getattr(origin_page.context, "pages", []) or [])
@@ -2392,6 +2982,63 @@
             if accepted is not None:
                 detail_page = accepted
                 opened_by = "same_page"
+        retry_click_attempts: list[dict] = []
+        if detail_page is None and isinstance(dom_click_result, dict):
+            raw_ratios = dom_click_result.get("retryRatios")
+            retry_ratios: list[tuple[float, float]] = []
+            seen_ratios: set[tuple[float, float]] = set()
+            initial_ratio = trusted_click_result.get("ratio") if isinstance(trusted_click_result, dict) else {}
+            initial_key = None
+            if isinstance(initial_ratio, dict):
+                try:
+                    initial_key = (round(float(initial_ratio.get("x")), 3), round(float(initial_ratio.get("y")), 3))
+                except Exception:
+                    initial_key = None
+            if isinstance(raw_ratios, list):
+                for item in raw_ratios:
+                    if not isinstance(item, (list, tuple)) or len(item) < 2:
+                        continue
+                    try:
+                        ratio = (float(item[0]), float(item[1]))
+                    except Exception:
+                        continue
+                    key = (round(ratio[0], 3), round(ratio[1], 3))
+                    if key == initial_key or key in seen_ratios:
+                        continue
+                    seen_ratios.add(key)
+                    retry_ratios.append(ratio)
+            for ratio in retry_ratios[:4]:
+                attempt = {"ratio": {"x": ratio[0], "y": ratio[1]}}
+                try:
+                    click_result = trusted_click_marked_target(dom_click_result, ratio)
+                    attempt["click"] = click_result
+                    if not click_result.get("ok"):
+                        retry_click_attempts.append(attempt)
+                        continue
+                    origin_page.wait_for_timeout(random.randint(900, 1400))
+                    pages = list(getattr(origin_page.context, "pages", []) or [])
+                    retry_candidates = [page for page in pages if page not in before_pages] + pages
+                    seen_page_ids: set[int] = set()
+                    for page in reversed(retry_candidates):
+                        page_id = id(page)
+                        if page_id in seen_page_ids:
+                            continue
+                        seen_page_ids.add(page_id)
+                        accepted = validate_detail_candidate(
+                            page,
+                            f"retry_ratio_{ratio[0]:.2f}_{ratio[1]:.2f}",
+                        )
+                        if accepted is not None:
+                            detail_page = accepted
+                            opened_by = f"retry_ratio_{ratio[0]:.2f}_{ratio[1]:.2f}"
+                            attempt["opened"] = True
+                            break
+                    retry_click_attempts.append(attempt)
+                    if detail_page is not None:
+                        break
+                except Exception as error:
+                    attempt["error"] = safe_text(str(error), 160)
+                    retry_click_attempts.append(attempt)
         if detail_page is None:
             extra_close_result = close_extra_non_chat_pages(None, "online_resume_detail_not_opened")
             restore_result = {}
@@ -2421,6 +3068,9 @@
                 "restoreResult": restore_result,
                 "preCloseResult": pre_close_result,
                 "extraCloseResult": extra_close_result,
+                "domClickResult": dom_click_result,
+                "trustedClickResult": trusted_click_result,
+                "retryClickAttempts": retry_click_attempts,
             }
 
         extra_close_result = close_extra_non_chat_pages(detail_page, "after_online_resume_detail_open")
@@ -2444,6 +3094,9 @@
             "entry": {k: v for k, v in entry.items() if k != "token"},
             "preCloseResult": pre_close_result,
             "extraCloseResult": extra_close_result,
+            "domClickResult": dom_click_result,
+            "trustedClickResult": trusted_click_result,
+            "retryClickAttempts": retry_click_attempts,
         }
 
     def job51_find_online_resume_save_button(self, page) -> dict:

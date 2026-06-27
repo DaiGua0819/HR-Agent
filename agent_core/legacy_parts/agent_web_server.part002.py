@@ -740,6 +740,14 @@
             else:
                 target = find_recruiter_candidate_by_name(terminal, target_candidate, scroll_attempts=10)
                 if not target:
+                    all_filter = self.measure_current_timing_stage(
+                        "prepare_recruiter_all_filter_for_target_candidate",
+                        "BOSS 指定候选人补找前切换全部联系人",
+                        lambda: prepare_recruiter_all_candidate_list(terminal),
+                    )
+                    if isinstance(all_filter, dict) and all_filter.get("found"):
+                        target = find_recruiter_candidate_by_name(terminal, target_candidate, scroll_attempts=16)
+                if not target:
                     return {
                         "blocked": True,
                         "message": f"没有在当前招聘会话列表里找到候选人：{safe_text(target_candidate, 40)}。",
@@ -1614,6 +1622,7 @@
                 '.wechat-notify',
                 '.el-message-box__wrapper',
                 '.el-dialog__wrapper',
+                '.v-modal',
                 '.el-popover',
                 '.driver-popover',
                 '[class*="guide" i]',
@@ -1623,7 +1632,7 @@
               for (const root of blockerRoots) {
                 const rootText = normalize(root.innerText || root.textContent || '');
                 const rootClass = String(root.className || '');
-                const looksBlocking = /(AI|推荐|广告|微信通知|新人才|意向推荐|学生频道|开通|去开启|简历不错过|智能回复|助手|提示)/.test(rootText + ' ' + rootClass);
+                const looksBlocking = /(AI|推荐|广告|微信通知|新人才|意向推荐|学生频道|开通|去开启|简历不错过|智能回复|助手|提示|聊天回复快|立即佩戴|查看成就|成就|佩戴|LV\\d+)/.test(rootText + ' ' + rootClass);
                 if (!looksBlocking && !root.matches('#driver-popover-item,.ai-guide-dialog,.wechat-notify,.el-message-box__wrapper')) continue;
                 const buttons = Array.from(root.querySelectorAll('button,[role="button"],.close,.el-icon-close,[class*="close" i],[class*="cancel" i]'));
                 for (const btn of buttons) {
@@ -1664,6 +1673,29 @@
                         "text": safe_text(str(target.get("text") or ""), 80),
                         "className": safe_text(str(target.get("className") or ""), 80),
                     })
+                    if "聊天回复快" in str(target.get("reason") or "") or "navigate_fistPageAdv_close" in str(target.get("className") or ""):
+                        removed = safe_eval(page, """() => {
+                          const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+                          let count = 0;
+                          const roots = Array.from(document.querySelectorAll('.el-dialog__wrapper,.v-modal,.isShowDialog'));
+                          for (const root of roots) {
+                            const text = normalize(root.innerText || root.textContent || '');
+                            const cls = String(root.className || '');
+                            const looksAchievement = /(聊天回复快|立即佩戴|查看成就|navigate_fistPageAdv|isShowDialog)/.test(text + ' ' + cls);
+                            if (!looksAchievement) continue;
+                            root.remove();
+                            count += 1;
+                          }
+                          return count;
+                        }""")
+                        if removed:
+                            closed.append({
+                                "reason": "force_close_achievement_popup",
+                                "text": "聊天回复快LV2",
+                                "className": "el-dialog__wrapper/v-modal",
+                                "removed": int(removed),
+                            })
+                            page.wait_for_timeout(random.randint(160, 320))
             except Exception as error:
                 closed.append({
                     "reason": "dismiss_failed",
@@ -1834,15 +1866,56 @@
                     highlight_target(unread)
                 click_result = unread.evaluate("""el => {
                   const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+                  const cls = String(el.className || '');
                   const href = String(el.getAttribute('href') || el.closest('a')?.getAttribute('href') || '');
-                  const guardText = normalize([el.innerText, el.textContent, href, el.className, el.id].filter(Boolean).join(' '));
-                  if (/Revision\\/talent\\/management|Revision\\/talent\\/search-recommend|人才管理|人才望远镜/.test(guardText)) {
-                    return { ok: false, reason: 'blocked_talent_navigation_target', text: guardText.slice(0, 160), href };
+                  const text = normalize(el.innerText || el.textContent || '');
+                  const guardText = normalize([text, href, cls, el.id].filter(Boolean).join(' '));
+                  const blockedNavigation = /Revision\\/talent\\/management|Revision\\/talent\\/search-recommend|人才管理|人才望远镜/.test(guardText);
+                  const blockedAi = /AI\\s*沟通|AI沟通|智能沟通|ai\\s*沟通/i.test(guardText);
+                  if (!el.matches('label.el-checkbox.btn.unread-checkbox') || !/unread-checkbox/.test(cls)) {
+                    return { ok: false, reason: 'unread_filter_not_exact_checkbox', text: guardText.slice(0, 160), href, className: cls };
+                  }
+                  if (blockedNavigation || blockedAi) {
+                    return { ok: false, reason: blockedAi ? 'blocked_ai_chat_target' : 'blocked_talent_navigation_target', text: guardText.slice(0, 160), href, className: cls };
+                  }
+                  if (!/未读|unread/i.test(guardText)) {
+                    return { ok: false, reason: 'unread_filter_text_mismatch', text: guardText.slice(0, 160), href, className: cls };
                   }
                   el.scrollIntoView({ block: 'center', inline: 'center' });
-                  if (typeof el.click === 'function') el.click();
-                  else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                  return { ok: true, text: normalize(el.innerText || el.textContent || '').slice(0, 80), href };
+                  const target = el.querySelector('.el-checkbox__input, .el-checkbox__inner, input[type="checkbox"]') || el;
+                  const rect = target.getBoundingClientRect();
+                  const labelRect = el.getBoundingClientRect();
+                  if (!rect || rect.width <= 0 || rect.height <= 0) {
+                    return { ok: false, reason: 'unread_filter_click_target_not_visible', text: guardText.slice(0, 160), href, className: cls };
+                  }
+                  const x = Math.min(Math.max(rect.left + Math.min(rect.width / 2, 10), labelRect.left + 1), labelRect.right - 1);
+                  const y = Math.min(Math.max(rect.top + rect.height / 2, labelRect.top + 1), labelRect.bottom - 1);
+                  const hit = document.elementFromPoint(x, y);
+                  if (!hit || !el.contains(hit)) {
+                    return {
+                      ok: false,
+                      reason: 'unread_filter_hit_test_outside_label',
+                      text: guardText.slice(0, 160),
+                      hitText: normalize(hit && (hit.innerText || hit.textContent || '')).slice(0, 120),
+                      href,
+                      className: cls,
+                      rect: { x: labelRect.x, y: labelRect.y, width: labelRect.width, height: labelRect.height }
+                    };
+                  }
+                  const hitText = normalize([hit.innerText, hit.textContent, hit.className, hit.id].filter(Boolean).join(' '));
+                  if (/AI\\s*沟通|AI沟通|智能沟通|ai\\s*沟通/i.test(hitText)) {
+                    return { ok: false, reason: 'blocked_ai_chat_hit_target', text: guardText.slice(0, 160), hitText: hitText.slice(0, 120), href, className: cls };
+                  }
+                  if (typeof target.click === 'function') target.click();
+                  else target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                  return {
+                    ok: true,
+                    text: text.slice(0, 80),
+                    href,
+                    className: cls,
+                    clickTarget: String(target.className || target.tagName || '').slice(0, 80),
+                    rect: { x: labelRect.x, y: labelRect.y, width: labelRect.width, height: labelRect.height }
+                  };
                 }""")
                 if isinstance(click_result, dict) and not click_result.get("ok"):
                     return {"found": False, "reason": str(click_result.get("reason") or "unread_filter_dom_click_blocked"), "state": state, "click": click_result}
